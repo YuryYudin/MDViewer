@@ -33,6 +33,12 @@ fn export_all() -> Result<String, Box<dyn std::error::Error>> {
     buf.push_str(&mdviewer_lib::settings::Settings::export_to_string().unwrap());
     buf.push_str("\n");
 
+    // A5: document render types — options input + result payload.
+    buf.push_str(&mdviewer_lib::document::RenderOptions::export_to_string().unwrap());
+    buf.push_str("\n");
+    buf.push_str(&mdviewer_lib::document::RenderResult::export_to_string().unwrap());
+    buf.push_str("\n");
+
     // A5 appends `RenderResult`, `RenderOptions`.
     // A6 appends `Anchor`, `ResolveOutcome`.
     // A7 appends `Thread`, `Comment`, `NewThread`, `NewComment`.

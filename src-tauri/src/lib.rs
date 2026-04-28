@@ -27,5 +27,6 @@ pub fn build_info() -> BuildInfo {
     }
 }
 
+pub mod document;
 pub mod recents;
 pub mod settings;
