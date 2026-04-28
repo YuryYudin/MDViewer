@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "threads": [
+    {
+      "id": "t-1",
+      "anchor": {
+        "start": 96,
+        "end": 118,
+        "exact": "Selectable phrase one.",
+        "prefix": "Section Two\n\n",
+        "suffix": " Selectable phrase two."
+      },
+      "comments": [
+        {
+          "id": "c-1",
+          "author": "Alice",
+          "color": "#ff8800",
+          "body": "Looks good",
+          "created_at": "2026-04-01T12:00:00Z"
+        }
+      ],
+      "resolved": false
+    },
+    {
+      "id": "t-2",
+      "anchor": {
+        "start": 119,
+        "end": 141,
+        "exact": "Selectable phrase two.",
+        "prefix": "Selectable phrase one. ",
+        "suffix": "\n\n```rust"
+      },
+      "comments": [
+        {
+          "id": "c-2",
+          "author": "Bob",
+          "color": "#0088ff",
+          "body": "Question here",
+          "created_at": "2026-04-01T13:00:00Z"
+        }
+      ],
+      "resolved": false
+    }
+  ]
+}
