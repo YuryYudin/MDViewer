@@ -45,6 +45,16 @@ fn export_all() -> Result<String, Box<dyn std::error::Error>> {
     buf.push_str(&mdviewer_lib::anchor::ResolveOutcome::export_to_string().unwrap());
     buf.push_str("\n");
 
+    // A7: comments + sidecar — Comment, Thread, NewComment, NewThread.
+    buf.push_str(&mdviewer_lib::comments::Comment::export_to_string().unwrap());
+    buf.push_str("\n");
+    buf.push_str(&mdviewer_lib::comments::Thread::export_to_string().unwrap());
+    buf.push_str("\n");
+    buf.push_str(&mdviewer_lib::comments::NewComment::export_to_string().unwrap());
+    buf.push_str("\n");
+    buf.push_str(&mdviewer_lib::comments::NewThread::export_to_string().unwrap());
+    buf.push_str("\n");
+
     // A5 appends `RenderResult`, `RenderOptions`.
     // A6 appends `Anchor`, `ResolveOutcome`.
     // A7 appends `Thread`, `Comment`, `NewThread`, `NewComment`.

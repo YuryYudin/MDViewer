@@ -28,6 +28,8 @@ pub fn build_info() -> BuildInfo {
 }
 
 pub mod anchor;
+pub mod comments;
 pub mod document;
 pub mod recents;
 pub mod settings;
+pub mod sidecar;
