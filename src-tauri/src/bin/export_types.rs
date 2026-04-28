@@ -55,10 +55,16 @@ fn export_all() -> Result<String, Box<dyn std::error::Error>> {
     buf.push_str(&mdviewer_lib::comments::NewThread::export_to_string().unwrap());
     buf.push_str("\n");
 
+    // A8a: workspace open shapes — OpenResult and the Document|Conflict union.
+    buf.push_str(&mdviewer_lib::workspace::OpenResult::export_to_string().unwrap());
+    buf.push_str("\n");
+    buf.push_str(&mdviewer_lib::workspace::OpenOutcome::export_to_string().unwrap());
+    buf.push_str("\n");
+
     // A5 appends `RenderResult`, `RenderOptions`.
     // A6 appends `Anchor`, `ResolveOutcome`.
     // A7 appends `Thread`, `Comment`, `NewThread`, `NewComment`.
-    // A8a appends `OpenResult`, `OpenOutcome`, `OpenOpts`.
+    // A8a appends `OpenResult`, `OpenOutcome`.
 
     Ok(buf)
 }
