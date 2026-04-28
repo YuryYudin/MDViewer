@@ -1,6 +1,5 @@
 use mdviewer_lib::settings::{
-    AppearanceSettings, AutoMergeMode, CommentsSettings, EditorSettings,
-    ExternalChangeBehavior, ProfileSettings, Settings, SettingsStore, Theme,
+    AutoMergeMode, ExternalChangeBehavior, SettingsStore, Theme,
 };
 use tempfile::TempDir;
 
@@ -29,15 +28,6 @@ fn defaults_match_design() {
     assert_eq!(s.profile.display_name, "");
     assert!(!s.shortcuts.is_empty());
     assert!(s.advanced.sync_provider.is_none());
-
-    // Silence unused-import warnings for types referenced only by name.
-    let _ = (
-        std::marker::PhantomData::<AppearanceSettings>,
-        std::marker::PhantomData::<CommentsSettings>,
-        std::marker::PhantomData::<EditorSettings>,
-        std::marker::PhantomData::<ProfileSettings>,
-        std::marker::PhantomData::<Settings>,
-    );
 }
 
 #[test]

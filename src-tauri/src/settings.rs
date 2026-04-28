@@ -107,7 +107,7 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             profile: ProfileSettings {
-                user_id: uuid_v4_like(),
+                user_id: generate_user_id(),
                 display_name: String::new(),
                 color: "#888888".into(),
             },
@@ -160,7 +160,7 @@ fn default_shortcuts() -> BTreeMap<String, String> {
     m
 }
 
-fn uuid_v4_like() -> String {
+fn generate_user_id() -> String {
     // Simple non-cryptographic ID. Real UUID lib is overkill here.
     use std::time::{SystemTime, UNIX_EPOCH};
     let nanos = SystemTime::now()
@@ -231,8 +231,11 @@ impl SettingsStore {
             event = diff_event(&before, &*g);
             snapshot = g.clone();
         }
-        std::fs::write(&self.path, toml::to_string_pretty(&snapshot)?)?;
+        // Only touch disk when something actually changed. Skipping no-op
+        // writes avoids spurious mtime bumps that would trigger B2's
+        // file-watcher once it's wired up.
         if let Some(ev) = event {
+            std::fs::write(&self.path, toml::to_string_pretty(&snapshot)?)?;
             let mut subs = self.subs.lock().unwrap();
             // Drop senders whose receivers were dropped — they'll error on send.
             subs.retain(|tx| tx.send(ev).is_ok());
