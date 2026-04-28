@@ -17,6 +17,10 @@ path = "src/lib.rs"
 name = "mdviewer"
 path = "src/main.rs"
 
+[[bin]]
+name = "export_types"
+path = "src/bin/export_types.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -32,6 +36,7 @@ anyhow = "1"
 thiserror = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+ts-rs = "8"
 
 [dev-dependencies]
 tempfile = "3"

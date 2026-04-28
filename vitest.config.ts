@@ -15,7 +15,13 @@ export default defineConfig({
         statements: 90,
       },
       include: ['src/**/*.ts'],
-      exclude: ['src/**/*.d.ts'],
+      exclude: [
+        'src/**/*.d.ts',
+        // Auto-generated type-only file (ts-rs). Holds only `export type`
+        // declarations that compile to nothing — v8 reports 0/0 for it,
+        // which would otherwise sink the global threshold.
+        'src/types-generated.ts',
+      ],
     },
   },
 });

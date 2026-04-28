@@ -4,10 +4,16 @@
 /dist/
 **/dist/
 node_modules/
+coverage/
 
 # Tauri
 src-tauri/target/
 src-tauri/gen/
+
+# ts-rs auto-emits per-type .ts files under `bindings/` when running
+# `cargo test`. Our pipeline uses the `export_types` binary instead, which
+# writes to `src/types-generated.ts`, so the bindings/ directory is noise.
+src-tauri/bindings/
 
 # OS
 .DS_Store
