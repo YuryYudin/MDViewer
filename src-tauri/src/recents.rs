@@ -36,13 +36,26 @@ pub struct RecentsStore {
 impl RecentsStore {
     /// Open (or create) the recents store rooted at `data_dir`. If
     /// `recents.json` exists, missing paths are pruned at load time.
+    /// Both read and parse failures fall back to an empty list — startup
+    /// must not block on a corrupt or unreadable recents file (it is purely
+    /// an MRU convenience, not authoritative state).
     pub fn open(data_dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(data_dir).context("create data dir")?;
         let path = data_dir.join("recents.json");
         let entries: Vec<PathBuf> = if path.exists() {
-            let bytes = std::fs::read_to_string(&path).context("read recents.json")?;
-            let on_disk: OnDisk = serde_json::from_str(&bytes).unwrap_or_default();
-            on_disk.entries.into_iter().filter(|p| p.exists()).collect()
+            // Recover gracefully from both I/O and parse failures: log the
+            // reason and start with an empty list. The next push() will
+            // overwrite the file with valid JSON.
+            match std::fs::read_to_string(&path) {
+                Ok(bytes) => {
+                    let on_disk: OnDisk = serde_json::from_str(&bytes).unwrap_or_default();
+                    on_disk.entries.into_iter().filter(|p| p.exists()).collect()
+                }
+                Err(e) => {
+                    tracing::warn!(?path, ?e, "could not read recents.json; starting empty");
+                    Vec::new()
+                }
+            }
         } else {
             Vec::new()
         };
@@ -57,20 +70,23 @@ impl RecentsStore {
     /// nonexistent files) so symlinked / aliased paths dedupe correctly.
     /// If `p` is already present it is moved to the top. The list is
     /// truncated to [`MAX_ENTRIES`] and persisted to disk.
+    ///
+    /// The disk write happens while the lock is still held so concurrent
+    /// pushes serialize against each other and the on-disk file always
+    /// reflects the most-recent in-memory state.
     pub fn push(&self, p: &Path) -> Result<()> {
         let canonical = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
-        let snapshot = {
-            let mut g = self.inner.write().unwrap();
-            g.retain(|x| x != &canonical);
-            g.insert(0, canonical);
-            if g.len() > MAX_ENTRIES {
-                g.truncate(MAX_ENTRIES);
-            }
-            g.clone()
-        };
+        let mut g = self.inner.write().unwrap();
+        g.retain(|x| x != &canonical);
+        g.insert(0, canonical);
+        if g.len() > MAX_ENTRIES {
+            g.truncate(MAX_ENTRIES);
+        }
+        // Hold the lock across the write so two concurrent pushes can't race
+        // on the on-disk snapshot.
         std::fs::write(
             &self.path,
-            serde_json::to_string_pretty(&OnDisk { entries: snapshot })?,
+            serde_json::to_string_pretty(&OnDisk { entries: g.clone() })?,
         )?;
         Ok(())
     }
