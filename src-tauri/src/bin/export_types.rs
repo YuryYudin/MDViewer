@@ -39,6 +39,12 @@ fn export_all() -> Result<String, Box<dyn std::error::Error>> {
     buf.push_str(&mdviewer_lib::document::RenderResult::export_to_string().unwrap());
     buf.push_str("\n");
 
+    // A6: anchor model + resolve outcome (W3C TextQuote/TextPosition flattened).
+    buf.push_str(&mdviewer_lib::anchor::Anchor::export_to_string().unwrap());
+    buf.push_str("\n");
+    buf.push_str(&mdviewer_lib::anchor::ResolveOutcome::export_to_string().unwrap());
+    buf.push_str("\n");
+
     // A5 appends `RenderResult`, `RenderOptions`.
     // A6 appends `Anchor`, `ResolveOutcome`.
     // A7 appends `Thread`, `Comment`, `NewThread`, `NewComment`.
