@@ -1,0 +1,22 @@
+# Build artifacts
+/target/
+**/target/
+/dist/
+**/dist/
+node_modules/
+
+# Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# Worktrees / tcoder transient state (kept locally per-author)
+.claude/worktrees/
