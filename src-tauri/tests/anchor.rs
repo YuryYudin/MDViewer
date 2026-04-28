@@ -11,6 +11,30 @@ fn anchor(start: usize, end: usize, exact: &str, prefix: &str, suffix: &str) -> 
 }
 
 #[test]
+fn resolves_quote_with_multibyte_utf8_does_not_panic() {
+    // Regression: the multi-match search loop used `search_from = abs_start + 1`
+    // which lands inside a multi-byte UTF-8 character on inputs like CJK or
+    // emoji, panicking on the next slice. The byte-step must be the char's
+    // UTF-8 length.
+    let src = "你好你好"; // four 3-byte CJK chars → 12 bytes
+    let a = anchor(0, 6, "你好", "", "");
+    let out = resolve_anchor(src, &a);
+    // First "你好" wins on closeness to anchor.start = 0. No panic.
+    assert_eq!(out, ResolveOutcome::Resolved { start: 0, end: 6 });
+}
+
+#[test]
+fn resolves_emoji_quote_with_overlapping_search() {
+    // Emoji are typically 4 bytes (or more for ZWJ sequences); ensure the
+    // overlapping-search byte step doesn't slice them in half.
+    let src = "🚀🚀🚀 done";
+    let a = anchor(0, 4, "🚀", "", "🚀🚀");
+    let out = resolve_anchor(src, &a);
+    // Three matches; closest to anchor.start=0 is the first.
+    assert_eq!(out, ResolveOutcome::Resolved { start: 0, end: 4 });
+}
+
+#[test]
 fn resolves_when_exact_match_at_offset() {
     let src = "Hello selectable phrase one. More text.";
     let a = anchor(6, 28, "selectable phrase one.", "Hello ", " More text.");

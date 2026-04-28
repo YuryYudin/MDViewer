@@ -43,7 +43,17 @@ pub fn resolve_anchor(source: &str, anchor: &Anchor) -> ResolveOutcome {
         let abs_start = search_from + idx;
         let abs_end = abs_start + anchor.exact.len();
         candidates.push((abs_start, abs_end));
-        search_from = abs_start + 1; // overlapping search
+        // Advance by the byte-length of the char at abs_start so we never
+        // land inside a multi-byte UTF-8 sequence (str::find / slicing
+        // panic on non-char-boundary indices). For ASCII this is +1; for
+        // CJK or emoji it's +2..4. Falls back to +1 only when abs_start
+        // is past the end (shouldn't happen here since find returned Some).
+        let step = source[abs_start..]
+            .chars()
+            .next()
+            .map(|c| c.len_utf8())
+            .unwrap_or(1);
+        search_from = abs_start + step;
     }
     if candidates.is_empty() {
         return ResolveOutcome::Orphan;
