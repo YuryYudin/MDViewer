@@ -26,3 +26,5 @@ pub fn build_info() -> BuildInfo {
         commit_hash: env!("MDVIEWER_COMMIT_HASH").to_string(),
     }
 }
+
+pub mod settings;

@@ -13,8 +13,26 @@ fn export_all() -> Result<String, Box<dyn std::error::Error>> {
     buf.push_str(&mdviewer_lib::BuildInfo::export_to_string().unwrap());
     buf.push_str("\n");
 
-    // A3 will append `Settings`, `ProfileSettings`, `AppearanceSettings`,
-    //  `EditorSettings`, `CommentsSettings`, `AdvancedSettings` here.
+    // A3: settings types — three enums and six structs (Settings root last).
+    buf.push_str(&mdviewer_lib::settings::Theme::export_to_string().unwrap());
+    buf.push_str("\n");
+    buf.push_str(&mdviewer_lib::settings::ExternalChangeBehavior::export_to_string().unwrap());
+    buf.push_str("\n");
+    buf.push_str(&mdviewer_lib::settings::AutoMergeMode::export_to_string().unwrap());
+    buf.push_str("\n");
+    buf.push_str(&mdviewer_lib::settings::ProfileSettings::export_to_string().unwrap());
+    buf.push_str("\n");
+    buf.push_str(&mdviewer_lib::settings::AppearanceSettings::export_to_string().unwrap());
+    buf.push_str("\n");
+    buf.push_str(&mdviewer_lib::settings::EditorSettings::export_to_string().unwrap());
+    buf.push_str("\n");
+    buf.push_str(&mdviewer_lib::settings::CommentsSettings::export_to_string().unwrap());
+    buf.push_str("\n");
+    buf.push_str(&mdviewer_lib::settings::AdvancedSettings::export_to_string().unwrap());
+    buf.push_str("\n");
+    buf.push_str(&mdviewer_lib::settings::Settings::export_to_string().unwrap());
+    buf.push_str("\n");
+
     // A5 appends `RenderResult`, `RenderOptions`.
     // A6 appends `Anchor`, `ResolveOutcome`.
     // A7 appends `Thread`, `Comment`, `NewThread`, `NewComment`.
