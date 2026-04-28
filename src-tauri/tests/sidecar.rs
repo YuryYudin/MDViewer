@@ -208,8 +208,8 @@ fn round_trip_preserves_distinct_threads_with_same_anchor() {
             body: "first take".into(),
         },
     });
-    // Force a fresh id by sleeping a nanosecond — new_id is nanos-based.
-    std::thread::sleep(std::time::Duration::from_micros(1));
+    // new_id now appends an atomic counter, so back-to-back calls produce
+    // distinct IDs even when the system clock has microsecond granularity.
     let t2 = store.create_thread(NewThread {
         anchor: anchor(), // identical anchor on purpose
         first_comment: NewComment {
