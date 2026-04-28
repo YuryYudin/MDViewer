@@ -18,7 +18,7 @@ describe('Edit the document and reattach anchors', () => {
     await browser.$('[data-action="toggle-edit"]').click();
     const editor = browser.$('[data-test="editor"]');
     const doc = await editor.getValue();
-    const inserted = doc.replace('Selectable phrase one', ' editedSelectable phrase one');
+    const inserted = doc.replace('Selectable phrase one', ' edited Selectable phrase one');
     await editor.setValue(inserted);
 
     // Toggle back to view; the reattachment pass runs.

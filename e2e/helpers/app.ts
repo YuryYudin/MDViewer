@@ -9,16 +9,16 @@ export interface FixtureSession {
 
 /**
  * Prepares a per-test temp directory (optionally seeded from a fixture dir)
- * and returns its path. Tests pass the path into the Tauri binary via the
- * `MDVIEWER_DATA_DIR` env var, which `tauri-driver` reads from
- * `wdio.conf.ts`'s capability extras. tauri-driver in turn forwards the env
- * vars when it spawns the binary, so the running app reads its config from
- * the temp dir.
+ * and returns its path. Tests will pass the path into the Tauri binary via
+ * the `MDVIEWER_DATA_DIR` env var. The wiring — adding a `tauri:options.env`
+ * field to wdio's capability so `tauri-driver` forwards env vars to the
+ * spawned binary — is deferred to A8b, where the IPC layer stabilises and
+ * we know which env vars the binary actually consumes.
  *
- * If MDVIEWER_DATA_DIR is not honored by the running binary (Phase A has not
- * yet implemented the override), the fixture seeding is harmless — the
- * specs will still fail because the wdio session can't start without a
- * binary at src-tauri/target/debug/mdviewer.
+ * Today the temp dir is allocated and seeded but the running binary does
+ * not yet read it. This is harmless during Phase A's RED state because
+ * every wdio session start fails (no binary at src-tauri/target/debug/
+ * mdviewer), so specs never reach the data-dir consumption path.
  */
 export async function prepareFixture(opts?: { fixtureDir?: string; resetProfile?: boolean }): Promise<FixtureSession> {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mdviewer-e2e-'));
