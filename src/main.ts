@@ -63,6 +63,53 @@ export async function main(): Promise<void> {
   async function mountWorkspaceAndStash(): Promise<void> {
     workspace = await mountWorkspace(root!, tauriIpc);
   }
+
+  // Global "open another document" entry point. The TabBar's "+" button
+  // and the open_file keymap action both dispatch this, plus StartPage
+  // dispatches it from its Open button so the three paths converge on
+  // a single dialog flow. Without this listener "+" was a dead button
+  // (Screenshot regression).
+  document.addEventListener('mdviewer:open-file', () => {
+    // Wrap so a dialog/import failure (jsdom has no __TAURI_INTERNALS__,
+    // a real-runtime failure surfaces an Error, etc.) doesn't escalate
+    // into an unhandled rejection that crashes the WebView console or
+    // poisons unit-test runs.
+    runOpenFileFlow().catch((err) => {
+      console.warn('open-file flow failed:', err);
+    });
+  });
+
+  async function runOpenFileFlow(): Promise<void> {
+    const w = window as unknown as {
+      __WEBDRIVER__?: unknown;
+      __mdviewerE2E?: { nextPick?: string };
+    };
+    let picked: string | null = null;
+    if (w.__WEBDRIVER__) {
+      // tauri-webdriver-automation can't drive the OS dialog. Specs set
+      // window.__mdviewerE2E.nextPick = absPath right before clicking the
+      // "+" button; we consume it once and proceed.
+      const next = w.__mdviewerE2E?.nextPick;
+      if (typeof next === 'string') {
+        picked = next;
+        if (w.__mdviewerE2E) delete w.__mdviewerE2E.nextPick;
+      }
+    } else {
+      const { open: openDialog } = await import('@tauri-apps/plugin-dialog');
+      const result = await openDialog({
+        filters: [{ name: 'Markdown', extensions: ['md', 'markdown'] }],
+        multiple: false,
+      });
+      if (typeof result === 'string') picked = result;
+    }
+    if (!picked) return;
+    const outcome = await tauriIpc.openDocument(picked);
+    const setActive = (root as unknown as {
+      __mdv_setActive?: (o: typeof outcome) => void;
+    }).__mdv_setActive;
+    if (setActive) setActive(outcome);
+    if (workspace) await workspace.refresh();
+  }
   if (!settings.profile.display_name) {
     await mountProfileSetup(root, tauriIpc);
     // ProfileSetup fires `mdviewer:profile-saved` on success but doesn't
@@ -109,7 +156,10 @@ export async function main(): Promise<void> {
   const dispatchAction = (action: Action): void => {
     switch (action) {
       case 'open_file':
-        document.querySelector<HTMLInputElement>('[data-test="file-input"]')?.click();
+        // Was: click the StartPage file-input. That only existed when
+        // StartPage was mounted, so the shortcut died once a doc was open.
+        // The mdviewer:open-file listener above handles both phases.
+        document.dispatchEvent(new CustomEvent('mdviewer:open-file'));
         break;
       case 'save_file':
         document.dispatchEvent(new CustomEvent('mdviewer:save-active'));

@@ -229,24 +229,20 @@ describe('main()', () => {
     }
   });
 
-  it('open_file keymap action clicks the hidden file input', async () => {
+  it('open_file keymap action dispatches mdviewer:open-file', async () => {
+    // Used to click `[data-test="file-input"]` directly. That input only
+    // exists on StartPage, so the shortcut died once a doc was open. Now
+    // `open_file` dispatches `mdviewer:open-file`; main.ts's listener owns
+    // both production (OS dialog) and e2e branches.
     fakeIpc.getSettings.mockResolvedValue(
-      settingsWith({
-        profile: { user_id: 'u', display_name: '', color: '#888' },
-        shortcuts: { open_file: 'CmdOrCtrl+O' },
-      }),
+      settingsWith({ shortcuts: { open_file: 'CmdOrCtrl+O' } }),
     );
     const { main } = await import('../src/main');
     await main();
-    // ProfileSetup mounts (no display_name) so there is no file input. Append
-    // a stub one to verify the dispatcher targets `[data-test="file-input"]`.
-    const fake = document.createElement('input');
-    fake.setAttribute('data-test', 'file-input');
-    fake.type = 'file';
-    document.body.appendChild(fake);
-    const click = vi.spyOn(fake, 'click');
+    const handler = vi.fn();
+    document.addEventListener('mdviewer:open-file', handler, { once: true });
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'o', metaKey: true }));
-    expect(click).toHaveBeenCalled();
+    expect(handler).toHaveBeenCalled();
   });
 
   it('throws if the #app element is missing', async () => {
