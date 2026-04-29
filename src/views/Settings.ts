@@ -247,7 +247,10 @@ function buildEditor(ipc: Ipc, settings: Settings): HTMLElement {
   });
   s.appendChild(debounceMs.row);
   debounceMs.input.addEventListener('change', () => {
-    settings.editor.auto_save_debounce_ms = parseInt(debounceMs.input.value, 10);
+    // Guard against an empty input (NaN), which TOML serialization rejects.
+    const ms = parseInt(debounceMs.input.value, 10);
+    if (!Number.isFinite(ms)) return; // leave previous value
+    settings.editor.auto_save_debounce_ms = ms;
     void ipc.setSettings(settings);
   });
 
@@ -360,26 +363,6 @@ function buildComments(ipc: Ipc, settings: Settings): HTMLElement {
     void ipc.setSettings(settings);
   });
 
-  // Sync provider — disabled in v1 (design non-goal). The pill makes the
-  // deferral visible inline so users don't think it's a bug.
-  const syncRow = document.createElement('div');
-  syncRow.className = 'row';
-  const syncLabel = document.createElement('label');
-  syncLabel.textContent = 'Sync provider ';
-  const syncSelect = document.createElement('select');
-  syncSelect.setAttribute('data-test', 'sync-provider');
-  syncSelect.disabled = true;
-  const opt = document.createElement('option');
-  opt.textContent = 'None — cloud sync ships in a later release';
-  syncSelect.appendChild(opt);
-  const pill = document.createElement('span');
-  pill.className = 'pill';
-  pill.setAttribute('data-test', 'sync-planned-pill');
-  pill.textContent = '(planned)';
-  syncLabel.append(syncSelect, pill);
-  syncRow.appendChild(syncLabel);
-  s.appendChild(syncRow);
-
   return s;
 }
 
@@ -423,6 +406,27 @@ function buildShortcuts(settings: Settings): HTMLElement {
 
 function buildAdvanced(ipc: Ipc, settings: Settings): HTMLElement {
   const s = section('advanced', 'Advanced');
+
+  // Sync provider lives in AdvancedSettings on the Rust side and the wireframe
+  // groups it with the other inert/diagnostic controls. v1 non-goal — control
+  // is rendered disabled with a (planned) pill so users see the deferral.
+  const syncRow = document.createElement('div');
+  syncRow.className = 'row';
+  const syncLabel = document.createElement('label');
+  syncLabel.textContent = 'Sync provider ';
+  const syncSelect = document.createElement('select');
+  syncSelect.setAttribute('data-test', 'sync-provider');
+  syncSelect.disabled = true;
+  const opt = document.createElement('option');
+  opt.textContent = 'None — cloud sync ships in a later release';
+  syncSelect.appendChild(opt);
+  const pill = document.createElement('span');
+  pill.className = 'pill';
+  pill.setAttribute('data-test', 'sync-planned-pill');
+  pill.textContent = '(planned)';
+  syncLabel.append(syncSelect, pill);
+  syncRow.appendChild(syncLabel);
+  s.appendChild(syncRow);
 
   const verbose = labeledCheckbox('Verbose logs', settings.advanced.verbose_logs, {
     'data-test': 'verbose-logs',
