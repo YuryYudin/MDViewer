@@ -34,6 +34,21 @@ describe('Add a comment to a selection', () => {
     expect(
       await browser.$('[data-view="selection-popover"]').isExisting(),
     ).toBe(true);
+
+    // Selection popover dark-mode contrast: previously the popover used
+    // `background: var(--text)` which inverts in dark mode (light bg +
+    // white text = invisible). Verify the chip stays dark regardless
+    // of theme so the white "Comment" / "Copy" button text reads.
+    const popoverContrast = await browser.execute(() => {
+      const pop = document.querySelector('[data-view="selection-popover"]') as HTMLElement;
+      const cs = getComputedStyle(pop);
+      const bgMatch = cs.backgroundColor.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+      if (!bgMatch) return { sum: 999 };
+      // Sum of RGB channels; a dark chip has sum well under 200.
+      return { sum: +bgMatch[1] + +bgMatch[2] + +bgMatch[3] };
+    });
+    expect(popoverContrast.sum).toBeLessThan(200);
+
     await browser.$('[data-action="comment"]').click();
 
     // Compose the comment body and post it.
@@ -57,5 +72,21 @@ describe('Add a comment to a selection', () => {
     expect(await sidebarThread.$('[data-test="comment-body-rendered"]').getText()).toBe(
       'First note',
     );
+
+    // The thread must show "First note" exactly ONCE — previously
+    // CommentsSidebar rendered both a summary body AND the inline
+    // ThreadDetail's first comment, so users saw their reply twice.
+    const occurrences = await browser.execute(() => {
+      const el = document.querySelector(
+        '[data-view="sidebar-comments"] [data-test="thread"]',
+      );
+      if (!el) return -1;
+      const text = el.textContent ?? '';
+      // Count via split — guard against the substring appearing inside
+      // unrelated text (e.g. the author label) by anchoring on the
+      // exact comment body.
+      return text.split('First note').length - 1;
+    });
+    expect(occurrences).toBe(1);
   });
 });

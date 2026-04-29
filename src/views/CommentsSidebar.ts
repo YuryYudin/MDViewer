@@ -103,32 +103,34 @@ export function mountCommentsSidebar(
     article.dataset.threadId = t.id;
     article.setAttribute('data-test', 'thread');
 
-    const header = document.createElement('header');
-    header.setAttribute('data-test', 'thread-author');
-    header.textContent = t.comments[0]?.author ?? '';
-    article.appendChild(header);
-
-    const body = document.createElement('p');
-    body.setAttribute('data-test', 'comment-body-rendered');
-    body.textContent = t.comments[0]?.body ?? '';
-    article.appendChild(body);
-
     article.addEventListener('click', () => {
       article.dispatchEvent(
         new CustomEvent('thread-activate', { bubbles: true, detail: { id: t.id } }),
       );
     });
 
-    // Inline ThreadDetail (wireframe-06) — rendered as a child of each
-    // thread article so the reply composer + Resolve button are reachable
-    // without a separate panel. Only attached when the parent supplied an
-    // activeTabId; CommentsSidebar's unit-test call sites that omit it
-    // keep the existing flat shape.
     if (opts.activeTabId) {
+      // Production mode: mount ThreadDetail inline. Detail already
+      // shows every comment with author + body, so adding our own
+      // summary header/body here would duplicate the first comment.
+      // Skip the summary; the test selectors `[data-test="thread-author"]`
+      // and `[data-test="comment-body-rendered"]` remain reachable
+      // through the detail's own children.
       const detailRoot = document.createElement('div');
       detailRoot.className = 'thread-detail-mount';
       mountThreadDetail(detailRoot, ipc, t, () => opts.activeTabId!);
       article.appendChild(detailRoot);
+    } else {
+      // Test/preview mode: keep the flat summary shape unit tests assert on.
+      const header = document.createElement('header');
+      header.setAttribute('data-test', 'thread-author');
+      header.textContent = t.comments[0]?.author ?? '';
+      article.appendChild(header);
+
+      const body = document.createElement('p');
+      body.setAttribute('data-test', 'comment-body-rendered');
+      body.textContent = t.comments[0]?.body ?? '';
+      article.appendChild(body);
     }
     root.appendChild(article);
   }

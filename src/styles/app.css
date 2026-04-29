@@ -326,6 +326,11 @@ body {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  /* Pin to the parent docRoot's bounded height. Without this the
+   * flex chain has no anchor, so [data-region='render']'s `flex: 1;
+   * overflow: auto` can't compute a scrollable viewport — the content
+   * just collapses to its min-content and refuses to scroll. */
+  height: 100%;
   overflow: hidden;
 }
 [data-view='document'] [data-region='doc-toolbar'] {
@@ -595,7 +600,11 @@ body {
  * ===================================================================== */
 [data-view='selection-popover'] {
   position: fixed;
-  background: var(--text);
+  /* Theme-independent dark chip. Using `var(--text)` here would flip in
+   * dark mode (--text becomes near-white) and the `color: #fff` text
+   * would disappear. The popover keeps its always-dark contrast trick
+   * by hard-coding the chip color. */
+  background: #1c1c1a;
   color: #fff;
   padding: 6px 10px;
   border-radius: 6px;

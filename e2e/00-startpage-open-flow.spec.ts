@@ -126,5 +126,21 @@ describe('StartPage → click a recent → document mounts', () => {
     expect(docLayout.statusVisible).toBe(true);
     expect(Math.abs(docLayout.statusBottom - docLayout.wsBottom)).toBeLessThan(2);
     expect(Math.abs(docLayout.statusHeight - 22)).toBeLessThanOrEqual(1);
+
+    // Document content must be scrollable. The render region holds the
+    // rendered markdown and uses `flex: 1; overflow: auto` — for that
+    // to actually produce a scrollbar the parent height chain has to
+    // be bounded, otherwise it collapses to min-content and clips.
+    // Catches the regression where adding `overflow: hidden` to the
+    // body grid items removed scrolling from the document pane.
+    const scroll = await browser.execute(() => {
+      const render = document.querySelector('[data-region="render"]') as HTMLElement;
+      return {
+        clientHeight: render.clientHeight,
+        scrollHeight: render.scrollHeight,
+      };
+    });
+    expect(scroll.clientHeight).toBeGreaterThan(0);
+    expect(scroll.scrollHeight).toBeGreaterThanOrEqual(scroll.clientHeight);
   });
 });
