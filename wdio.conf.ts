@@ -1,7 +1,7 @@
 import type { Options } from '@wdio/types';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { connect } from 'node:net';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -13,7 +13,13 @@ const binaryPath = path.resolve('src-tauri/target/debug', binaryName);
 // Pre-seeded with a settings.toml that has display_name set so the app
 // boots into Workspace, not ProfileSetup (the latter is exercised by spec 02
 // which deliberately resets the profile to test the first-run flow).
-const dataDir = mkdtempSync(path.join(tmpdir(), 'mdviewer-e2e-'));
+//
+// Use a FIXED path (not mkdtemp) so the wdio launcher and per-spec workers
+// see the same dataDir. wdio re-imports this config in every worker
+// subprocess, and a `mkdtemp` at module-load would mint a different dir
+// for each — the workers' specs would then write to dirs the launcher's
+// driver never sees.
+const dataDir = path.join(tmpdir(), 'mdviewer-e2e-data');
 mkdirSync(dataDir, { recursive: true });
 // Field types match src-tauri/src/settings.rs strictly. line_height is a
 // percentage stored as u16 (100..=200), NOT a float — getting that wrong
@@ -62,6 +68,12 @@ writeFileSync(
 // W3C-compliant WebDriver server that talks to the
 // `tauri-plugin-webdriver-automation` plugin loaded into our debug build.
 const driverBinary = 'tauri-wd';
+
+// Expose the seeded dataDir to specs via process.env so they can find
+// settings.toml (e.g. spec 02 needs to blank display_name and reload).
+// This propagates through the wdio worker's env into mocha's `before`
+// hooks because wdio runs each worker in the same Node process tree.
+process.env.MDVIEWER_DATA_DIR = dataDir;
 
 let driver: ChildProcess | undefined;
 let vite: ChildProcess | undefined;

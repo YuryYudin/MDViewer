@@ -37,6 +37,12 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
   for (const region of ['titlebar', 'tabbar', 'body', 'status']) {
     const el = document.createElement('div');
     el.setAttribute('data-region', region);
+    // The status region also serves as wireframe-03's status-bar; expose
+    // it via data-view so spec selectors (and CSS theming) can target it
+    // by purpose, not just position.
+    if (region === 'status') el.setAttribute('data-view', 'status-bar');
+    if (region === 'titlebar') el.setAttribute('data-view', 'titlebar');
+    if (region === 'tabbar') el.setAttribute('data-view', 'tabs');
     shell.appendChild(el);
   }
   root.appendChild(shell);
@@ -53,6 +59,13 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
   const statusText = document.createElement('span');
   statusText.textContent = 'Ready';
   status.appendChild(statusText);
+  // Display the user's profile chip in the status bar (wireframe 03/05).
+  // Settings are loaded inside refresh() but we need a placeholder element
+  // present immediately so spec assertions on shape (not value) don't race.
+  const userName = document.createElement('span');
+  userName.setAttribute('data-test', 'user-name');
+  userName.className = 'profile-chip';
+  status.appendChild(userName);
 
   const state: WorkspaceState = { tabs: [], activeId: null };
   const tabbar = shell.querySelector<HTMLElement>('[data-region="tabbar"]')!;
@@ -105,6 +118,14 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
 
   async function refresh(): Promise<void> {
     settings ??= await ipc.getSettings();
+    // Re-read on every refresh so the status-bar chip stays in sync if the
+    // user changes their display_name from the Settings view. Defensive
+    // optional access — unit-test mocks don't always include profile, and
+    // the mock can resolve to undefined when only one resolved value was
+    // queued via `mockResolvedValueOnce`.
+    if (settings?.profile?.display_name) {
+      userName.textContent = settings.profile.display_name;
+    }
     const ids = await ipc.listOpenDocuments();
     state.tabs = ids.map((id) => ({ id, path: id }));
     state.activeId = state.tabs.length > 0 ? (state.activeId ?? state.tabs[0].id) : null;

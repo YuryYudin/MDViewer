@@ -41,10 +41,21 @@ export async function main(): Promise<void> {
   applyTheme(currentTheme);
 
   let workspace: Awaited<ReturnType<typeof mountWorkspace>> | null = null;
+  async function mountWorkspaceAndStash(): Promise<void> {
+    workspace = await mountWorkspace(root!, tauriIpc);
+  }
   if (!settings.profile.display_name) {
     await mountProfileSetup(root, tauriIpc);
+    // ProfileSetup fires `mdviewer:profile-saved` on success but doesn't
+    // own routing — wire the transition to Workspace here so the user
+    // doesn't need a manual reload.
+    document.addEventListener(
+      'mdviewer:profile-saved',
+      () => { void mountWorkspaceAndStash(); },
+      { once: true },
+    );
   } else {
-    workspace = await mountWorkspace(root, tauriIpc);
+    await mountWorkspaceAndStash();
   }
 
   // E2E side-channel: tauri-webdriver-automation can't drive the OS file
