@@ -276,12 +276,18 @@ body {
 [data-view='profile-setup'] button {
   padding: 6px 14px;
   border-radius: 5px;
-  border: 1px solid var(--border);
-  background: var(--surface);
+  /* Same dark-mode treatment as Settings/Share: surface-2 + strong
+   * border so secondary buttons stand out from the panel's surface. */
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
   color: var(--text);
   cursor: pointer;
   font-family: var(--sans);
   font-size: 13px;
+}
+[data-view='profile-setup'] input[type='text'],
+[data-view='profile-setup'] input[type='color'] {
+  background: var(--surface-2);
 }
 [data-view='profile-setup'] button[data-action='save-profile'] {
   background: var(--accent);
@@ -672,9 +678,10 @@ body {
 }
 [data-view='conflict'] .hunk button {
   padding: 4px 10px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   border-radius: 4px;
-  background: var(--surface);
+  background: var(--surface-2);
+  color: var(--text);
   cursor: pointer;
   font-family: var(--sans);
   font-size: 12px;
@@ -777,8 +784,42 @@ body {
   border-radius: 4px;
   font-size: 13px;
   font-family: var(--sans);
-  background: var(--surface);
+  /* `--surface-2` (slightly raised against the panel's `--surface`) so
+   * the input is visibly distinct from its panel even in dark mode
+   * where the difference between the two is small but present. */
+  background: var(--surface-2);
   color: var(--text);
+}
+[data-view='settings'] input[type='color'] {
+  /* Native color picker is a tiny 28×20 swatch by default; size it up
+   * so users can see the chosen swatch in dark mode. */
+  width: 36px;
+  height: 24px;
+  padding: 1px;
+}
+/* Free-standing buttons inside Settings (not the primary close button)
+ * — Advanced section's "Open DevTools" / "Reset to Defaults" used to
+ * fall back to OS-default chrome which on dark mode is invisible. */
+[data-view='settings'] button {
+  padding: 5px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--text);
+  cursor: pointer;
+  font-family: var(--sans);
+  font-size: 12.5px;
+  margin-right: 6px;
+}
+[data-view='settings'] button:hover {
+  background: var(--bg-elev-2);
+  border-color: var(--accent);
+}
+[data-view='settings'] button.close-settings {
+  /* Override the generic rule for the corner close button — it overlays
+   * the section borders so we keep the float-right + border-strong
+   * combination from the dedicated rule above. */
+  float: right;
 }
 
 /* ShareDialog (wireframe 10) */
@@ -826,12 +867,20 @@ body {
   margin-top: 14px;
   padding: 6px 14px;
   border-radius: 5px;
-  border: 1px solid var(--border);
-  background: var(--surface);
+  /* Surface-2 + strong border so the secondary button is visible
+   * against the panel's --surface in dark mode. */
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text);
   font-size: 13px;
   cursor: pointer;
   font-family: var(--sans);
   margin-right: 8px;
+}
+[data-view='share'] [data-test='folder'] {
+  /* The folder input sits on the panel surface; raise its bg so the
+   * dark-mode panel doesn't swallow the input chrome. */
+  background: var(--surface-2);
 }
 [data-view='share'] [data-action='export'] {
   background: var(--accent);
