@@ -1,0 +1,158 @@
+//! Integration tests for the file watcher (B2).
+//!
+//! These tests exercise notify-based file change detection plus the
+//! per-setting external-change behavior (Ask / Reload / Ignore) and the
+//! unsaved-edits override (which forces Ask regardless of setting).
+//!
+//! File watching is inherently flaky on some platforms — we use generous
+//! 2-second timeouts when waiting for events to land.
+
+use mdviewer_lib::settings::ExternalChangeBehavior;
+use mdviewer_lib::watcher::{
+    quick_hash, ExternalChange, ExternalChangeEvent, Watcher, WatchedKind,
+};
+use std::fs;
+use std::time::Duration;
+use tempfile::TempDir;
+
+fn waitfor(rx: &std::sync::mpsc::Receiver<ExternalChangeEvent>) -> ExternalChangeEvent {
+    rx.recv_timeout(Duration::from_secs(2)).expect("event")
+}
+
+#[test]
+fn external_md_change_emits_event_per_setting_ask() {
+    let tmp = TempDir::new().unwrap();
+    let md = tmp.path().join("doc.md");
+    fs::write(&md, "v1").unwrap();
+
+    let (events_tx, events_rx) = std::sync::mpsc::channel();
+    let mut w = Watcher::new(events_tx).unwrap();
+    w.set_external_change_behavior(ExternalChangeBehavior::Ask);
+    w.watch_md(&md).unwrap();
+
+    fs::write(&md, "v2").unwrap();
+    let ev = waitfor(&events_rx);
+    assert_eq!(ev.kind, WatchedKind::Markdown);
+    assert_eq!(ev.action, ExternalChange::Ask);
+    // The watcher emits canonical paths so consumers don't have to deal with
+    // platform-specific symlinks like macOS's /var -> /private/var.
+    assert_eq!(ev.path, fs::canonicalize(&md).unwrap());
+}
+
+#[test]
+fn behavior_reload_emits_reload_action() {
+    let tmp = TempDir::new().unwrap();
+    let md = tmp.path().join("doc.md");
+    fs::write(&md, "v1").unwrap();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut w = Watcher::new(tx).unwrap();
+    w.set_external_change_behavior(ExternalChangeBehavior::Reload);
+    w.watch_md(&md).unwrap();
+    fs::write(&md, "v2").unwrap();
+    let ev = waitfor(&rx);
+    assert_eq!(ev.action, ExternalChange::Reload);
+}
+
+#[test]
+fn behavior_ignore_drops_events() {
+    let tmp = TempDir::new().unwrap();
+    let md = tmp.path().join("doc.md");
+    fs::write(&md, "v1").unwrap();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut w = Watcher::new(tx).unwrap();
+    w.set_external_change_behavior(ExternalChangeBehavior::Ignore);
+    w.watch_md(&md).unwrap();
+    fs::write(&md, "v2").unwrap();
+    assert!(rx.recv_timeout(Duration::from_millis(500)).is_err());
+}
+
+#[test]
+fn unsaved_edits_always_ask_regardless_of_setting() {
+    let tmp = TempDir::new().unwrap();
+    let md = tmp.path().join("doc.md");
+    fs::write(&md, "v1").unwrap();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut w = Watcher::new(tx).unwrap();
+    w.set_external_change_behavior(ExternalChangeBehavior::Reload);
+    w.watch_md(&md).unwrap();
+    w.mark_unsaved(&md, true);
+    fs::write(&md, "v2").unwrap();
+    let ev = waitfor(&rx);
+    assert_eq!(ev.action, ExternalChange::Ask);
+}
+
+#[test]
+fn sidecar_path_emits_kind_sidecar() {
+    let tmp = TempDir::new().unwrap();
+    let sc = tmp.path().join("doc.md.comments.json");
+    fs::write(&sc, "{}").unwrap();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut w = Watcher::new(tx).unwrap();
+    w.set_external_change_behavior(ExternalChangeBehavior::Reload);
+    w.watch_sidecar(&sc).unwrap();
+    fs::write(&sc, r#"{"schema_version":1,"threads":[]}"#).unwrap();
+    let ev = waitfor(&rx);
+    assert_eq!(ev.kind, WatchedKind::Sidecar);
+}
+
+/// `record_self_write` followed by an external write whose content hashes
+/// to the same value must be suppressed — that's the contract B3 relies on
+/// to keep self-saves from echoing as external-change events.
+#[test]
+fn record_self_write_suppresses_matching_event() {
+    let tmp = TempDir::new().unwrap();
+    let md = tmp.path().join("doc.md");
+    fs::write(&md, "v1").unwrap();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut w = Watcher::new(tx).unwrap();
+    w.set_external_change_behavior(ExternalChangeBehavior::Reload);
+    w.watch_md(&md).unwrap();
+
+    // Pre-record the hash of the bytes we're about to write so the worker
+    // sees a matching self-write entry when notify fires.
+    let next = b"v2-self-saved";
+    w.record_self_write(&md, quick_hash(next));
+    fs::write(&md, next).unwrap();
+
+    // No event should land within the 500ms window — the suppression
+    // entry consumes it.
+    assert!(rx.recv_timeout(Duration::from_millis(500)).is_err());
+}
+
+/// A self-write recorded for path A should not suppress an event on path B —
+/// the suppression list is keyed on (path, content_hash) jointly.
+#[test]
+fn record_self_write_does_not_suppress_other_paths() {
+    let tmp = TempDir::new().unwrap();
+    let other = tmp.path().join("other.md");
+    let md = tmp.path().join("doc.md");
+    fs::write(&other, "x").unwrap();
+    fs::write(&md, "v1").unwrap();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut w = Watcher::new(tx).unwrap();
+    w.set_external_change_behavior(ExternalChangeBehavior::Reload);
+    w.watch_md(&md).unwrap();
+
+    // Record a self-write for an unrelated path. The watched md change
+    // below must still surface.
+    let next = b"v2";
+    w.record_self_write(&other, quick_hash(next));
+    fs::write(&md, next).unwrap();
+
+    let ev = waitfor(&rx);
+    assert_eq!(ev.action, ExternalChange::Reload);
+}
+
+/// `quick_hash` must be deterministic for the same input — tests in B3 will
+/// rely on hashing the same bytes on both sides of the watcher boundary.
+#[test]
+fn quick_hash_is_deterministic() {
+    assert_eq!(quick_hash(b"hello"), quick_hash(b"hello"));
+    assert_ne!(quick_hash(b"hello"), quick_hash(b"world"));
+}

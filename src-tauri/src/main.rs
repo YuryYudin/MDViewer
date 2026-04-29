@@ -32,6 +32,7 @@ use mdviewer_lib::{
     comments::{NewComment, NewThread, Thread},
     document::{self, RenderOptions, RenderResult},
     settings::Settings,
+    watcher::{ExternalChangeEvent, Watcher},
     workspace::{OpenOpts, OpenOutcome, Workspace},
     BuildInfo,
 };
@@ -222,7 +223,60 @@ fn main() {
             let env_override = std::env::var("MDVIEWER_DATA_DIR").ok();
             let dir = env_override.map(PathBuf::from).unwrap_or(data_dir);
             let ws = Workspace::new(&dir)?;
+            // Snapshot the initial external-change behavior and grab a
+            // settings change subscription before we move the workspace
+            // into managed state. The watcher applies the snapshot at
+            // construction; the settings subscription forwarder thread
+            // re-applies it on every later settings update so toggles
+            // from the Settings screen take effect immediately.
+            let initial_behavior = ws.settings_store().get().editor.external_change_behavior;
+            let settings_rx = ws.settings_store().subscribe();
             app.manage(Mutex::new(ws));
+
+            // Construct the file watcher and register it as managed state
+            // alongside the workspace. B3's `save_document` IPC handler
+            // looks it up by `State<'_, Mutex<Watcher>>`; without this
+            // explicit `manage` call B3 would fail at runtime with
+            // "no managed state of type Mutex<Watcher>".
+            let app_handle = app.handle().clone();
+            let (tx, rx) = std::sync::mpsc::channel::<ExternalChangeEvent>();
+            let mut watcher = Watcher::new(tx)?;
+            watcher.set_external_change_behavior(initial_behavior);
+            app.manage(Mutex::new(watcher));
+
+            // Forward watcher events to the frontend on a dedicated thread.
+            // The receiver loop ends when the sender side is dropped (i.e.
+            // when the managed `Watcher` is dropped on app shutdown).
+            std::thread::spawn(move || {
+                for ev in rx {
+                    let _ = app_handle.emit("external-change", &ev);
+                }
+            });
+
+            // Re-apply external-change behavior on settings updates. This
+            // thread sleeps on the mpsc receiver until SettingsStore::update
+            // emits a `ChangeEvent::Editor`; on each tick we read the
+            // current value and push it into the watcher's snapshot.
+            let settings_app = app.handle().clone();
+            std::thread::spawn(move || {
+                use mdviewer_lib::settings::ChangeEvent;
+                for ev in settings_rx {
+                    if !matches!(ev, ChangeEvent::Editor) {
+                        continue;
+                    }
+                    let ws_state = settings_app.state::<Mutex<Workspace>>();
+                    let new_behavior = ws_state
+                        .lock()
+                        .ok()
+                        .map(|ws| ws.settings_store().get().editor.external_change_behavior);
+                    if let Some(b) = new_behavior {
+                        let watcher_state = settings_app.state::<Mutex<Watcher>>();
+                        if let Ok(mut w) = watcher_state.lock() {
+                            w.set_external_change_behavior(b);
+                        };
+                    }
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

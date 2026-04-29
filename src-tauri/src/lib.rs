@@ -33,4 +33,5 @@ pub mod document;
 pub mod recents;
 pub mod settings;
 pub mod sidecar;
+pub mod watcher;
 pub mod workspace;
