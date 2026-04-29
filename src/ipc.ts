@@ -61,6 +61,14 @@ export interface Ipc {
    * with a separate openDocument refresh.
    */
   saveDocument(path: string, contents: string): Promise<void>;
+  /**
+   * Tell the watcher whether the open .md has unsaved edits. While dirty,
+   * external-change events are upgraded to `Ask` regardless of the user's
+   * configured external_change_behavior — this is the unsaved-edits override
+   * the design calls out. `Edit.ts` flips this on first input and clears it
+   * after `forceSave` succeeds.
+   */
+  setDirty(path: string, dirty: boolean): Promise<void>;
 }
 
 export const tauriIpc: Ipc = {
@@ -82,4 +90,5 @@ export const tauriIpc: Ipc = {
   renderMarkdown: (source) => invoke('render_markdown', { source }),
   resolveAnchor: (tabId, anchor) => invoke('resolve_anchor', { tabId, anchor }),
   saveDocument: (path, contents) => invoke<void>('save_document', { path, contents }),
+  setDirty: (path, dirty) => invoke<void>('set_dirty', { path, dirty }),
 };

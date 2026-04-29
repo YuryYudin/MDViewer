@@ -50,13 +50,28 @@ fn app_info() -> BuildInfo {
 fn open_document(
     app: tauri::AppHandle,
     state: State<'_, Ws>,
+    watcher: State<'_, Mutex<mdviewer_lib::watcher::Watcher>>,
     path: PathBuf,
 ) -> Result<OpenOutcome, String> {
-    let outcome = state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .open_document(&path, OpenOpts::default())
-        .map_err(|e| e.to_string())?;
+    let outcome = {
+        let mut ws = state.lock().map_err(|e| e.to_string())?;
+        let outcome = ws
+            .open_document(&path, OpenOpts::default())
+            .map_err(|e| e.to_string())?;
+
+        // Register the .md and its sidecar with the watcher so external
+        // changes (Issue #1 from Phase-B impl review) actually surface.
+        let pattern = ws.settings_store().get().comments.sidecar_pattern.clone();
+        if let Ok(mut w) = watcher.lock() {
+            let _ = w.watch_md(&path);
+            let _ = w.watch_sidecar(&mdviewer_lib::sidecar::sidecar_path(&path, &pattern));
+            // Clear the dirty bit on open — a freshly-loaded tab has no
+            // unsaved edits.
+            w.mark_unsaved(&path, false);
+        }
+        outcome
+    };
+
     if let OpenOutcome::Conflict {
         tab_id,
         path,
@@ -227,6 +242,28 @@ fn save_document(
         .map_err(|e| e.to_string())?
         .refresh_tab(&path)
         .map_err(|e| e.to_string())?;
+    // Successful save clears the dirty bit. The watcher's external-change
+    // override (which forces Ask while edits are pending) deactivates here.
+    if let Ok(w) = watcher.lock() {
+        w.mark_unsaved(&path, false);
+    }
+    Ok(())
+}
+
+/// Frontend-driven dirty-bit setter. `Edit.ts` calls `set_dirty(path, true)`
+/// on first input and `set_dirty(path, false)` after `forceSave`. While the
+/// bit is true, the watcher upgrades any external-change action to `Ask`
+/// regardless of the configured `editor.external_change_behavior` — this is
+/// the unsaved-edits override the design calls out.
+#[tauri::command]
+fn set_dirty(
+    watcher: State<'_, Mutex<Watcher>>,
+    path: PathBuf,
+    dirty: bool,
+) -> Result<(), String> {
+    if let Ok(w) = watcher.lock() {
+        w.mark_unsaved(&path, dirty);
+    }
     Ok(())
 }
 
@@ -328,6 +365,7 @@ fn main() {
             render_markdown,
             resolve_anchor,
             save_document,
+            set_dirty,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

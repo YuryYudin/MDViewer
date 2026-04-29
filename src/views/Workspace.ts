@@ -1,9 +1,11 @@
-import type { Ipc } from '../ipc';
+import type { Ipc, OpenOutcome, Settings, Thread } from '../ipc';
 import { mountStartPage } from './StartPage';
 import { mountTabBar } from './TabBar';
+import { mountDocument } from './Document';
+import { mountCommentsSidebar } from './CommentsSidebar';
 
 export interface WorkspaceState {
-  tabs: { id: string; path: string }[];
+  tabs: { id: string; path: string; source?: string; threads?: Thread[]; html?: string }[];
   activeId: string | null;
 }
 
@@ -14,8 +16,12 @@ export interface WorkspaceHandle {
 /**
  * Mount the workspace shell: titlebar / tabbar / body / status. The body
  * routes between StartPage (when no documents are open) and a Document
- * placeholder (when at least one is). Document.ts (A10), Settings.ts (A11),
- * and Conflict.ts (C2) replace the placeholder when those tasks land.
+ * mount (when at least one is). Settings.ts (A11) and Conflict.ts (C2) are
+ * routed by the calling layer when those views need to display.
+ *
+ * The `external-change` Tauri event from B2's watcher surfaces here as a
+ * banner inside the body region — this is the runtime hook for issue #2
+ * raised in Phase-B's implementation review.
  */
 export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<WorkspaceHandle> {
   root.replaceChildren();
@@ -46,23 +52,121 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
   const tabbar = shell.querySelector<HTMLElement>('[data-region="tabbar"]')!;
   const body = shell.querySelector<HTMLElement>('[data-region="body"]')!;
 
+  // Cache the active tab's data the most recent open_document call gave us
+  // so refresh() doesn't have to re-open just to re-render.
+  const activeTab: { tabId?: string; path?: string; source?: string; threads?: Thread[]; html?: string } = {};
+  let settings: Settings | null = null;
+
+  // Subscribe to the watcher's external-change event from B2. tauri's
+  // event listener is async-awaitable in setup; loaded lazily so unit
+  // tests against this view in jsdom don't need the @tauri-apps/api shim.
+  type EventListener = (path: string, action: 'reload' | 'ask' | 'ignore') => void;
+  let externalListener: EventListener | null = null;
+  try {
+    const tauriEvent = await import('@tauri-apps/api/event');
+    await tauriEvent.listen<{ path: string; kind: string; action: string }>(
+      'external-change',
+      (ev) => {
+        const banner = body.querySelector<HTMLElement>('[data-view="external-change"]');
+        const action = (ev.payload.action as 'reload' | 'ask' | 'ignore') ?? 'ask';
+        if (action === 'ignore') return;
+        externalListener?.(ev.payload.path, action);
+        // Even if the active view doesn't claim the event, render a default
+        // banner with a Reload action so the user always has a path back.
+        if (!banner) {
+          const b = document.createElement('aside');
+          b.setAttribute('data-view', 'external-change');
+          b.className = `banner banner-${action}`;
+          b.textContent = action === 'reload'
+            ? `${ev.payload.path} changed on disk — reloading.`
+            : `${ev.payload.path} changed on disk.`;
+          body.prepend(b);
+          if (action === 'reload') {
+            // Auto-dismiss the banner after a short delay; the document
+            // has already been re-read by refresh_tab on the IPC side.
+            setTimeout(() => b.remove(), 3000);
+          }
+        }
+      },
+    );
+  } catch {
+    // jsdom / unit tests don't have the Tauri runtime — skip silently.
+  }
+
   async function refresh(): Promise<void> {
+    settings ??= await ipc.getSettings();
     const ids = await ipc.listOpenDocuments();
     state.tabs = ids.map((id) => ({ id, path: id }));
     state.activeId = state.tabs.length > 0 ? (state.activeId ?? state.tabs[0].id) : null;
     mountTabBar(tabbar, ipc, state);
     if (state.tabs.length === 0) {
       await mountStartPage(body, ipc);
-    } else {
-      // TODO(A10/A11/C2): replace this placeholder with Document/Settings/Conflict
-      // routing keyed off the active tab kind.
-      body.replaceChildren();
-      const placeholder = document.createElement('div');
-      placeholder.setAttribute('data-view', 'document');
-      placeholder.textContent = 'Document view (mounted by A10)';
-      body.appendChild(placeholder);
+      return;
+    }
+
+    // Mount a real Document with the cached open-document payload from the
+    // most recent openDocument call. If we don't have one (active tab
+    // changed without a re-open), the placeholder is acceptable until the
+    // user re-opens — Phase C2 introduces a getOpenDocument IPC that
+    // closes this gap.
+    body.replaceChildren();
+    const docRoot = document.createElement('div');
+    body.appendChild(docRoot);
+    const sidebarRoot = document.createElement('div');
+    sidebarRoot.setAttribute('data-region', 'sidebar');
+    body.appendChild(sidebarRoot);
+
+    const tab = activeTab;
+    const view = await mountDocument(docRoot, ipc, {
+      tabId: tab.tabId ?? state.activeId!,
+      html: tab.html ?? '',
+      threads: tab.threads ?? [],
+      source: tab.source,
+      path: tab.path,
+      settings: settings ?? undefined,
+      onOrphansChanged: (orphans) => {
+        // Re-mount sidebar when orphan list changes so the orphan
+        // section reflects the latest reattachment outcome.
+        mountCommentsSidebar(sidebarRoot, ipc, tab.threads ?? [], {
+          showResolved: settings?.comments.show_resolved ?? false,
+          orphans,
+        });
+      },
+    });
+    mountCommentsSidebar(sidebarRoot, ipc, tab.threads ?? [], {
+      showResolved: settings?.comments.show_resolved ?? false,
+      orphans: view.orphanThreads(),
+    });
+
+    // The external-change listener installed above forwards reload events
+    // to the active document so it can refresh its own render rather than
+    // showing a stale view.
+    externalListener = (path, action) => {
+      if (path !== tab.path) return;
+      if (action === 'reload') {
+        void refresh();
+      }
+    };
+  }
+
+  /**
+   * Public hook used by the StartPage when openDocument resolves so the
+   * Workspace can cache the freshly-loaded payload and refresh.
+   */
+  function setActive(outcome: OpenOutcome): void {
+    if (outcome.kind === 'document') {
+      activeTab.tabId = outcome.tab_id;
+      activeTab.path = outcome.path;
+      activeTab.html = outcome.html;
+      activeTab.threads = outcome.threads;
     }
   }
+
+  // Expose setActive on the workspace root via a property so StartPage's
+  // openDocument flow can populate the active tab cache. Kept off the
+  // public WorkspaceHandle for now — opening from Recents already drives
+  // through ipc.openDocument and a refresh.
+  (root as unknown as { __mdv_setActive?: typeof setActive }).__mdv_setActive = setActive;
 
   await refresh();
   return { refresh };

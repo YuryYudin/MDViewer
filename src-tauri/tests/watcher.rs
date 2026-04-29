@@ -66,7 +66,7 @@ fn behavior_ignore_drops_events() {
     w.set_external_change_behavior(ExternalChangeBehavior::Ignore);
     w.watch_md(&md).unwrap();
     fs::write(&md, "v2").unwrap();
-    assert!(rx.recv_timeout(Duration::from_millis(500)).is_err());
+    assert!(rx.recv_timeout(Duration::from_millis(1500)).is_err());
 }
 
 #[test]
@@ -122,7 +122,7 @@ fn record_self_write_suppresses_matching_event() {
 
     // No event should land within the 500ms window — the suppression
     // entry consumes it.
-    assert!(rx.recv_timeout(Duration::from_millis(500)).is_err());
+    assert!(rx.recv_timeout(Duration::from_millis(1500)).is_err());
 }
 
 /// A self-write recorded for path A should not suppress an event on path B —
@@ -188,7 +188,7 @@ fn save_document_does_not_trigger_reload() {
     // No event should reach us within the suppression window. Because the
     // self-write was registered BEFORE the rename, this property holds even
     // if notify fires the moment rename returns.
-    assert!(rx.recv_timeout(Duration::from_millis(500)).is_err());
+    assert!(rx.recv_timeout(Duration::from_millis(1500)).is_err());
 }
 
 /// After a self-saved write is recorded, an unrelated *external* write to the
