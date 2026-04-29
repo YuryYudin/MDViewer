@@ -217,14 +217,17 @@ fn external_write_after_save_still_triggers() {
         w_for_prime.lock().unwrap().record_self_write(p, hash);
     })
     .unwrap();
+    // Drain any post-save inotify event the suppression list filtered out.
+    // Without this the test's external write can be coalesced with the
+    // save's rename event by inotify on slow Linux runners, leaving us
+    // waiting on a second event that never arrives. macOS fsevent and
+    // Windows ReadDirectoryChangesW don't coalesce these the same way.
+    let _drain = rx.recv_timeout(Duration::from_millis(500));
 
     // External write — different content, distinct hash, must not be suppressed.
     fs::write(&md, "external write").unwrap();
-    // 10s upper bound: this test does back-to-back writes (save_document
-    // immediately followed by fs::write); inotify on Ubuntu CI runners
-    // coalesces them into a single event after a debounce window that
-    // can extend past 5s under load. Laptops and macOS fsevent fire in
-    // milliseconds — the upper bound matters only on slow CI Linux.
+    // 10s upper bound: laptops fire in <100ms; Ubuntu CI's inotify under
+    // load can take seconds. The upper bound only matters on slow CI Linux.
     let ev = rx.recv_timeout(Duration::from_secs(10)).unwrap();
     assert_eq!(ev.action, ExternalChange::Reload);
 }
