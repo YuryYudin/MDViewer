@@ -178,17 +178,23 @@ export const config: Options.Testrunner = {
   // runners it shows up as 4 specs failing with `Received: false` on
   // the very first assertion.
   before: async () => {
+    // Wait for an actual *content* view, not just the workspace shell.
+    // The shell appears synchronously in mountWorkspace(); the content
+    // view (start / document / profile-setup) only appears after the
+    // first IPC roundtrip resolves listOpenDocuments. On a fresh CI
+    // macOS that roundtrip can take several seconds.
     await browser.waitUntil(
       async () => {
         try {
-          const ws = await browser.$('[data-view="workspace"]').isExisting();
+          const start = await browser.$('[data-view="start"]').isExisting();
+          const doc = await browser.$('[data-view="document"]').isExisting();
           const ps = await browser.$('[data-view="profile-setup"]').isExisting();
-          return ws || ps;
+          return start || doc || ps;
         } catch {
           return false;
         }
       },
-      { timeout: 30_000, timeoutMsg: 'app shell (workspace or profile-setup) never mounted' },
+      { timeout: 30_000, timeoutMsg: 'no content view (start/document/profile-setup) ever mounted' },
     );
   },
   // Per-spec hook: after each session ends, wdio sends DELETE /session
