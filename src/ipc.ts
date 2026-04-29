@@ -96,6 +96,13 @@ export interface Ipc {
    * HTML.
    */
   reloadDocument(path: string): Promise<OpenResult>;
+  /**
+   * Spec 06 / share-receive flow: read a sidecar at `incomingPath`, CRDT-
+   * merge it into the active tab's comments, save the union, and replace
+   * the in-memory store. The watcher is primed so the resulting write
+   * doesn't surface as an external-change event.
+   */
+  importComments(args: { tabId: string; incomingPath: string }): Promise<void>;
 }
 
 export const tauriIpc: Ipc = {
@@ -122,4 +129,6 @@ export const tauriIpc: Ipc = {
   exportDocument: (args) =>
     invoke<ExportResult>('export_document', { tabId: args.tabId, folder: args.folder }),
   reloadDocument: (path) => invoke<OpenResult>('reload_document', { path }),
+  importComments: (args) =>
+    invoke<void>('import_comments', { tabId: args.tabId, incomingPath: args.incomingPath }),
 };

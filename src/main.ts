@@ -40,6 +40,25 @@ export async function main(): Promise<void> {
   };
   applyTheme(currentTheme);
 
+  // Settings overlay: mounted on `mdviewer:open-settings` (dispatched by
+  // the keymap's `open_settings` action and the StartPage button) and
+  // unmounted on `mdviewer:close-settings` (the Settings view's close
+  // button bubbles this back). Pre-Phase-A this routing was missing,
+  // making the Settings view effectively unreachable.
+  document.addEventListener('mdviewer:open-settings', () => {
+    let overlay = document.querySelector<HTMLElement>('[data-region="settings-overlay"]');
+    if (overlay) return;
+    overlay = document.createElement('div');
+    overlay.setAttribute('data-region', 'settings-overlay');
+    overlay.className = 'modal-overlay settings-overlay';
+    document.body.appendChild(overlay);
+    overlay.addEventListener('mdviewer:close-settings', () => overlay!.remove());
+    void (async () => {
+      const { mountSettings } = await import('./views/Settings');
+      await mountSettings(overlay!, tauriIpc);
+    })();
+  });
+
   let workspace: Awaited<ReturnType<typeof mountWorkspace>> | null = null;
   async function mountWorkspaceAndStash(): Promise<void> {
     workspace = await mountWorkspace(root!, tauriIpc);
@@ -73,6 +92,16 @@ export async function main(): Promise<void> {
         }).__mdv_setActive;
         if (setActive) setActive(outcome);
         if (workspace) await workspace.refresh();
+      },
+      async importComments(tabId: string, incomingPath: string): Promise<void> {
+        await tauriIpc.importComments({ tabId, incomingPath });
+        // Re-fetching threads happens lazily on the next refresh, but the
+        // sidebar reads from the workspace's cached activeTab.threads —
+        // dispatch the same `thread-replied` event Workspace listens for
+        // so it re-fetches the merged store and re-mounts.
+        document
+          .querySelector('[data-region="sidebar"]')
+          ?.dispatchEvent(new CustomEvent('thread-replied', { bubbles: true }));
       },
     };
   }

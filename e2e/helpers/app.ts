@@ -80,3 +80,30 @@ export async function openDocByE2eHook(absPath: string): Promise<void> {
     absPath,
   );
 }
+
+/** Spec 06: drive import_comments through the e2e side-channel. */
+export async function importCommentsByE2eHook(
+  tabId: string,
+  incomingPath: string,
+): Promise<void> {
+  await browser.executeAsync(
+    function (
+      tabId: string,
+      incomingPath: string,
+      done: (v: unknown) => void,
+    ): void {
+      const w = window as unknown as {
+        __mdviewerE2E?: { importComments(t: string, p: string): Promise<void> };
+      };
+      if (!w.__mdviewerE2E) {
+        done({ error: 'e2e hook missing' });
+        return;
+      }
+      w.__mdviewerE2E
+        .importComments(tabId, incomingPath)
+        .then(() => done(null), (e) => done({ error: String(e) }));
+    },
+    tabId,
+    incomingPath,
+  );
+}

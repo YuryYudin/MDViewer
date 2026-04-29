@@ -322,9 +322,20 @@ pub fn store_from_automerge(bytes: &[u8]) -> Result<CommentsStore> {
 }
 
 /// CRDT-merge two stores into a third, used by the auto-merge=Always path
-/// in `sidecar::merge_with_policy`. The merge is conflict-free for distinct
-/// `Thread.id`s (set union); concurrent edits to the same id resolve by
-/// Automerge's deterministic last-writer-wins on the JSON-string value.
+/// in `sidecar::merge_with_policy`. The Automerge layer handles distinct
+/// `Thread.id`s as a conflict-free union; for threads that exist on BOTH
+/// sides we post-process the merged store to union each thread's comment
+/// list by comment id (with later `created_at` winning ties on body
+/// changes) and OR-merge the resolved flag so a side-A resolve survives a
+/// side-B reply.
+///
+/// Why post-process: encoding each thread as a JSON-string in the
+/// underlying Automerge doc means concurrent puts on the same key resolve
+/// by last-writer-wins on the entire string — which would silently drop
+/// one side's reply. Modeling per-comment CRDTs would be cleaner but
+/// drags significant churn through comments.rs's API. The post-process
+/// gives the user-visible "no replies dropped" guarantee at a fraction
+/// of the cost.
 ///
 /// Errors fall back to `local` rather than propagating because callers
 /// would otherwise have to choose between dropping the local edits or
@@ -337,8 +348,58 @@ pub fn merge_stores(local: &CommentsStore, incoming: &CommentsStore) -> Comments
         let mut a = AutoCommit::load(&local_bytes).context("reload local automerge")?;
         let mut b = AutoCommit::load(&incoming_bytes).context("reload incoming automerge")?;
         a.merge(&mut b).context("automerge merge")?;
-        store_from_automerge(&a.save())
+        let merged = store_from_automerge(&a.save())?;
+        Ok(post_merge_union(merged, local, incoming))
     }
     try_merge(local, incoming)
         .unwrap_or_else(|_| CommentsStore::from_threads(local.list_threads().to_vec()))
+}
+
+/// For each thread in `merged`, if both `local` and `incoming` had a
+/// thread with the same id, union their comments (deduplicated by
+/// comment id) and OR-merge the resolved flag. Threads that exist on
+/// only one side pass through unchanged.
+fn post_merge_union(
+    merged: CommentsStore,
+    local: &CommentsStore,
+    incoming: &CommentsStore,
+) -> CommentsStore {
+    let lookup = |s: &CommentsStore, id: &str| -> Option<Thread> {
+        s.list_threads().iter().find(|t| t.id == id).cloned()
+    };
+    let mut out: Vec<Thread> = Vec::with_capacity(merged.list_threads().len());
+    for t in merged.list_threads() {
+        let lt = lookup(local, &t.id);
+        let it = lookup(incoming, &t.id);
+        match (lt, it) {
+            (Some(lt), Some(it)) => out.push(union_thread(lt, it)),
+            _ => out.push(t.clone()),
+        }
+    }
+    CommentsStore::from_threads(out)
+}
+
+fn union_thread(local: Thread, incoming: Thread) -> Thread {
+    use std::collections::HashSet;
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut comments: Vec<Comment> = Vec::new();
+    for c in local.comments.into_iter().chain(incoming.comments.into_iter()) {
+        if seen.insert(c.id.clone()) {
+            comments.push(c);
+        }
+    }
+    // Sort by created_at so the union is deterministic regardless of
+    // which side appeared first in the merged automerge view.
+    comments.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+    let resolved = local.resolved || incoming.resolved;
+    let resolved_at = local.resolved_at.or(incoming.resolved_at);
+    let resolved_by = local.resolved_by.or(incoming.resolved_by);
+    Thread {
+        id: local.id,
+        anchor: local.anchor,
+        comments,
+        resolved,
+        resolved_at,
+        resolved_by,
+    }
 }

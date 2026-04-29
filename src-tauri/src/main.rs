@@ -301,6 +301,44 @@ fn diff_md(local: String, incoming: String) -> Vec<Hunk> {
     conflict::diff_md(&local, &incoming)
 }
 
+/// Import comments from `incoming_path` into the active tab's CommentsStore
+/// using `merge_stores` (CRDT union with per-thread comment-list union for
+/// threads present on both sides). Persists the merged sidecar to disk via
+/// `save_sidecar` so the new state survives a restart.
+///
+/// Used by the Share/Receive flow (wireframe 10) and by spec 06's auto-merge
+/// scenario where a counterpart's sidecar arrives separately from the
+/// markdown file.
+#[tauri::command]
+fn import_comments(
+    state: State<'_, Ws>,
+    watcher: State<'_, Mutex<Watcher>>,
+    tab_id: String,
+    incoming_path: PathBuf,
+) -> Result<(), String> {
+    use mdviewer_lib::comments::merge_stores;
+    use mdviewer_lib::sidecar::{load_sidecar, sidecar_path};
+    let mut ws = state.lock().map_err(|e| e.to_string())?;
+    let incoming = load_sidecar(&incoming_path).map_err(|e| e.to_string())?;
+    let pattern = ws.settings_store().get().comments.sidecar_pattern.clone();
+    let tab_path = ws
+        .tab(&tab_id)
+        .ok_or_else(|| "no such tab".to_string())?
+        .path
+        .clone();
+    let local = ws.comments_for(&tab_id).map_err(|e| e.to_string())?;
+    let merged = merge_stores(local, &incoming);
+    let sc = sidecar_path(&tab_path, &pattern);
+    let bytes = mdviewer_lib::sidecar::save_sidecar(&sc, &merged).map_err(|e| e.to_string())?;
+    if let Ok(w) = watcher.lock() {
+        w.record_self_write(&sc, mdviewer_lib::watcher::quick_hash(&bytes));
+    }
+    // Replace the tab's in-memory store with the merged one.
+    let store = ws.comments_for_mut(&tab_id).map_err(|e| e.to_string())?;
+    store.replace_all(merged.list_threads().to_vec());
+    Ok(())
+}
+
 /// Re-read `path` from disk and refresh the matching tab's cached source
 /// + render. Wired to Workspace.ts's `external-change` reload listener so
 /// a watcher-driven reload actually picks up the new bytes — without this
@@ -558,6 +596,7 @@ fn main() {
             diff_md,
             export_document,
             reload_document,
+            import_comments,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

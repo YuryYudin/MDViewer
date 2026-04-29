@@ -25,6 +25,16 @@ export async function mountSettings(root: HTMLElement, ipc: Ipc): Promise<void> 
 
   const view = document.createElement('section');
   view.setAttribute('data-view', 'settings');
+
+  const close = document.createElement('button');
+  close.setAttribute('data-action', 'close-settings');
+  close.className = 'close-settings';
+  close.textContent = 'Close';
+  close.addEventListener('click', () => {
+    view.dispatchEvent(new CustomEvent('mdviewer:close-settings', { bubbles: true }));
+  });
+  view.appendChild(close);
+
   view.appendChild(buildProfile(ipc, settings));
   view.appendChild(buildAppearance(ipc, settings));
   view.appendChild(buildEditor(ipc, settings));
@@ -456,14 +466,14 @@ function buildAdvanced(ipc: Ipc, settings: Settings): HTMLElement {
   return s;
 }
 
-function buildAbout(info: BuildInfo): HTMLElement {
+function buildAbout(info: BuildInfo | undefined): HTMLElement {
   const s = section('about', 'About');
   const version = document.createElement('p');
   version.setAttribute('data-test', 'about-version');
-  version.textContent = `MDViewer ${info.version}`;
+  version.textContent = `MDViewer ${info?.version ?? 'unknown'}`;
   const commit = document.createElement('p');
   commit.setAttribute('data-test', 'about-commit');
-  commit.textContent = `Build ${info.commit_hash}`;
+  commit.textContent = `Build ${info?.commit_hash ?? 'unknown'}`;
   s.append(version, commit);
   return s;
 }

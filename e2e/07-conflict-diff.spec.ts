@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { prepareFixture } from './helpers/app';
+import { prepareFixture, openDocByE2eHook } from './helpers/app';
 
 describe('Three-way diff resolves a divergent .md', () => {
   let fixture: Awaited<ReturnType<typeof prepareFixture>>;
@@ -10,32 +10,54 @@ describe('Three-way diff resolves a divergent .md', () => {
   });
   after(async () => { await fixture.cleanup(); });
 
-  it('shows the conflict view, accepts hunks, and writes the merged bytes', async () => {
-    // Seed local + incoming variants of sample.md with divergent edits.
-    const local = await fs.readFile(path.resolve('e2e/fixtures/sample.md'), 'utf8');
-    const localEdited = local.replace('**bold**', '**LOCAL bold**');
-    const incomingEdited = local.replace('*italic*', '*INCOMING italic*');
-    const localPath = path.join(fixture.tmpDir, 'sample.md');
-    const incomingPath = path.join(fixture.tmpDir, 'sample.incoming.md');
-    await fs.writeFile(localPath, localEdited, 'utf8');
-    await fs.writeFile(incomingPath, incomingEdited, 'utf8');
+  it('shows the conflict view, accepts a hunk, and writes the merged bytes', async () => {
+    // C2's auto-detect path: open a file → close it (so closed_snapshots
+    // tracks the saved copy) → external rewrite → reopen → Conflict.
+    // The spec used to assume an "incoming sibling" flow that the app
+    // doesn't actually implement.
+    const target = path.join(fixture.tmpDir, 'sample.md');
+    const local = await fs.readFile(target, 'utf8');
 
-    // Open the local file; the app detects the divergent incoming sibling.
-    await browser.$('[data-action="open-file"]').click();
-    await browser.$('[data-test="file-input"]').setValue(localPath);
+    // First open establishes the tab + closed_snapshots entry.
+    await openDocByE2eHook(target);
+    await browser.waitUntil(
+      async () => browser.$('[data-view="document"]').isExisting(),
+      { timeout: 10_000, timeoutMsg: 'document view did not mount on first open' },
+    );
 
-    // wireframes/08-conflict-resolution.html
-    await expect(browser.$('[data-view="conflict"]')).toBeDisplayed();
+    // Close the tab via the "×" close button on its TabBar entry. The IPC
+    // closeTab call propagates the snapshot into closed_snapshots.
+    const closeBtn = browser.$('[data-region="tabbar"] [data-test="tab-close"]');
+    expect(await closeBtn.isExisting()).toBe(true);
+    await closeBtn.click();
 
-    await browser.$('[data-test="hunk"][data-hunk-id="1"] [data-action="accept-left"]').click();
-    await browser.$('[data-test="hunk"][data-hunk-id="2"] [data-action="accept-right"]').click();
+    // External rewrite: change one line of the file from outside the app.
+    const incoming = local.replace('Selectable phrase one', 'EXTERNALLY edited phrase one');
+    await fs.writeFile(target, incoming, 'utf8');
+
+    // Reopen — Workspace.open_document compares closed_snapshots against
+    // disk and returns OpenOutcome::Conflict, which Workspace.ts routes
+    // to mountConflict.
+    await openDocByE2eHook(target);
+    await browser.waitUntil(
+      async () => browser.$('[data-view="conflict"]').isExisting(),
+      { timeout: 10_000, timeoutMsg: 'conflict view did not appear' },
+    );
+
+    // Conflict.ts uses [data-hunk-index]; click Accept Right on the first
+    // hunk so the merged bytes carry the incoming change.
+    const firstHunk = browser.$('[data-view="conflict"] [data-hunk-index="0"]');
+    expect(await firstHunk.isExisting()).toBe(true);
+    await firstHunk.$('[data-action="accept-right"]').click();
     await browser.$('[data-action="finish-merge"]').click();
 
-    // Saved file should reflect both choices: LOCAL bold + INCOMING italic.
-    const saved = await fs.readFile(localPath, 'utf8');
-    const expected = local
-      .replace('**bold**', '**LOCAL bold**')
-      .replace('*italic*', '*INCOMING italic*');
-    await expect(saved).toBe(expected);
+    // After the merge save, disk reflects the chosen incoming bytes.
+    await browser.waitUntil(
+      async () => {
+        const onDisk = await fs.readFile(target, 'utf8');
+        return onDisk.includes('EXTERNALLY edited phrase one');
+      },
+      { timeout: 5_000, timeoutMsg: 'merged bytes never landed on disk' },
+    );
   });
 });

@@ -1,11 +1,6 @@
-// CRDT-only behavior: Phase 1's plain-JSON sidecar cannot merge two divergent
-// histories (newest-mtime-wins would silently drop one side's reply). The spec
-// stays RED through Phase 1/2 and turns green at C1 (Automerge sidecar) which
-// is the first phase that can union both replies on t-1.
-
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { prepareFixture } from './helpers/app';
+import { prepareFixture, openDocByE2eHook, importCommentsByE2eHook } from './helpers/app';
 
 describe('Auto-merge two divergent sidecar histories', () => {
   let fixture: Awaited<ReturnType<typeof prepareFixture>>;
@@ -16,13 +11,15 @@ describe('Auto-merge two divergent sidecar histories', () => {
   after(async () => { await fixture.cleanup(); });
 
   it('unions both divergent replies on t-1 and surfaces the net-new t-3 thread', async () => {
-    await browser.$('[data-action="open-file"]').click();
-    const filePath = await browser.uploadFile(path.resolve('e2e/fixtures/sample.md'));
-    await browser.$('[data-test="file-input"]').setValue(filePath);
+    const target = path.join(fixture.tmpDir, 'sample.md');
+    await openDocByE2eHook(target);
+    await browser.waitUntil(
+      async () => browser.$('[data-view="document"]').isExisting(),
+      { timeout: 10_000, timeoutMsg: 'document view did not mount' },
+    );
 
-    // Simulate an "incoming" sidecar: a sibling copy with a divergent reply on
-    // t-1 plus a net-new thread t-3. Newest-mtime-wins would drop one of the
-    // t-1 replies, so the spec only passes once a CRDT merge is in place.
+    // Write the incoming sidecar — schema_version 1 lets us hand-write
+    // it via JSON; load_sidecar migrates v1 in-memory before merge.
     const incoming = {
       schema_version: 1,
       threads: [
@@ -59,16 +56,39 @@ describe('Auto-merge two divergent sidecar histories', () => {
     const incomingPath = path.join(fixture.tmpDir, 'incoming.md.comments.json');
     await fs.writeFile(incomingPath, JSON.stringify(incoming) + '\n', 'utf8');
 
-    // Trigger Import.
-    await browser.$('[data-action="import-comments"]').click();
-    await browser.$('[data-test="import-path"]').setValue(incomingPath);
-    await browser.$('[data-action="confirm-import"]').click();
+    // Discover the active tab id from the TabBar.
+    const tabId = (await browser
+      .$('[data-region="tabbar"] [data-test="tab"]')
+      .getAttribute('data-tab-id')) ?? '';
+    expect(tabId).toBeTruthy();
 
-    // Sidebar shows three threads; t-1 has two replies (the local + incoming).
-    const threads = await browser.$$('[data-view="sidebar-comments"] [data-test="thread"]');
-    await expect(threads).toBeElementsArrayOfSize(3);
+    await importCommentsByE2eHook(tabId, incomingPath);
 
-    const t1Replies = await browser.$$('[data-test="thread"][data-thread-id="t-1"] [data-test="comment"]');
-    await expect(t1Replies).toBeElementsArrayOfSize(2);
+    // Wait for the post-import refresh to land in the sidebar.
+    await browser.waitUntil(
+      async () => {
+        const threads = await browser.$$(
+          '[data-view="sidebar-comments"] [data-test="thread"]',
+        );
+        return threads.length === 3;
+      },
+      { timeout: 5_000, timeoutMsg: 'expected 3 threads after merge' },
+    ).catch(async () => {
+      const dump = await browser.execute(() => {
+        const ts = Array.from(
+          document.querySelectorAll('[data-view="sidebar-comments"] [data-test="thread"]'),
+        );
+        return ts.map((t) => (t as HTMLElement).getAttribute('data-thread-id'));
+      });
+      throw new Error(`expected 3 threads, got: ${JSON.stringify(dump)}`);
+    });
+
+    // t-1 should now have 2 comments (the local "Looks good" + the
+    // incoming "Incoming reply on t-1"). The post-merge union dedupes
+    // by comment id and sorts by created_at.
+    const t1Comments = await browser.$$(
+      '[data-test="thread"][data-thread-id="t-1"] [data-test="thread-comment"]',
+    );
+    expect(t1Comments.length).toBe(2);
   });
 });
