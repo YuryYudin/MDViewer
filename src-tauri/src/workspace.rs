@@ -151,8 +151,9 @@ impl Workspace {
 
         // C2: a closed-and-reopened path with a divergent on-disk copy
         // returns Conflict before the new tab is even constructed. The
-        // snapshot is consumed (removed) — the user resolves via the
-        // Conflict view, which calls save_document and re-primes it.
+        // snapshot stays in `closed_snapshots` until the user resolves via
+        // the Conflict view; the resulting save_document call overwrites
+        // it via prime_saved_snapshot.
         if let Some(prior) = self.closed_snapshots.get(&canonical).cloned() {
             if prior != source {
                 let id = format!(
