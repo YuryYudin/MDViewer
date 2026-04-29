@@ -789,9 +789,9 @@ checksum = "56254986775e3233ffa9c4d7d3faaf6d36a2c09d30b20687e9f88bc8bafc16c8"
 
 [[package]]
 name = "diff-match-patch-rs"
-version = "0.4.1"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39f62c98194c6cea6c29c5db77d3c4908fb48bfaea6994bbeffc2336cfb2c1c7"
+checksum = "f1e836eb966678daed8789e698dbdb1016a260c3cdaca6172585e13580c4e4be"
 dependencies = [
  "chrono",
  "percent-encoding",
