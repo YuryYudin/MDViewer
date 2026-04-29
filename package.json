@@ -10,6 +10,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "build:e2e": "cd src-tauri && cargo build --features e2e",
+    "pretest:e2e": "npm run build:e2e",
     "test:e2e": "wdio run wdio.conf.ts",
     "gen:types": "cd src-tauri && cargo run --bin export_types --quiet",
     "predev": "npm run gen:types",

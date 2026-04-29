@@ -133,6 +133,13 @@ export const config: Options.Testrunner = {
   ],
 
   onPrepare: async () => {
+    // Belt-and-suspenders: nuke any stragglers from prior runs before we
+    // start. tauri-wd's per-session cleanup is best-effort (a panicked
+    // worker can leave the spawned mdviewer alive) and accumulating
+    // WebView windows confuse the user.
+    try { spawn('pkill', ['-9', '-f', 'mdviewer$']).on('error', () => {}); } catch {}
+    try { spawn('pkill', ['-9', '-f', 'tauri-wd']).on('error', () => {}); } catch {}
+
     // Tauri's debug build always tries to load `devUrl` (localhost:1420)
     // before falling back to the embedded frontend bundle. On macOS the
     // fallback never fires, so we have to start Vite ourselves before the
@@ -157,9 +164,23 @@ export const config: Options.Testrunner = {
     });
     await waitForDriver(4444, 10_000);
   },
+  // Per-spec hook: after each session ends, wdio sends DELETE /session
+  // which tells tauri-wd to kill the child. That syscall is async-best-
+  // effort — under load it can return before SIGKILL actually reaps the
+  // mdviewer PID, which is how stale windows pile up. Force-clean here.
+  afterSession: async () => {
+    await new Promise<void>((resolve) => {
+      const p = spawn('pkill', ['-9', '-f', 'target/debug/mdviewer$']);
+      p.on('exit', () => resolve());
+      p.on('error', () => resolve());
+    });
+  },
   onComplete: () => {
     driver?.kill('SIGTERM');
     vite?.kill('SIGTERM');
+    // Final sweep — any straggler from the last spec gets killed here.
+    try { spawn('pkill', ['-9', '-f', 'mdviewer$']).on('error', () => {}); } catch {}
+    try { spawn('pkill', ['-9', '-f', 'tauri-wd']).on('error', () => {}); } catch {}
     try { rmSync(dataDir, { recursive: true, force: true }); } catch {}
   },
 

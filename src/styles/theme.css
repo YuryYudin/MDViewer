@@ -1,45 +1,97 @@
 /*
  * Theme variables. A single class on <body> (`theme-dark`) re-themes every
- * surface. The Settings → consumer map says theme switches must be honored
- * everywhere; a class-on-body approach is the only way that scales without
- * touching every element.
+ * surface. Variable names mirror the wireframes' names so the prototype CSS
+ * and the running app stay legible from the same vocabulary; the legacy
+ * names (--bg-elev-1, --fg) are retained as aliases for views still
+ * importing them.
  */
 
 :root {
-  --bg: #ffffff;
-  --fg: #1a1a1a;
-  --accent: #1d6fe5;
-  --bg-elev-1: #f7f7f7;
-  --bg-elev-2: #efefef;
-  --border: #e0e0e0;
-  --text-faint: #6a6a6a;
+  /* Surfaces */
+  --bg: #f7f7f5;
+  --surface: #ffffff;
+  --surface-2: #fafaf8;
+  --bg-elev-1: var(--surface-2);
+  --bg-elev-2: var(--surface);
+
+  /* Borders */
+  --border: #d8d8d4;
+  --border-strong: #b8b8b2;
+
+  /* Text */
+  --text: #1c1c1a;
+  --fg: var(--text);
+  --text-dim: #6a6a64;
+  --text-faint: #9a9a92;
+
+  /* Accents and feedback */
+  --accent: #335cff;
+  --accent-soft: #e6ecff;
+  --highlight: #fff5cc;
+  --highlight-strong: #ffe680;
+  --resolved: #d8eccd;
+  --warn-bg: #fff1e0;
+  --warn-border: #d99a4d;
   --danger: #c0392b;
+
+  /* User-color palette (avatar chips) */
+  --user-amber: #c98a2b;
+  --user-teal: #2b8a8a;
+  --user-rose: #b54b6e;
+
+  /* Type */
   --font-size: 14px;
   --line-height: 1.5;
   --density-pad: 12px;
+  --sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 body.theme-dark {
-  --bg: #1a1a1a;
-  --fg: #e6e6e6;
-  --accent: #5fa3ff;
-  --bg-elev-1: #2a2a2a;
-  --bg-elev-2: #353535;
-  --border: #3a3a3a;
-  --text-faint: #9a9a9a;
+  --bg: #161614;
+  --surface: #1f1f1d;
+  --surface-2: #252522;
+  --bg-elev-1: var(--surface-2);
+  --bg-elev-2: var(--surface);
+  --border: #34342f;
+  --border-strong: #4b4b44;
+  --text: #ececea;
+  --fg: var(--text);
+  --text-dim: #b0b0a8;
+  --text-faint: #7a7a72;
+  --accent: #7e9bff;
+  --accent-soft: #1f2a4f;
+  --highlight: #5a4815;
+  --highlight-strong: #806115;
+  --resolved: #2a4a2c;
+  --warn-bg: #4a3618;
+  --warn-border: #b07a3a;
   --danger: #ff6b5b;
+  --user-amber: #d49a3a;
+  --user-teal: #4ab0b0;
+  --user-rose: #d36e8e;
 }
 
 @media (prefers-color-scheme: dark) {
   body.theme-follow-system:not(.theme-light) {
-    --bg: #1a1a1a;
-    --fg: #e6e6e6;
-    --accent: #5fa3ff;
-    --bg-elev-1: #2a2a2a;
-    --bg-elev-2: #353535;
-    --border: #3a3a3a;
-    --text-faint: #9a9a9a;
+    --bg: #161614;
+    --surface: #1f1f1d;
+    --surface-2: #252522;
+    --bg-elev-1: var(--surface-2);
+    --bg-elev-2: var(--surface);
+    --border: #34342f;
+    --border-strong: #4b4b44;
+    --text: #ececea;
+    --fg: var(--text);
+    --text-dim: #b0b0a8;
+    --text-faint: #7a7a72;
+    --accent: #7e9bff;
+    --accent-soft: #1f2a4f;
+    --highlight: #5a4815;
+    --highlight-strong: #806115;
+    --resolved: #2a4a2c;
+    --warn-bg: #4a3618;
+    --warn-border: #b07a3a;
     --danger: #ff6b5b;
   }
 }
