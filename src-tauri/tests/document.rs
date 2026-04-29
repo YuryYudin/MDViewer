@@ -1,4 +1,43 @@
-use mdviewer_lib::document::{render_markdown, RenderOptions};
+use mdviewer_lib::document::{render_markdown, save_document, RenderOptions};
+use std::fs;
+use tempfile::TempDir;
+
+#[test]
+fn save_document_writes_atomically_and_returns_hash() {
+    let tmp = TempDir::new().unwrap();
+    let p = tmp.path().join("doc.md");
+    let r = save_document(&p, b"hello").unwrap();
+    assert_eq!(fs::read(&p).unwrap(), b"hello");
+    assert_eq!(r.bytes_written, 5);
+    assert!(r.content_hash != 0);
+    // The temp file used for atomic-rename must not be left on disk.
+    assert!(!tmp.path().join("doc.md.tmp").exists());
+}
+
+#[test]
+fn save_document_extensionless_path_uses_tmp_suffix() {
+    // Path without an extension exercises the `unwrap_or_else(|| "tmp".into())`
+    // branch in the temp-name builder.
+    let tmp = TempDir::new().unwrap();
+    let p = tmp.path().join("notes");
+    let r = save_document(&p, b"contents").unwrap();
+    assert_eq!(fs::read(&p).unwrap(), b"contents");
+    assert_eq!(r.bytes_written, 8);
+    assert!(!tmp.path().join("notes.tmp").exists());
+}
+
+#[test]
+fn save_document_overwrites_existing_file() {
+    // Verify that a save replaces existing bytes (the rename-over-existing
+    // path) and computes a hash that differs from the original contents.
+    let tmp = TempDir::new().unwrap();
+    let p = tmp.path().join("doc.md");
+    fs::write(&p, b"old contents").unwrap();
+    let r1 = save_document(&p, b"old contents").unwrap();
+    let r2 = save_document(&p, b"new contents").unwrap();
+    assert_eq!(fs::read(&p).unwrap(), b"new contents");
+    assert_ne!(r1.content_hash, r2.content_hash);
+}
 
 #[test]
 fn renders_gfm_tables_and_tasklists() {

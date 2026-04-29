@@ -12,7 +12,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const invoke = vi.fn();
 vi.mock('@tauri-apps/api/core', () => ({ invoke: (...args: unknown[]) => invoke(...args) }));
 
-import { tauriIpc } from '../src/ipc';
+import { tauriIpc, type Ipc } from '../src/ipc';
 import type { Anchor, Settings } from '../src/ipc';
 
 const dummyAnchor: Anchor = { start: 0, end: 4, exact: 'abcd', prefix: '', suffix: '' };
@@ -127,5 +127,40 @@ describe('tauriIpc', () => {
       tabId: 'tab-1',
       anchor: dummyAnchor,
     });
+  });
+
+  it('saveDocument invokes save_document with { path, contents }', async () => {
+    await tauriIpc.saveDocument('/x.md', 'hello');
+    expect(invoke).toHaveBeenCalledWith('save_document', {
+      path: '/x.md',
+      contents: 'hello',
+    });
+  });
+
+  it('exposes every Phase-1+B3 method as a function', () => {
+    // Pinned Ipc shape so a future rename / dropped method fails loudly here
+    // before drift propagates to view modules. C2 will extend with `diffMd`,
+    // C3 with `exportDocument`.
+    const required: (keyof Ipc)[] = [
+      'appInfo',
+      'getSettings',
+      'setSettings',
+      'listRecents',
+      'openDocument',
+      'closeTab',
+      'activateTab',
+      'listOpenDocuments',
+      'listThreads',
+      'createThread',
+      'postReply',
+      'resolveThread',
+      'renderMarkdown',
+      'resolveAnchor',
+      'saveDocument',
+    ];
+    for (const m of required) {
+      expect(typeof tauriIpc[m]).toBe('function');
+    }
+    expect(required.length).toBe(15);
   });
 });

@@ -1,6 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-//! Tauri binary entry: registers all 13 Phase-1 IPC commands plus `app_info`.
+//! Tauri binary entry: registers all Phase-1 IPC commands (`app_info` plus
+//! 13 workspace/comments/render commands) and the Phase-2 `save_document`
+//! command added in B3 — 15 total at this point.
 //!
 //! Each handler is a thin shim that locks the `Workspace` mutex and delegates
 //! to a method on `Workspace` (or one of its sub-stores). No business logic
@@ -198,6 +200,31 @@ fn render_markdown(source: String) -> RenderResult {
 }
 
 #[tauri::command]
+fn save_document(
+    state: State<'_, Ws>,
+    watcher: State<'_, Mutex<Watcher>>,
+    path: PathBuf,
+    contents: String,
+) -> Result<(), String> {
+    // Write atomically and grab the content hash. Self-write recording must
+    // happen BEFORE the workspace refresh re-reads the file — notify's
+    // worker thread can fire between the rename and our suppression entry,
+    // so we need the entry primed as soon as the bytes hit disk.
+    let r = mdviewer_lib::document::save_document(&path, contents.as_bytes())
+        .map_err(|e| e.to_string())?;
+    watcher
+        .lock()
+        .map_err(|e| e.to_string())?
+        .record_self_write(&path, r.content_hash);
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .refresh_tab(&path)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 fn resolve_anchor(
     state: State<'_, Ws>,
     tab_id: String,
@@ -294,6 +321,7 @@ fn main() {
             resolve_thread,
             render_markdown,
             resolve_anchor,
+            save_document,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -234,6 +234,43 @@ fn resolve_anchor_for_tab_reads_threshold_from_settings() {
 }
 
 #[test]
+fn refresh_tab_reloads_source_render_and_snapshot_after_save() {
+    // B3: after `save_document` writes new bytes, the IPC handler calls
+    // `refresh_tab` so the in-memory source/render/last_saved_snapshot stay
+    // consistent with disk. This test exercises that contract directly.
+    use mdviewer_lib::document::save_document;
+    let (mut ws, tmp) = fresh();
+    let md = tmp.path().join("doc.md");
+    fs::write(&md, "# Old heading").unwrap();
+    let opened = open_doc(&mut ws, &md);
+    assert!(opened.html.contains("Old heading"));
+
+    save_document(&md, b"# Brand new heading").unwrap();
+    ws.refresh_tab(&md).unwrap();
+
+    // The cached render must reflect the new bytes.
+    let docs = ws.list_open_documents();
+    let tab = docs.iter().find(|t| t.id == opened.tab_id).unwrap();
+    assert!(tab.render.html.contains("Brand new heading"));
+    assert_eq!(tab.source, "# Brand new heading");
+    assert_eq!(tab.last_saved_snapshot.as_deref(), Some("# Brand new heading"));
+}
+
+#[test]
+fn refresh_tab_errors_when_path_has_no_open_tab() {
+    // The "no open tab" branch — refresh_tab is called with a path that no
+    // tab maps to. The error message should mention the path.
+    let (mut ws, tmp) = fresh();
+    let stray = tmp.path().join("nope.md");
+    fs::write(&stray, "x").unwrap();
+    let err = ws.refresh_tab(&stray).unwrap_err();
+    assert!(
+        err.to_string().contains("no open tab"),
+        "expected no-open-tab error, got {err}"
+    );
+}
+
+#[test]
 fn opening_md_with_existing_sidecar_loads_all_threads_anchored() {
     // Success criterion 5: "hand a counterpart their .md plus its sidecar,
     // and when the counterpart opens the .md all existing threads appear

@@ -54,6 +54,13 @@ export interface Ipc {
   resolveThread(tabId: string, threadId: string): Promise<void>;
   renderMarkdown(source: string): Promise<RenderResult>;
   resolveAnchor(tabId: string, anchor: Anchor): Promise<ResolveOutcome>;
+  /**
+   * Atomically write `contents` to `path` (B3). The Rust handler also
+   * records a self-write suppression entry on the watcher and refreshes
+   * the matching tab's cached render — callers don't need to follow up
+   * with a separate openDocument refresh.
+   */
+  saveDocument(path: string, contents: string): Promise<void>;
 }
 
 export const tauriIpc: Ipc = {
@@ -74,4 +81,5 @@ export const tauriIpc: Ipc = {
   resolveThread: (tabId, threadId) => invoke('resolve_thread', { tabId, threadId }),
   renderMarkdown: (source) => invoke('render_markdown', { source }),
   resolveAnchor: (tabId, anchor) => invoke('resolve_anchor', { tabId, anchor }),
+  saveDocument: (path, contents) => invoke<void>('save_document', { path, contents }),
 };

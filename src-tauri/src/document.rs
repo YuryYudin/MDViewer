@@ -18,14 +18,66 @@
 //! `SyntaxSet` and `ThemeSet` are loaded once via `OnceLock` so first render
 //! pays the multi-millisecond load cost and subsequent renders amortize it.
 
+use crate::watcher::quick_hash;
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use std::fmt::Write as _;
+use std::path::Path;
 use std::sync::OnceLock;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{Theme, ThemeSet};
 use syntect::html::{styled_line_to_highlighted_html, IncludeBackground};
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
+
+/// Result of an atomic `save_document` call.
+///
+/// `content_hash` is the [`quick_hash`] of the bytes that landed on disk —
+/// the same value the watcher uses for self-write suppression. `bytes_written`
+/// echoes the input length so callers can surface "Saved 1.2 KB" UI without
+/// a follow-up `metadata()` call.
+#[derive(Debug, Clone, Copy)]
+pub struct SaveResult {
+    pub bytes_written: usize,
+    pub content_hash: u64,
+}
+
+/// Atomically write `contents` to `path`.
+///
+/// The crash-safe pattern: write to `<path>.tmp`, fsync, then `rename` over
+/// the target. A crash between `create` and `rename` leaves the original
+/// file intact; a crash between `rename` and the next operation has already
+/// committed the new bytes.
+///
+/// Callers (specifically B3's `save_document` IPC handler) must call
+/// [`crate::watcher::Watcher::record_self_write`] with the returned
+/// `content_hash` BEFORE this function is invoked again — the suppression
+/// list needs to be primed before notify's worker thread observes the
+/// rename. In practice the IPC handler records the hash immediately after
+/// this returns; notify's event delivery is fast but not faster than a
+/// mutex acquisition on the same thread.
+pub fn save_document(path: &Path, contents: &[u8]) -> std::io::Result<SaveResult> {
+    use std::io::Write;
+    // Build a sibling `<path>.tmp` (or `<path>.<ext>.tmp` when the original
+    // has an extension). `with_extension` would *replace* the extension, so
+    // we splice manually to keep the original on the temp name. That makes
+    // it trivial to spot abandoned temp files in case of a crash.
+    let tmp = path.with_extension(
+        path.extension()
+            .and_then(|s| s.to_str())
+            .map(|e| format!("{e}.tmp"))
+            .unwrap_or_else(|| "tmp".into()),
+    );
+    {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(contents)?;
+        f.sync_all()?;
+    }
+    std::fs::rename(&tmp, path)?;
+    Ok(SaveResult {
+        bytes_written: contents.len(),
+        content_hash: quick_hash(contents),
+    })
+}
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, ts_rs::TS)]
 #[ts(export)]

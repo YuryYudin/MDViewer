@@ -154,6 +154,36 @@ impl Workspace {
         Ok(OpenOutcome::Document(result))
     }
 
+    /// Re-read `path` from disk, re-render with the current settings, and
+    /// replace the cached `source` / `render` / `last_saved_snapshot` on the
+    /// matching tab. Called from B3's `save_document` IPC handler so that
+    /// after the user's bytes hit disk the in-memory tab stays in sync —
+    /// otherwise A10's anchor resolution would still be working off the
+    /// pre-save snapshot.
+    ///
+    /// Returns an error if no tab is open for `path`. The tab is located by
+    /// canonical path (matching how `open_document` stores it).
+    pub fn refresh_tab(&mut self, path: &Path) -> Result<()> {
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let source = std::fs::read_to_string(&canonical)
+            .with_context(|| format!("read {:?}", canonical))?;
+        let s = self.settings.get();
+        let opts = RenderOptions {
+            syntax_highlighting: s.editor.syntax_highlighting,
+            mermaid_enabled: s.editor.mermaid_enabled,
+        };
+        let render = render_markdown(&source, &opts);
+        let tab = self
+            .tabs
+            .values_mut()
+            .find(|t| t.path == canonical)
+            .ok_or_else(|| anyhow::anyhow!("no open tab for path {:?}", canonical))?;
+        tab.source = source.clone();
+        tab.render = render;
+        tab.last_saved_snapshot = Some(source);
+        Ok(())
+    }
+
     pub fn close_tab(&mut self, id: &str) -> Result<()> {
         self.tabs.remove(id);
         self.order.retain(|x| x != id);

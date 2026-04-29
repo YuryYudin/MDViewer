@@ -7,6 +7,7 @@
 //! File watching is inherently flaky on some platforms — we use generous
 //! 2-second timeouts when waiting for events to land.
 
+use mdviewer_lib::document::save_document;
 use mdviewer_lib::settings::ExternalChangeBehavior;
 use mdviewer_lib::watcher::{
     quick_hash, ExternalChange, ExternalChangeEvent, Watcher, WatchedKind,
@@ -155,4 +156,50 @@ fn record_self_write_does_not_suppress_other_paths() {
 fn quick_hash_is_deterministic() {
     assert_eq!(quick_hash(b"hello"), quick_hash(b"hello"));
     assert_ne!(quick_hash(b"hello"), quick_hash(b"world"));
+}
+
+/// End-to-end: a `save_document` call followed by `record_self_write` (the
+/// exact ordering B3's IPC handler uses) must NOT surface as an
+/// `ExternalChange::Reload` event. This is the contract that prevents the
+/// editor from echoing every save back to itself as a reload prompt.
+#[test]
+fn save_document_does_not_trigger_reload() {
+    let tmp = TempDir::new().unwrap();
+    let md = tmp.path().join("doc.md");
+    fs::write(&md, "v1").unwrap();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut w = Watcher::new(tx).unwrap();
+    w.set_external_change_behavior(ExternalChangeBehavior::Reload);
+    w.watch_md(&md).unwrap();
+
+    let r = save_document(&md, b"v2").unwrap();
+    w.record_self_write(&md, r.content_hash);
+
+    // No event should reach us within the suppression window.
+    assert!(rx.recv_timeout(Duration::from_millis(500)).is_err());
+}
+
+/// After a self-saved write is recorded, an unrelated *external* write to the
+/// same path (different bytes -> different hash) must still surface as a
+/// reload event. The suppression list is content-hash-keyed precisely so a
+/// second concurrent edit isn't silently dropped.
+#[test]
+fn external_write_after_save_still_triggers() {
+    let tmp = TempDir::new().unwrap();
+    let md = tmp.path().join("doc.md");
+    fs::write(&md, "v1").unwrap();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut w = Watcher::new(tx).unwrap();
+    w.set_external_change_behavior(ExternalChangeBehavior::Reload);
+    w.watch_md(&md).unwrap();
+
+    let r = save_document(&md, b"v2").unwrap();
+    w.record_self_write(&md, r.content_hash);
+
+    // External write — different content, distinct hash, must not be suppressed.
+    fs::write(&md, "external write").unwrap();
+    let ev = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(ev.action, ExternalChange::Reload);
 }
