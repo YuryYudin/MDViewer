@@ -27,6 +27,7 @@ export type {
   HunkKind,
   ExportResult,
   RecentEntry,
+  TabSummary,
 } from './types-generated';
 
 import type {
@@ -41,6 +42,7 @@ import type {
   Hunk,
   ExportResult,
   RecentEntry,
+  TabSummary,
 } from './types-generated';
 
 // `Anchor` is the canonical name across the wire. Older planning notes used
@@ -52,7 +54,12 @@ export interface Ipc {
   openDocument(path: string): Promise<OpenOutcome>;
   closeTab(id: string): Promise<void>;
   activateTab(id: string): Promise<void>;
-  listOpenDocuments(): Promise<string[]>;
+  /**
+   * Returns one entry per open tab with both the opaque id (for activate /
+   * close) and the on-disk path (for the tab label). Returning bare ids
+   * was the regression where tab titles rendered the UUID.
+   */
+  listOpenDocuments(): Promise<TabSummary[]>;
   listRecents(): Promise<RecentEntry[]>;
   getSettings(): Promise<Settings>;
   setSettings(s: Settings): Promise<void>;

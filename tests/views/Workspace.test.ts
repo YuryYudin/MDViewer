@@ -24,8 +24,13 @@ function makeIpc(openIds: string[] = []): Ipc {
     { path: '/docs/r1.md', mtime: null },
     { path: '/docs/r2.md', mtime: null },
   ];
+  // Tests pass bare ids for brevity — this fan-out builds the {id, path}
+  // pairs the IPC actually returns. Using `/docs/<id>.md` keeps the path
+  // distinct from the id so a regression to "render id as label" would
+  // surface in the basename mismatch.
+  const summaries = openIds.map((id) => ({ id, path: `/docs/${id}.md` }));
   return {
-    listOpenDocuments: vi.fn().mockResolvedValue(openIds),
+    listOpenDocuments: vi.fn().mockResolvedValue(summaries),
     listRecents: vi.fn().mockResolvedValue(recents),
     openDocument: vi
       .fn()
@@ -83,11 +88,38 @@ describe('Workspace', () => {
     expect(body.querySelector('[data-view="start"]')).toBeNull();
   });
 
+  it('clicking × on the only open tab calls closeTab and falls back to StartPage', async () => {
+    // Regression: TabBar dispatched closeTab but the workspace never
+    // repainted, so the closed tab stayed visible and StartPage never
+    // came back. Wiring onAfterChange → refresh() in the TabBar mount
+    // call is what makes the strip drop the row.
+    const root = document.createElement('div');
+    let ids: string[] = ['t-1'];
+    const ipc = makeIpc();
+    (ipc.listOpenDocuments as any).mockImplementation(() =>
+      Promise.resolve(ids.map((id) => ({ id, path: `/docs/${id}.md` }))),
+    );
+    // closeTab on the Rust side removes the tab — emulate by shrinking ids.
+    (ipc.closeTab as any).mockImplementation(async (id: string) => {
+      ids = ids.filter((x) => x !== id);
+    });
+    await mountWorkspace(root, ipc);
+    expect(root.querySelector('[data-view="document"]')).toBeTruthy();
+
+    (root.querySelector('[data-test="tab-close"]') as HTMLElement).click();
+    // Two ticks: closeTab resolves, onAfterChange awaits, refresh runs.
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(ipc.closeTab).toHaveBeenCalledWith('t-1');
+    expect(root.querySelector('[data-view="document"]')).toBeNull();
+    expect(root.querySelector('[data-view="start"]')).toBeTruthy();
+  });
+
   it('refresh() picks up new tabs and replaces StartPage with Document', async () => {
     const root = document.createElement('div');
     let ids: string[] = [];
     const ipc = makeIpc();
-    (ipc.listOpenDocuments as any).mockImplementation(() => Promise.resolve(ids));
+    (ipc.listOpenDocuments as any).mockImplementation(() => Promise.resolve(ids.map((id) => ({ id, path: `/docs/${id}.md` }))));
     const handle = await mountWorkspace(root, ipc);
     expect(root.querySelector('[data-view="start"]')).toBeTruthy();
     ids = ['t1'];
@@ -102,7 +134,7 @@ describe('Workspace', () => {
     const root = document.createElement('div');
     let ids: string[] = [];
     const ipc = makeIpc();
-    (ipc.listOpenDocuments as any).mockImplementation(() => Promise.resolve(ids));
+    (ipc.listOpenDocuments as any).mockImplementation(() => Promise.resolve(ids.map((id) => ({ id, path: `/docs/${id}.md` }))));
     const handle = await mountWorkspace(root, ipc);
     handle.setActive({
       kind: 'document',
@@ -139,7 +171,7 @@ describe('Workspace', () => {
     const root = document.createElement('div');
     let ids: string[] = ['t-active'];
     const ipc = makeIpc();
-    (ipc.listOpenDocuments as any).mockImplementation(() => Promise.resolve(ids));
+    (ipc.listOpenDocuments as any).mockImplementation(() => Promise.resolve(ids.map((id) => ({ id, path: `/docs/${id}.md` }))));
     const handle = await mountWorkspace(root, ipc);
     handle.setActive({
       kind: 'document',
@@ -191,7 +223,7 @@ describe('Workspace', () => {
     const root = document.createElement('div');
     let ids: string[] = ['t-1'];
     const ipc = makeIpc();
-    (ipc.listOpenDocuments as any).mockImplementation(() => Promise.resolve(ids));
+    (ipc.listOpenDocuments as any).mockImplementation(() => Promise.resolve(ids.map((id) => ({ id, path: `/docs/${id}.md` }))));
     const handle = await mountWorkspace(root, ipc);
     handle.setActive({
       kind: 'document',
@@ -218,7 +250,7 @@ describe('Workspace', () => {
     document.body.appendChild(root);
     let ids: string[] = ['t-1'];
     const ipc = makeIpc();
-    (ipc.listOpenDocuments as any).mockImplementation(() => Promise.resolve(ids));
+    (ipc.listOpenDocuments as any).mockImplementation(() => Promise.resolve(ids.map((id) => ({ id, path: `/docs/${id}.md` }))));
     const handle = await mountWorkspace(root, ipc);
     handle.setActive({
       kind: 'document',
@@ -252,7 +284,7 @@ describe('Workspace', () => {
     const root = document.createElement('div');
     let ids: string[] = ['t-1'];
     const ipc = makeIpc();
-    (ipc.listOpenDocuments as any).mockImplementation(() => Promise.resolve(ids));
+    (ipc.listOpenDocuments as any).mockImplementation(() => Promise.resolve(ids.map((id) => ({ id, path: `/docs/${id}.md` }))));
     (ipc.reloadDocument as any) = vi.fn().mockResolvedValue({
       tab_id: 't-1',
       path: '/docs/x.md',
@@ -280,7 +312,7 @@ describe('Workspace', () => {
     const root = document.createElement('div');
     let ids: string[] = ['t-1'];
     const ipc = makeIpc();
-    (ipc.listOpenDocuments as any).mockImplementation(() => Promise.resolve(ids));
+    (ipc.listOpenDocuments as any).mockImplementation(() => Promise.resolve(ids.map((id) => ({ id, path: `/docs/${id}.md` }))));
     (ipc.reloadDocument as any) = vi.fn().mockRejectedValue(new Error('disk gone'));
     const handle = await mountWorkspace(root, ipc);
     handle.setActive({

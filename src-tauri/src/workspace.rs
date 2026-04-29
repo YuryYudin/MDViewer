@@ -25,6 +25,17 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+/// Wire-shaped projection of `Tab` for `list_open_documents`. The frontend
+/// needs both the opaque id (for activate/close) and the on-disk path (for
+/// the tab label). Returning bare ids was the regression where tab labels
+/// rendered the UUID instead of the filename.
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct TabSummary {
+    pub id: String,
+    pub path: PathBuf,
+}
+
 pub struct Tab {
     pub id: String,
     pub path: PathBuf,

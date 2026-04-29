@@ -60,6 +60,10 @@ fn export_all() -> Result<String, Box<dyn std::error::Error>> {
     buf.push_str("\n");
     buf.push_str(&mdviewer_lib::workspace::OpenOutcome::export_to_string().unwrap());
     buf.push_str("\n");
+    // TabSummary — list_open_documents return shape. Emits {id, path}; the
+    // frontend used to receive bare ids and surface them in tab labels.
+    buf.push_str(&mdviewer_lib::workspace::TabSummary::export_to_string().unwrap());
+    buf.push_str("\n");
 
     // C2: conflict-diff hunk types consumed by Conflict.ts.
     buf.push_str(&mdviewer_lib::conflict::HunkKind::export_to_string().unwrap());

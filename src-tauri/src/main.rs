@@ -44,7 +44,7 @@ use mdviewer_lib::{
     document::{self, RenderOptions, RenderResult},
     settings::Settings,
     watcher::{ExternalChangeEvent, Watcher},
-    workspace::{ExportResult, OpenOpts, OpenOutcome, Workspace},
+    workspace::{ExportResult, OpenOpts, OpenOutcome, TabSummary, Workspace},
     BuildInfo,
 };
 use std::path::Path;
@@ -123,13 +123,16 @@ fn activate_tab(state: State<'_, Ws>, id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn list_open_documents(state: State<'_, Ws>) -> Vec<String> {
+fn list_open_documents(state: State<'_, Ws>) -> Vec<TabSummary> {
     state
         .lock()
         .unwrap()
         .list_open_documents()
         .iter()
-        .map(|t| t.id.clone())
+        .map(|t| TabSummary {
+            id: t.id.clone(),
+            path: t.path.clone(),
+        })
         .collect()
 }
 

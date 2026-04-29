@@ -134,10 +134,13 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
     if (settings?.profile?.display_name) {
       userName.textContent = settings.profile.display_name;
     }
-    const ids = await ipc.listOpenDocuments();
-    state.tabs = ids.map((id) => ({ id, path: id }));
+    const summaries = await ipc.listOpenDocuments();
+    state.tabs = summaries.map((s) => ({ id: s.id, path: s.path }));
     state.activeId = state.tabs.length > 0 ? (state.activeId ?? state.tabs[0].id) : null;
-    mountTabBar(tabbar, ipc, state);
+    // The tab strip's close (×) button needs to repaint the workspace so
+    // the closed tab disappears and StartPage returns when the last tab
+    // closes. mountTabBar fires onAfterChange after closeTab resolves.
+    mountTabBar(tabbar, ipc, state, () => { void refresh(); });
 
     // C2: a pending Conflict outcome wins over both StartPage and Document
     // — the user must resolve it before doing anything else. Conflicts

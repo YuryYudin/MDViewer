@@ -45,15 +45,53 @@ describe('TabBar', () => {
   });
 
   it('uses textContent for tab labels (no markup injection)', () => {
+    // Path is a basename to dodge the `/` inside the HTML tag, which
+    // would otherwise look like a directory separator to basename().
+    // The point of this test is that the rendered DOM has no <b> child.
     const root = document.createElement('div');
     const state: WorkspaceState = {
-      tabs: [{ id: 't1', path: '<b>nope</b>.md' }],
+      tabs: [{ id: 't1', path: '<b>nope<-b>.md' }],
       activeId: 't1',
     };
     mountTabBar(root, makeIpc(), state);
     const tab = root.querySelector('[data-test="tab"]')!;
     expect(tab.querySelector('b')).toBeNull();
-    expect(tab.textContent).toContain('<b>nope</b>.md');
+    expect(tab.textContent).toContain('<b>nope<-b>.md');
+  });
+
+  it('shows the file basename as the label, not the opaque tab id', () => {
+    // Regression: list_open_documents used to return bare ids and
+    // Workspace.ts mapped `path: id`, so the tab strip showed the UUID
+    // instead of the filename. The fix: IPC now returns {id, path} and
+    // TabBar renders basename(path).
+    const root = document.createElement('div');
+    const state: WorkspaceState = {
+      tabs: [
+        {
+          id: 'tab-uuid-abcdef-12345',
+          path: '/Users/x/notes/2026-04-29/Compute Permissions.md',
+        },
+      ],
+      activeId: 'tab-uuid-abcdef-12345',
+    };
+    mountTabBar(root, makeIpc(), state);
+    const label = root.querySelector('.tab-label')!.textContent;
+    expect(label).toBe('Compute Permissions.md');
+    // Full path is preserved as a tooltip so the user can recover the
+    // location on hover.
+    expect(root.querySelector<HTMLElement>('[data-test="tab"]')!.title).toBe(
+      '/Users/x/notes/2026-04-29/Compute Permissions.md',
+    );
+  });
+
+  it('renders bare basenames when path has no directory separator', () => {
+    const root = document.createElement('div');
+    const state: WorkspaceState = {
+      tabs: [{ id: 't1', path: 'standalone.md' }],
+      activeId: 't1',
+    };
+    mountTabBar(root, makeIpc(), state);
+    expect(root.querySelector('.tab-label')!.textContent).toBe('standalone.md');
   });
 
   it('dispatches activateTab on tab click', () => {
@@ -86,6 +124,47 @@ describe('TabBar', () => {
     expect(ipc.activateTab).not.toHaveBeenCalled();
   });
 
+  it('fires onAfterChange after closeTab so the workspace can repaint', async () => {
+    // Regression: clicking × removed the tab on the Rust side but the
+    // tab strip never repainted because the workspace had no signal to
+    // re-run refresh(). Without this hook the tab stayed visible.
+    const root = document.createElement('div');
+    const ipc = makeIpc();
+    const state: WorkspaceState = {
+      tabs: [{ id: 't1', path: '/docs/a.md' }],
+      activeId: 't1',
+    };
+    const onAfterChange = vi.fn();
+    mountTabBar(root, ipc, state, onAfterChange);
+    (root.querySelector('[data-test="tab-close"]') as HTMLElement).click();
+    // Drain the microtask queue so the async closeTab → onAfterChange
+    // chain has a chance to settle.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(ipc.closeTab).toHaveBeenCalledWith('t1');
+    expect(onAfterChange).toHaveBeenCalled();
+  });
+
+  it('fires onAfterChange after activateTab too so the active doc swap repaints', async () => {
+    const root = document.createElement('div');
+    const ipc = makeIpc();
+    const state: WorkspaceState = {
+      tabs: [
+        { id: 't1', path: '/docs/a.md' },
+        { id: 't2', path: '/docs/b.md' },
+      ],
+      activeId: 't1',
+    };
+    const onAfterChange = vi.fn();
+    mountTabBar(root, ipc, state, onAfterChange);
+    const tabs = root.querySelectorAll<HTMLElement>('[data-test="tab"]');
+    tabs[1].click();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(ipc.activateTab).toHaveBeenCalledWith('t2');
+    expect(onAfterChange).toHaveBeenCalled();
+  });
+
   it('new-tab + button dispatches mdviewer:open-file on document', () => {
     const root = document.createElement('div');
     const state: WorkspaceState = { tabs: [], activeId: null };
@@ -108,6 +187,7 @@ describe('TabBar', () => {
     mountTabBar(root, makeIpc(), state);
     const active = root.querySelector('[data-test="tab"][data-active="true"]');
     expect(active).toBeTruthy();
-    expect(active!.textContent).toContain('/b.md');
+    // Label is the basename — the full path is reachable via the title attribute.
+    expect(active!.textContent).toContain('b.md');
   });
 });
