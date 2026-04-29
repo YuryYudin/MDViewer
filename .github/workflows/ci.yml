@@ -1,0 +1,160 @@
+name: CI
+
+# Runs on every PR and on pushes to main. The fast jobs (gen-types, test-js)
+# gate the matrix builds so a codegen drift or unit-test failure short-
+# circuits the ~30 min of cross-OS bundle compilation.
+#
+# All ${{ ... }} interpolations in this file pull from `github.workflow`,
+# `github.ref`, or `matrix.*` — workflow / ref names that the GitHub
+# scheduler controls, and matrix values committed to this file. None of
+# them ride untrusted user input (issue titles, PR bodies, head_ref).
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Force-pushes to a PR cancel the in-flight run. Pushes to main never cancel
+# each other so every merge gets a fresh full run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: short
+
+jobs:
+  # -- Gating: codegen drift + JS unit tests run first; ~2 min combined.
+  # If either fails, the matrix builds below are skipped entirely.
+  gen-types:
+    name: Codegen drift check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - run: npm ci
+      - name: Re-run gen:types and assert no drift
+        run: |
+          npm run gen:types
+          if ! git diff --quiet src/types-generated.ts; then
+            echo "::error::src/types-generated.ts is stale. Run 'npm run gen:types' locally and commit the result."
+            git --no-pager diff src/types-generated.ts
+            exit 1
+          fi
+
+  test-js:
+    name: JS unit tests
+    runs-on: ubuntu-latest
+    needs: gen-types
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - run: npm ci
+      - run: npm test
+
+  # -- Cross-platform Rust unit/integration tests
+  test-rust:
+    name: Rust tests (${{ matrix.os }})
+    needs: gen-types
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - name: Linux build deps
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libsoup-3.0-dev \
+            libssl-dev \
+            build-essential \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libayatana-appindicator3-dev \
+            libxdo-dev
+      - name: cargo test
+        working-directory: src-tauri
+        run: cargo test --features e2e --no-fail-fast
+
+  # -- Build verification: confirm the binary compiles on each OS. Doesn't
+  # bundle (that's the release workflow's job); this just catches platform-
+  # specific compile breakage on PRs.
+  build-check:
+    name: Build check (${{ matrix.os }})
+    needs: [test-js, test-rust]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - name: Linux build deps
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libsoup-3.0-dev \
+            libssl-dev \
+            build-essential \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libayatana-appindicator3-dev \
+            libxdo-dev
+      - run: npm ci
+      - name: Vite build
+        run: npm run build
+      - name: Tauri compile (no bundle)
+        working-directory: src-tauri
+        run: cargo build --release --bin mdviewer
+
+  # -- E2E (macOS only — tauri-webdriver-automation is mac-only)
+  e2e:
+    name: E2E (macOS)
+    needs: [test-js, test-rust]
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - run: npm ci
+      - name: Run e2e
+        run: npm run test:e2e

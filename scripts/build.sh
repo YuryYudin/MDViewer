@@ -38,7 +38,7 @@ done
 HOST="$(uname -s)"
 case "$HOST" in
   Darwin)   DEFAULT_BUNDLES="dmg" ;;
-  Linux)    DEFAULT_BUNDLES="appimage,deb" ;;
+  Linux)    DEFAULT_BUNDLES="appimage,deb,rpm" ;;
   MINGW*|MSYS*|CYGWIN*|Windows_NT) DEFAULT_BUNDLES="msi" ;;
   *)        echo "unsupported host: $HOST" >&2; exit 1 ;;
 esac

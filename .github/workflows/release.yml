@@ -1,73 +1,101 @@
 name: Release
 
-# Triggered on tag push (v*) so a typo'd commit on `main` cannot publish.
-# `workflow_dispatch` lets a release manager run the pipeline manually for a
-# pre-release smoke check.
+# Triggered on `v*` tag push so a typo'd commit on `main` cannot publish.
+# `workflow_dispatch` lets a release manager fire the pipeline manually for
+# a pre-release smoke check (the resulting Release stays in draft state).
 #
-# All `${{ ... }}` interpolations in this file pull from the matrix block
-# below — config values committed to the repo, never untrusted user input
-# (issue titles, PR bodies, etc.). The matrix.target string is also passed
-# to npm via shell argument; it is composed of allow-listed bundle names
-# (`dmg`, `msi`, `appimage`, `deb`).
+# All `${{ ... }}` interpolations pull from the matrix block (config values
+# committed here) or `github.ref_name` (the tag name). They flow into
+# action inputs (`with:`), not shell-interpolated `run:` commands, so
+# command-injection vectors via tag names don't apply.
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
 
+# tauri-action needs `contents: write` to create a Release and attach
+# bundle artifacts. No other scopes required.
 permissions:
   contents: write
 
 jobs:
   bundle:
+    name: Bundle (${{ matrix.label }})
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
-            target: dmg
+          # Apple Silicon only (Intel macs deferred per the design discussion;
+          # revisit if user reports indicate Intel is a meaningful share).
+          - os: macos-14
+            target: aarch64-apple-darwin
+            bundles: dmg
+            label: macOS (Apple Silicon)
           - os: windows-latest
-            target: msi
-          - os: ubuntu-latest
-            target: appimage,deb
+            target: x86_64-pc-windows-msvc
+            bundles: msi
+            label: Windows
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            bundles: deb,appimage,rpm
+            label: Linux
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: 20
           cache: 'npm'
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
-      - name: Install Linux deps
-        if: matrix.os == 'ubuntu-latest'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      # webkit2gtk-4.1 is the Tauri 2 line; rpm-build (`rpm` package) is
+      # needed for the rpm bundle target. Linux-only.
+      - name: Linux build deps
+        if: matrix.os == 'ubuntu-22.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libgtk-3-dev \
             libwebkit2gtk-4.1-dev \
+            libsoup-3.0-dev \
+            libssl-dev \
+            build-essential \
+            libgtk-3-dev \
             librsvg2-dev \
-            libayatana-appindicator3-dev
+            libayatana-appindicator3-dev \
+            libxdo-dev \
+            rpm
 
       - run: npm ci
 
-      - name: Build bundles
+      # tauri-action runs `tauri build`, picks up bundle.targets from
+      # tauri.conf.json (overridden via --bundles), and uploads each
+      # produced artifact to a draft GitHub Release named after the tag.
+      # Code-signing secrets intentionally NOT wired (unsigned bundles
+      # work, but trigger Gatekeeper / SmartScreen warnings on first
+      # launch). Add APPLE_CERTIFICATE / APPLE_ID + signing flags here
+      # when notarization is in scope.
+      - uses: tauri-apps/tauri-action@v0
         env:
-          BUNDLE_TARGET: ${{ matrix.target }}
-        run: npm run tauri -- build --bundles "$BUNDLE_TARGET"
-
-      - uses: actions/upload-artifact@v4
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          name: mdviewer-${{ matrix.os }}
-          path: src-tauri/target/release/bundle/**
+          tagName: ${{ github.ref_name }}
+          releaseName: 'MDViewer ${{ github.ref_name }}'
+          releaseDraft: true
+          prerelease: false
+          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
 
   # Follow-up TODOs intentionally left here so reviewers see them in PRs:
   # - macOS notarization: APPLE_CERTIFICATE / APPLE_ID secrets + tauri-action's
-  #   built-in signing flow. Deferred per Phase-3 success criterion 10
-  #   (code signing not required for v1).
+  #   built-in signing flow. Deferred per the design — unsigned DMG works
+  #   (right-click → Open on first launch).
   # - Windows EV cert: SignTool integration with a Comodo or Sectigo cert.
-  #   Deferred per the same criterion. Without it users will see a SmartScreen
-  #   warning on first run.
-  # - Auto-publish: wire `softprops/action-gh-release` to attach the bundles
-  #   to the triggering tag once we have a release manager workflow.
+  #   Deferred per the same call. SmartScreen will warn on first run.
+  # - Intel macOS: revisit if Intel users surface in real reports.
