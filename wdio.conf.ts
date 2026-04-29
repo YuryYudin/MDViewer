@@ -149,7 +149,13 @@ export const config: Options.Testrunner = {
       stdio: ['ignore', 'inherit', 'inherit'],
       env: { ...process.env, BROWSER: 'none' },
     });
-    await waitForHttp('http://localhost:1420/', 30_000);
+    // Vite startup can be slow on cold CI: `npm run dev`'s `predev` hook
+    // runs `cargo run --bin export_types`, which on a fresh runner without
+    // a warm rust-cache rebuilds the full mdviewer_lib dep graph. 30s
+    // wasn't enough on a CI cold start; 120s gives a comfortable cushion
+    // (laptops still come up in 1-2s, so the upper bound only matters on
+    // slow CI).
+    await waitForHttp('http://localhost:1420/', 120_000);
 
     driver = spawn(driverBinary, ['--port', '4444'], {
       stdio: 'inherit',
