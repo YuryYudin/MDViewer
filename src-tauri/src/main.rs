@@ -465,9 +465,17 @@ fn main() {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_fs::init());
+
+    // E2E hook (macOS-friendly via tauri-webdriver). Loaded only when the
+    // crate is built with `--features e2e`; release bundles never expose
+    // the WebDriver port unless explicitly opted-in.
+    #[cfg(feature = "e2e")]
+    let builder = builder.plugin(tauri_plugin_webdriver_automation::init());
+
+    builder
         .setup(|app| {
             let data_dir = app.path().app_config_dir()?;
             let env_override = std::env::var("MDVIEWER_DATA_DIR").ok();
