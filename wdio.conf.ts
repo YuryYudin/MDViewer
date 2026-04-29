@@ -170,6 +170,27 @@ export const config: Options.Testrunner = {
     });
     await waitForDriver(4444, 10_000);
   },
+  // Per-spec hook: wait for the WebView's app shell to mount before
+  // running test assertions. Without this, tests that immediately query
+  // `.isExisting()` on the workspace / start / profile-setup view race
+  // against the WebView's first paint on slow CI runners. Locally the
+  // paint is sub-second so the race never surfaces; on macos-14 GitHub
+  // runners it shows up as 4 specs failing with `Received: false` on
+  // the very first assertion.
+  before: async () => {
+    await browser.waitUntil(
+      async () => {
+        try {
+          const ws = await browser.$('[data-view="workspace"]').isExisting();
+          const ps = await browser.$('[data-view="profile-setup"]').isExisting();
+          return ws || ps;
+        } catch {
+          return false;
+        }
+      },
+      { timeout: 30_000, timeoutMsg: 'app shell (workspace or profile-setup) never mounted' },
+    );
+  },
   // Per-spec hook: after each session ends, wdio sends DELETE /session
   // which tells tauri-wd to kill the child. That syscall is async-best-
   // effort — under load it can return before SIGKILL actually reaps the
