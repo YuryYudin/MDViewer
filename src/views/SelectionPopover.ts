@@ -41,6 +41,11 @@ export function attachSelectionPopover(
         ? range.getBoundingClientRect()
         : { top: 0, left: 0 };
 
+    // Capture offsets BEFORE the popover opens. Clicking the button
+    // (next mousedown) collapses the native selection, so getOffsets()
+    // would return null if we waited until the click handler ran.
+    const capturedOffsets = getOffsets();
+
     removePopover();
     popover = document.createElement('div');
     popover.setAttribute('data-view', 'selection-popover');
@@ -52,7 +57,7 @@ export function attachSelectionPopover(
     comment.setAttribute('data-action', 'comment');
     comment.textContent = 'Comment';
     comment.addEventListener('click', () => {
-      const offsets = getOffsets();
+      const offsets = capturedOffsets ?? getOffsets();
       if (!offsets) return;
       // Stage 2: replace popover contents with a body composer. Use
       // replaceChildren() not innerHTML='' to keep the no-innerHTML rule.

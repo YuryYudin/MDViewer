@@ -170,6 +170,27 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
     sidebarRoot.setAttribute('data-region', 'sidebar');
     body.appendChild(sidebarRoot);
 
+    // SelectionPopover dispatches `thread-created` on the document root
+    // when the user posts a new comment. Re-fetch the active tab's threads,
+    // ask Document to repaint its highlights, and re-mount the sidebar.
+    docRoot.addEventListener('thread-created', () => {
+      void (async () => {
+        const tabId = activeTab.tabId ?? state.activeId;
+        if (!tabId) return;
+        const fresh = await ipc.listThreads(tabId);
+        activeTab.threads = fresh;
+        // The view returned from mountDocument is a forward reference here;
+        // the closure captures `view` which is set right after mountDocument
+        // resolves below. By the time thread-created fires the user has
+        // already interacted with the document so view is non-null.
+        await view.refreshHighlights();
+        mountCommentsSidebar(sidebarRoot, ipc, fresh, {
+          showResolved: settings?.comments.show_resolved ?? false,
+          orphans: view.orphanThreads(),
+        });
+      })();
+    });
+
     const tab = activeTab;
     const view = await mountDocument(docRoot, ipc, {
       tabId: tab.tabId ?? state.activeId!,

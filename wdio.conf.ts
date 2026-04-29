@@ -117,6 +117,10 @@ export const config: Options.Testrunner = {
   mochaOpts: { ui: 'bdd', timeout: 60_000 },
   specs: ['./e2e/**/*.spec.ts'],
   reporters: ['spec'],
+  // Force sequential execution. Each session shares the same dataDir
+  // (MDVIEWER_DATA_DIR), the same Vite port (1420), and the same
+  // tauri-wd port (4444); parallel workers contend on all three.
+  maxInstances: 1,
   capabilities: [
     {
       // tauri-wd spawns the binary per session, watches its stdout for the

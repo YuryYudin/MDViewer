@@ -35,21 +35,28 @@ export async function prepareFixture(opts?: { fixtureDir?: string; resetProfile?
 }
 
 /**
- * Convenience: select all text inside an element via WebDriver's
- * `Element.scrollIntoView` + a triple-click. Tauri's WebView honors the
- * native selection API, so wdio's `browser.action('pointer')` with a
- * triple-click selects the surrounding paragraph the same way a user would.
- * Tests use this to simulate the user selecting a phrase before commenting.
+ * Select all text inside the matched element and trigger SelectionPopover's
+ * mouseup listener. We can't use a real triple-click via WebDriver actions
+ * because the tauri-webdriver-automation plugin synthesizes pointer events
+ * via dispatchEvent — the native browser doesn't update window.getSelection
+ * from dispatched events. So we drive the Range/Selection API directly and
+ * then fire the mouseup the popover listens for.
  */
 export async function tripleClick(selector: string): Promise<void> {
-  const el = await browser.$(selector);
-  await el.scrollIntoView();
-  await browser.action('pointer')
-    .move({ origin: el })
-    .down().up().pause(50)
-    .down().up().pause(50)
-    .down().up()
-    .perform();
+  await browser.execute(function (sel: string): void {
+    const el = document.querySelector(sel);
+    if (!el) throw new Error('element not found: ' + sel);
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const selection = window.getSelection();
+    if (!selection) throw new Error('no selection api');
+    selection.removeAllRanges();
+    selection.addRange(range);
+    // Fire mouseup on the element so SelectionPopover.attachSelectionPopover's
+    // listener picks up the new selection. mouseup bubbles so listening on
+    // the document root catches it.
+    el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+  }, selector);
 }
 
 /**

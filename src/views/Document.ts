@@ -1,5 +1,6 @@
 import type { Ipc, Settings, Thread } from '../ipc';
 import { mountEdit, type EditView } from './Edit';
+import { attachSelectionPopover } from './SelectionPopover';
 
 export interface DocumentMountArgs {
   tabId: string;
@@ -108,6 +109,13 @@ export async function mountDocument(
   view.appendChild(editRegion);
 
   root.appendChild(view);
+
+  // Wire SelectionPopover (wireframe-04) so triple-clicking a phrase shows
+  // the Comment/Copy buttons. This was a pre-existing integration gap —
+  // the popover module shipped in A10 but no caller mounted it, so the
+  // comment-on-selection success criterion was effectively unreachable
+  // outside the unit tests.
+  attachSelectionPopover(render, ipc, () => args.tabId, () => offsetsFromSelection());
 
   // Lazy-load Mermaid only when the rendered HTML contains a mermaid block.
   // Static-importing mermaid would roughly double the WebView bundle even
@@ -241,7 +249,20 @@ export async function mountDocument(
   return {
     currentSelectionOffsets: offsetsFromSelection,
     refreshHighlights: async () => {
-      /* called on thread change events; B-phase wires this up. */
+      // Re-fetch threads from the IPC and repaint all highlights. Called
+      // when a new thread is posted (SelectionPopover dispatches
+      // `thread-created`); without this the new thread sits in the sidebar
+      // but has no visible <mark data-anchor> in the document.
+      const fresh = await ipc.listThreads(args.tabId);
+      // Clear existing highlights — paintHighlight only adds, never replaces.
+      for (const m of Array.from(render.querySelectorAll('mark[data-anchor]'))) {
+        const parent = m.parentNode;
+        if (!parent) continue;
+        while (m.firstChild) parent.insertBefore(m.firstChild, m);
+        parent.removeChild(m);
+      }
+      orphans = await resolveAndPaintAll(fresh);
+      args.onOrphansChanged?.(orphans);
     },
     setMode: async (mode) => {
       if (mode === 'edit') await enterEdit();
