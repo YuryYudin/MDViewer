@@ -149,17 +149,31 @@ describe('StartPage → click a recent → document mounts', () => {
     // empty space below the document. Assert the rendered document
     // and sidebar occupy ≥ 95 % of the body region's height.
     const fill = await browser.execute(() => {
+      const ws = document.querySelector('[data-view="workspace"]') as HTMLElement;
+      const tabbar = document.querySelector('[data-region="tabbar"]') as HTMLElement;
+      const status = document.querySelector('[data-region="status"]') as HTMLElement;
       const body = document.querySelector('[data-region="body"]') as HTMLElement;
       const doc = document.querySelector('[data-view="document"]') as HTMLElement;
       const sidebar = document.querySelector(
         '[data-region="body"] > [data-region="sidebar"]',
       ) as HTMLElement;
       return {
+        wsHeight: ws.getBoundingClientRect().height,
+        tabbarHeight: tabbar.getBoundingClientRect().height,
+        statusHeight: status.getBoundingClientRect().height,
         bodyHeight: body.getBoundingClientRect().height,
         docHeight: doc.getBoundingClientRect().height,
         sidebarHeight: sidebar.getBoundingClientRect().height,
       };
     });
+    // (a) Body fills its workspace track. The previous flavour of this
+    //     test only checked doc/body, so a regression where the body
+    //     itself collapsed to ½ the workspace would still pass (because
+    //     doc filled 100% of the half-body). Catch that directly.
+    const expectedBodyHeight =
+      fill.wsHeight - fill.tabbarHeight - fill.statusHeight;
+    expect(fill.bodyHeight / expectedBodyHeight).toBeGreaterThanOrEqual(0.95);
+    // (b) Doc and sidebar fill the body's full height.
     expect(fill.docHeight / fill.bodyHeight).toBeGreaterThanOrEqual(0.95);
     expect(fill.sidebarHeight / fill.bodyHeight).toBeGreaterThanOrEqual(0.95);
   });

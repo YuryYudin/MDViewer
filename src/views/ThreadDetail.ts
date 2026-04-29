@@ -68,7 +68,13 @@ export function mountThreadDetail(
       new CustomEvent('thread-replied', { bubbles: true, detail: { id: thread.id } }),
     );
   });
-  composer.appendChild(post);
+  // Wireframe-05 places Reply + Resolve on a single row (`.thread-actions`)
+  // below the textarea, not stacked. CSS turns this into `display: flex;
+  // gap: 6px` so both buttons sit side-by-side without eating vertical
+  // space the user could be using for the threads list.
+  const actionsRow = document.createElement('div');
+  actionsRow.className = 'thread-actions';
+  actionsRow.appendChild(post);
 
   const resolve = document.createElement('button');
   resolve.setAttribute('data-action', 'resolve');
@@ -79,7 +85,8 @@ export function mountThreadDetail(
       new CustomEvent('thread-resolved', { bubbles: true, detail: { id: thread.id } }),
     );
   });
-  composer.appendChild(resolve);
+  actionsRow.appendChild(resolve);
+  composer.appendChild(actionsRow);
 
   root.appendChild(composer);
 }

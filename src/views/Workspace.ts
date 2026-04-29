@@ -163,6 +163,10 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
     }
 
     if (state.tabs.length === 0) {
+      // Body holds StartPage in single-pane layout — drop the
+      // doc-mode class so the row-flex rules below don't try to
+      // split a non-existent doc + sidebar.
+      body.classList.remove('with-document');
       await mountStartPage(body, ipc, async (outcome) => {
         // Cache the open-document payload and re-mount so the document
         // (or conflict view) replaces the StartPage. Without this the
@@ -174,9 +178,11 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
     }
 
     // Mount a real Document with the cached open-document payload from the
-    // most recent openDocument call. If we don't have one (active tab
-    // changed without a re-open), the placeholder is acceptable until the
-    // user re-opens.
+    // most recent openDocument call. The `with-document` class flips the
+    // body region into row-flex layout (doc + sidebar). Class-based gate
+    // is more reliable across WebViews than CSS `:has()` — the prior rule
+    // worked on paper but didn't propagate height correctly in WKWebView.
+    body.classList.add('with-document');
     body.replaceChildren();
     const docRoot = document.createElement('div');
     body.appendChild(docRoot);

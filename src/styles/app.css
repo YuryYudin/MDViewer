@@ -94,7 +94,7 @@ body {
  * via flex. Document.ts mounts its tree first; a sibling
  * <div data-region="sidebar"> is appended next. The 1fr / 320px split
  * matches wireframe-05. */
-.workspace > [data-region='body']:has([data-view='document']) {
+.workspace > [data-region='body'].with-document {
   display: flex;
   flex-direction: row;
   height: 100%;
@@ -103,7 +103,7 @@ body {
 }
 /* docRoot wrapper: takes the remaining width, stays a flex column so
  * the document can fill its full height. */
-.workspace > [data-region='body']:has([data-view='document']) > div:not([data-region='sidebar']) {
+.workspace > [data-region='body'].with-document > div:not([data-region='sidebar']) {
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
@@ -111,7 +111,7 @@ body {
   flex-direction: column;
   overflow: hidden;
 }
-.workspace > [data-region='body']:has([data-view='document']) > [data-region='sidebar'] {
+.workspace > [data-region='body'].with-document > [data-region='sidebar'] {
   flex: 0 0 320px;
   min-height: 0;
   border-left: 1px solid var(--border);
@@ -574,6 +574,14 @@ body {
   background: var(--surface);
   color: var(--text);
 }
+[data-view='thread-detail'] .thread-actions {
+  /* Wireframe-05 inline action row: Post + Resolve sit side-by-side
+   * below the textarea instead of stacking, freeing vertical space for
+   * the threads list. */
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
 [data-view='thread-detail'] .composer button {
   padding: 3px 10px;
   border-radius: 4px;
@@ -587,7 +595,6 @@ body {
   cursor: pointer;
   font-family: var(--sans);
   font-size: 12px;
-  align-self: flex-start;
 }
 [data-view='thread-detail'] [data-action='post-reply'] {
   background: var(--accent);
