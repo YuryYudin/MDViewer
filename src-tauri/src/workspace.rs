@@ -48,6 +48,10 @@ pub struct OpenResult {
     pub tab_id: String,
     pub path: PathBuf,
     pub html: String,
+    /// Raw markdown source. Needed by Edit mode (B4) which mounts a
+    /// textarea seeded with this; the View↔Edit toggle silently no-ops
+    /// when source is missing.
+    pub source: String,
     pub threads: Vec<Thread>,
 }
 
@@ -117,11 +121,12 @@ impl Workspace {
                 id,
                 tab.path.clone(),
                 tab.render.html.clone(),
+                tab.source.clone(),
                 tab.comments.list_threads().to_vec(),
                 tab.last_saved_snapshot.clone(),
             )
         });
-        if let Some((id, p, html, threads, snapshot)) = existing {
+        if let Some((id, p, html, source, threads, snapshot)) = existing {
             // C2: re-opening an already-open tab still has to surface
             // divergence. If disk bytes differ from the in-memory snapshot,
             // emit Conflict instead of silently activating the stale tab.
@@ -142,6 +147,7 @@ impl Workspace {
                 tab_id: id,
                 path: p,
                 html,
+                source,
                 threads,
             }));
         }
@@ -194,6 +200,7 @@ impl Workspace {
             tab_id: id.clone(),
             path: canonical.clone(),
             html: render.html.clone(),
+            source: source.clone(),
             threads: comments.list_threads().to_vec(),
         };
 

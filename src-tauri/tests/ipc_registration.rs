@@ -168,6 +168,7 @@ fn open_outcome_serializes_with_kind_discriminant() {
         tab_id: "t-x".into(),
         path: std::path::PathBuf::from("/tmp/x.md"),
         html: "<p>x</p>".into(),
+        source: "x\n".into(),
         threads: vec![],
     });
     let v = serde_json::to_value(&outcome).unwrap();

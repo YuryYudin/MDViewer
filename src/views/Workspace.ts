@@ -228,6 +228,7 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
           try {
             const fresh = await ipc.reloadDocument(path);
             activeTab.html = fresh.html;
+            activeTab.source = fresh.source;
             activeTab.threads = fresh.threads;
           } catch {
             // The reload IPC can fail (file deleted, permissions changed);
@@ -251,6 +252,7 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
       activeTab.tabId = outcome.tab_id;
       activeTab.path = outcome.path;
       activeTab.html = outcome.html;
+      activeTab.source = outcome.source;
       activeTab.threads = outcome.threads;
       pendingConflict = null;
     } else if (outcome.kind === 'conflict') {

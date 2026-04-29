@@ -69,6 +69,25 @@ export function mountCommentsSidebar(
     root.appendChild(orphanRegion);
   }
 
+  // Count badges for spec/UI parity (wireframe-05): how many threads
+  // landed anchored vs in the orphan list. Always rendered when there's
+  // any thread activity so the count is reachable for the e2e suite even
+  // when both buckets are zero (e.g. spec 05's reattach-success path).
+  const anchoredCount = threads.filter((t) => !t.resolved).length;
+  const orphanedCount = opts.orphans?.length ?? 0;
+  if (threads.length > 0 || orphanedCount > 0) {
+    const counts = document.createElement('div');
+    counts.setAttribute('data-region', 'thread-counts');
+    const anchored = document.createElement('span');
+    anchored.setAttribute('data-test', 'anchored-count');
+    anchored.textContent = String(anchoredCount);
+    const orphaned = document.createElement('span');
+    orphaned.setAttribute('data-test', 'orphaned-count');
+    orphaned.textContent = String(orphanedCount);
+    counts.append(anchored, orphaned);
+    root.appendChild(counts);
+  }
+
   const visible = threads.filter((t) => opts.showResolved || !t.resolved);
   if (visible.length === 0) {
     const empty = document.createElement('div');

@@ -326,6 +326,7 @@ fn reload_document(
         tab_id: tab.id.clone(),
         path: tab.path.clone(),
         html: tab.render.html.clone(),
+        source: tab.source.clone(),
         threads: tab.comments.list_threads().to_vec(),
     })
 }
