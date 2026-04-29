@@ -323,4 +323,4 @@ Run the full test suite (`npm test && cd src-tauri && cargo test && cd .. && npm
 
 ## License
 
-MIT OR Apache-2.0, at your option. See `Cargo.toml`.
+GPL-3.0-or-later. See [`LICENSE`](LICENSE) for the full text.
