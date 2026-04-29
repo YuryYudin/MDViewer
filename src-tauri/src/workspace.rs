@@ -64,6 +64,16 @@ pub enum OpenOutcome {
     },
 }
 
+/// C3: result of `export_document` — the destination folder plus the
+/// filenames that landed in it. The share dialog displays these so the
+/// user can confirm the export before sharing the folder by hand.
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct ExportResult {
+    pub folder: PathBuf,
+    pub files: Vec<String>,
+}
+
 pub struct Workspace {
     settings: SettingsStore,
     recents: RecentsStore,
@@ -287,6 +297,14 @@ impl Workspace {
     }
     pub fn recents_store(&self) -> &RecentsStore {
         &self.recents
+    }
+
+    /// C3: read-only accessor for the export_document IPC handler. Pairs
+    /// with comments_for / comments_for_mut; the share/export flow needs
+    /// the path and source bytes off the tab without going through a
+    /// per-field API surface.
+    pub fn tab(&self, id: &str) -> Option<&Tab> {
+        self.tabs.get(id)
     }
 
     pub fn comments_for(&self, tab_id: &str) -> Result<&CommentsStore> {

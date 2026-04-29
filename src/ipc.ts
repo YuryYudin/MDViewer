@@ -25,6 +25,7 @@ export type {
   OpenOutcome,
   Hunk,
   HunkKind,
+  ExportResult,
 } from './types-generated';
 
 import type {
@@ -36,6 +37,7 @@ import type {
   OpenOutcome,
   RenderResult,
   Hunk,
+  ExportResult,
 } from './types-generated';
 
 // `Anchor` is the canonical name across the wire. Older planning notes used
@@ -79,6 +81,12 @@ export interface Ipc {
    * hunk, then `saveDocument` the resolved bytes on Finish merge.
    */
   diffMd(local: string, incoming: string): Promise<Hunk[]>;
+  /**
+   * C3: copy the open document and its current sidecar into `folder` so
+   * the user can hand the folder off to a reviewer. The Rust handler
+   * refuses non-empty destinations to avoid stomping unrelated files.
+   */
+  exportDocument(args: { tabId: string; folder: string }): Promise<ExportResult>;
 }
 
 export const tauriIpc: Ipc = {
@@ -102,4 +110,6 @@ export const tauriIpc: Ipc = {
   saveDocument: (path, contents) => invoke<void>('save_document', { path, contents }),
   setDirty: (path, dirty) => invoke<void>('set_dirty', { path, dirty }),
   diffMd: (local, incoming) => invoke<Hunk[]>('diff_md', { local, incoming }),
+  exportDocument: (args) =>
+    invoke<ExportResult>('export_document', { tabId: args.tabId, folder: args.folder }),
 };

@@ -67,6 +67,10 @@ fn export_all() -> Result<String, Box<dyn std::error::Error>> {
     buf.push_str(&mdviewer_lib::conflict::Hunk::export_to_string().unwrap());
     buf.push_str("\n");
 
+    // C3: export result returned by the share/export IPC command.
+    buf.push_str(&mdviewer_lib::workspace::ExportResult::export_to_string().unwrap());
+    buf.push_str("\n");
+
     // A5 appends `RenderResult`, `RenderOptions`.
     // A6 appends `Anchor`, `ResolveOutcome`.
     // A7 appends `Thread`, `Comment`, `NewThread`, `NewComment`.

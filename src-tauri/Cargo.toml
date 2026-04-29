@@ -43,6 +43,7 @@ notify = "6"
 automerge = "0.5"
 base64 = "0.22"
 similar = "2.5"
+walkdir = "2"
 
 [dev-dependencies]
 tempfile = "3"

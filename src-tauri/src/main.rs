@@ -37,9 +37,10 @@ use mdviewer_lib::{
     document::{self, RenderOptions, RenderResult},
     settings::Settings,
     watcher::{ExternalChangeEvent, Watcher},
-    workspace::{OpenOpts, OpenOutcome, Workspace},
+    workspace::{ExportResult, OpenOpts, OpenOutcome, Workspace},
     BuildInfo,
 };
+use std::path::Path;
 
 type Ws = Mutex<Workspace>;
 
@@ -262,6 +263,88 @@ fn diff_md(local: String, incoming: String) -> Vec<Hunk> {
     conflict::diff_md(&local, &incoming)
 }
 
+/// C3: copy a tab's `.md` plus its current sidecar (already in v2 form
+/// after C1) into `folder` so the user can hand the folder off to a
+/// reviewer. Refuses to overwrite a non-empty folder rather than risk
+/// stomping unrelated files.
+#[tauri::command]
+fn export_document(
+    state: State<'_, Ws>,
+    tab_id: String,
+    folder: PathBuf,
+) -> Result<ExportResult, String> {
+    let ws = state.lock().map_err(|e| e.to_string())?;
+    let tab = ws.tab(&tab_id).ok_or_else(|| "no such tab".to_string())?;
+    if folder.exists()
+        && std::fs::read_dir(&folder)
+            .map(|d| d.count())
+            .unwrap_or(0)
+            > 0
+    {
+        return Err("export folder is not empty".into());
+    }
+    std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+
+    let md_name = tab
+        .path
+        .file_name()
+        .ok_or_else(|| "source path has no file name".to_string())?;
+    let md_dest = folder.join(md_name);
+    std::fs::copy(&tab.path, &md_dest).map_err(|e| e.to_string())?;
+    let mut files = vec![md_name.to_string_lossy().into_owned()];
+
+    let pattern = ws.settings_store().get().comments.sidecar_pattern.clone();
+    let local_sc = mdviewer_lib::sidecar::sidecar_path(&tab.path, &pattern);
+    if local_sc.exists() {
+        let sc_name = local_sc
+            .file_name()
+            .ok_or_else(|| "sidecar path has no file name".to_string())?;
+        let sc_dest = folder.join(sc_name);
+        std::fs::copy(&local_sc, &sc_dest).map_err(|e| e.to_string())?;
+        files.push(sc_name.to_string_lossy().into_owned());
+    }
+
+    Ok(ExportResult { folder, files })
+}
+
+/// C3: walk `dir` for `*.comments.json` files and rewrite any v1 (Phase-1)
+/// sidecars into v2 (Automerge envelope). Idempotent — already-v2 files
+/// are skipped. Used both as an in-process helper and as the
+/// `migrate-sidecars` CLI subcommand entry point.
+fn migrate_sidecars(dir: &Path) -> anyhow::Result<(usize, usize)> {
+    use anyhow::Context;
+    let mut migrated = 0usize;
+    let mut already_v2 = 0usize;
+    for entry in walkdir::WalkDir::new(dir) {
+        let entry = entry.with_context(|| format!("walk {:?}", dir))?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let p = entry.path();
+        let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        if !name.ends_with(".comments.json") {
+            continue;
+        }
+        let bytes = std::fs::read(p).with_context(|| format!("read {:?}", p))?;
+        // Peek at schema_version without parsing the full envelope so a
+        // legitimately-v2 file stays untouched (keeps mtimes stable for
+        // sync tools and lets the user rerun the CLI safely).
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+            if v.get("schema_version").and_then(|x| x.as_u64()) == Some(2) {
+                already_v2 += 1;
+                continue;
+            }
+        }
+        let store = mdviewer_lib::sidecar::load_sidecar(p)
+            .with_context(|| format!("load v1 sidecar {:?}", p))?;
+        mdviewer_lib::sidecar::save_sidecar(p, &store)
+            .with_context(|| format!("rewrite as v2 {:?}", p))?;
+        migrated += 1;
+        println!("migrated: {}", p.display());
+    }
+    Ok((migrated, already_v2))
+}
+
 /// Frontend-driven dirty-bit setter. `Edit.ts` calls `set_dirty(path, true)`
 /// on first input and `set_dirty(path, false)` after `forceSave`. While the
 /// bit is true, the watcher upgrades any external-change action to `Ask`
@@ -293,6 +376,24 @@ fn resolve_anchor(
 }
 
 fn main() {
+    // C3: lightweight CLI dispatch before the Tauri runtime spins up. The
+    // subcommand intentionally bypasses tauri::Builder so it can be used
+    // from CI / scripts on a headless machine without the WebView.
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() >= 3 && args[1] == "migrate-sidecars" {
+        let dir = PathBuf::from(&args[2]);
+        match migrate_sidecars(&dir) {
+            Ok((migrated, already_v2)) => {
+                println!("Done. migrated={migrated}, already_v2={already_v2}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("migrate-sidecars failed: {e:?}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
@@ -379,6 +480,7 @@ fn main() {
             save_document,
             set_dirty,
             diff_md,
+            export_document,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
