@@ -17,7 +17,10 @@ use std::time::Duration;
 use tempfile::TempDir;
 
 fn waitfor(rx: &std::sync::mpsc::Receiver<ExternalChangeEvent>) -> ExternalChangeEvent {
-    rx.recv_timeout(Duration::from_secs(2)).expect("event")
+    // 5s upper bound: laptops fire in <100ms but Ubuntu CI runners with
+    // restricted inotify quotas have been observed taking 2–4s. The tight
+    // 2s value flaked under CI pressure once and was bumped after.
+    rx.recv_timeout(Duration::from_secs(5)).expect("event")
 }
 
 #[test]
@@ -217,6 +220,7 @@ fn external_write_after_save_still_triggers() {
 
     // External write — different content, distinct hash, must not be suppressed.
     fs::write(&md, "external write").unwrap();
-    let ev = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    // 5s upper bound — see `waitfor` for the rationale.
+    let ev = rx.recv_timeout(Duration::from_secs(5)).unwrap();
     assert_eq!(ev.action, ExternalChange::Reload);
 }

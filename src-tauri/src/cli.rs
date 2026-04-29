@@ -164,11 +164,18 @@ mod tests {
         // RunEvent::Opened delivers `file://` URLs in practice, but the
         // helper must drop other schemes defensively in case a future
         // protocol handler ships before the path-handling layer is
-        // updated.
+        // updated. Construct file URLs from real PathBufs so the test
+        // works cross-platform (a literal `file:///tmp/...` only resolves
+        // on Unix; Windows expects `file:///C:/...`).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p1 = dir.path().join("a.md");
+        let p2 = dir.path().join("b.md");
+        std::fs::write(&p1, b"# a").expect("write a");
+        std::fs::write(&p2, b"# b").expect("write b");
         let urls = vec![
-            tauri::Url::parse("file:///tmp/cli-test.md").unwrap(),
+            tauri::Url::from_file_path(&p1).expect("file URL a"),
             tauri::Url::parse("https://example.com/foo.md").unwrap(),
-            tauri::Url::parse("file:///tmp/another.md").unwrap(),
+            tauri::Url::from_file_path(&p2).expect("file URL b"),
         ];
         let paths = urls_to_paths(&urls);
         assert_eq!(paths.len(), 2);
