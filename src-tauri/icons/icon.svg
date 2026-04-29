@@ -1,0 +1,13 @@
+<svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <!-- MDViewer app icon: speech-bubble silhouette with the lowercase
+       'md' wordmark filling the bubble body. Tail extends into the
+       bottom-left of the canvas to convey "comments anchored to a
+       document". Master is rasterized to PNG/ICNS/ICO via
+       `npm run tauri icon`. -->
+  <path d="M225 60 H799 a165 165 0 0 1 165 165 V635 a165 165 0 0 1 -165 165 H360 L160 940 L240 800 H225 a165 165 0 0 1 -165 -165 V225 a165 165 0 0 1 165 -165 z"
+        fill="#335cff"/>
+  <text x="512" y="595"
+        font-family="-apple-system, system-ui, 'Helvetica Neue', sans-serif"
+        font-size="560" font-weight="800" text-anchor="middle" fill="white"
+        letter-spacing="-28">md</text>
+</svg>
