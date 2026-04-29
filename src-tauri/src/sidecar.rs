@@ -112,7 +112,13 @@ pub fn load_sidecar(path: &Path) -> Result<CommentsStore> {
 /// JSON wrapper around a base64-encoded Automerge save() blob. Creates
 /// parent directories as needed so the caller doesn't have to worry
 /// about a missing workspace folder.
-pub fn save_sidecar(path: &Path, store: &CommentsStore) -> Result<()> {
+///
+/// Returns the bytes that hit disk so callers can prime the file watcher's
+/// self-write suppression list (`Watcher::record_self_write`) without a
+/// follow-up read. Without that prime, the comments-mutation IPC handlers
+/// would generate spurious `external-change` events for the file MDViewer
+/// itself just wrote.
+pub fn save_sidecar(path: &Path, store: &CommentsStore) -> Result<Vec<u8>> {
     if let Some(parent) = path.parent() {
         // `create_dir_all` is a no-op when the directory already exists, so
         // we don't gate this on `parent.exists()`.
@@ -126,8 +132,8 @@ pub fn save_sidecar(path: &Path, store: &CommentsStore) -> Result<()> {
         automerge: base64::engine::general_purpose::STANDARD.encode(&am_bytes),
     };
     let body = serde_json::to_string_pretty(&env)?;
-    std::fs::write(path, body).context("write sidecar")?;
-    Ok(())
+    std::fs::write(path, &body).context("write sidecar")?;
+    Ok(body.into_bytes())
 }
 
 /// Decide how to reconcile an `incoming` sidecar (from disk) against a

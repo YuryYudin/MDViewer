@@ -206,6 +206,93 @@ describe('Workspace', () => {
     expect((ipc.listOpenDocuments as any).mock.calls.length).toBeGreaterThan(calls);
   });
 
+  it('mounts ShareDialog when Document dispatches share-requested', async () => {
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    let ids: string[] = ['t-1'];
+    const ipc = makeIpc();
+    (ipc.listOpenDocuments as any).mockImplementation(() => Promise.resolve(ids));
+    const handle = await mountWorkspace(root, ipc);
+    handle.setActive({
+      kind: 'document',
+      tab_id: 't-1',
+      path: '/docs/x.md',
+      html: '<p>v</p>',
+      threads: [],
+    });
+    await handle.refresh();
+
+    const body = root.querySelector('[data-region="body"]')!;
+    body.dispatchEvent(
+      new CustomEvent('share-requested', {
+        bubbles: true,
+        detail: { tabId: 't-1', path: '/docs/x.md' },
+      }),
+    );
+    await Promise.resolve();
+    expect(root.querySelector('[data-region="share-overlay"]')).toBeTruthy();
+
+    // share-dismissed removes the overlay.
+    const overlay = root.querySelector('[data-region="share-overlay"]')!;
+    overlay.dispatchEvent(new CustomEvent('share-dismissed', { bubbles: true }));
+    await Promise.resolve();
+    expect(root.querySelector('[data-region="share-overlay"]')).toBeNull();
+
+    document.body.removeChild(root);
+  });
+
+  it('reloadDocument round-trip on external-change reload swaps cached html', async () => {
+    const root = document.createElement('div');
+    let ids: string[] = ['t-1'];
+    const ipc = makeIpc();
+    (ipc.listOpenDocuments as any).mockImplementation(() => Promise.resolve(ids));
+    (ipc.reloadDocument as any) = vi.fn().mockResolvedValue({
+      tab_id: 't-1',
+      path: '/docs/x.md',
+      html: '<p>fresh</p>',
+      threads: [],
+    });
+    const handle = await mountWorkspace(root, ipc);
+    handle.setActive({
+      kind: 'document',
+      tab_id: 't-1',
+      path: '/docs/x.md',
+      html: '<p>stale</p>',
+      threads: [],
+    });
+    await handle.refresh();
+
+    tauriListeners['external-change']![0]!({
+      payload: { path: '/docs/x.md', kind: 'md', action: 'reload' },
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(ipc.reloadDocument).toHaveBeenCalledWith('/docs/x.md');
+  });
+
+  it('reloadDocument failure still triggers a refresh so the user is not stranded', async () => {
+    const root = document.createElement('div');
+    let ids: string[] = ['t-1'];
+    const ipc = makeIpc();
+    (ipc.listOpenDocuments as any).mockImplementation(() => Promise.resolve(ids));
+    (ipc.reloadDocument as any) = vi.fn().mockRejectedValue(new Error('disk gone'));
+    const handle = await mountWorkspace(root, ipc);
+    handle.setActive({
+      kind: 'document',
+      tab_id: 't-1',
+      path: '/docs/x.md',
+      html: '<p>v</p>',
+      threads: [],
+    });
+    await handle.refresh();
+    const calls = (ipc.listOpenDocuments as any).mock.calls.length;
+
+    tauriListeners['external-change']![0]!({
+      payload: { path: '/docs/x.md', kind: 'md', action: 'reload' },
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    expect((ipc.listOpenDocuments as any).mock.calls.length).toBeGreaterThan(calls);
+  });
+
   it('renders an external-change banner for an "ask" action and skips it for "ignore"', async () => {
     const root = document.createElement('div');
     await mountWorkspace(root, makeIpc(['t-1']));

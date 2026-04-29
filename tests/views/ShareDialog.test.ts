@@ -111,4 +111,48 @@ describe('ShareDialog', () => {
     const previews = root.querySelectorAll('[data-test="preview-name"]');
     expect(previews[0].textContent).toBe('spec.md');
   });
+
+  it('honors a custom sidecarPattern that uses {name} substitution', async () => {
+    // Mirrors the Rust comments.sidecar_pattern setting: `{name}` is the
+    // file stem. Without this branch the preview filename would silently
+    // disagree with the bytes export_document writes.
+    const root = document.createElement('div');
+    await mountShareDialog(root, ipcStub(), {
+      tabId: 't',
+      path: '/tmp/spec.md',
+      sidecarPattern: '.{name}.comments',
+    });
+    const previews = root.querySelectorAll('[data-test="preview-name"]');
+    expect(previews[1].textContent).toBe('.spec.comments');
+  });
+
+  it('falls back to the legacy sidecarSuffix shape when no pattern is set', async () => {
+    const root = document.createElement('div');
+    await mountShareDialog(root, ipcStub(), {
+      tabId: 't',
+      path: '/tmp/spec.md',
+      sidecarSuffix: '.notes.json',
+    });
+    const previews = root.querySelectorAll('[data-test="preview-name"]');
+    expect(previews[1].textContent).toBe('spec.md.notes.json');
+  });
+
+  it('emits share-exported with the result on success', async () => {
+    // Duplicate of an earlier test, kept here so the focused test file is
+    // self-contained when run in isolation.
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    const listener = vi.fn();
+    root.addEventListener('share-exported', listener);
+    await mountShareDialog(root, ipcStub(), {
+      tabId: 't',
+      path: '/tmp/doc.md',
+      sidecarPattern: '{name}.md.comments.json',
+    });
+    (root.querySelector<HTMLInputElement>('[data-test="folder"]')!).value = '/tmp/out';
+    (root.querySelector('[data-action="export"]') as HTMLButtonElement).click();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(listener).toHaveBeenCalled();
+    document.body.removeChild(root);
+  });
 });

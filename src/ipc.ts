@@ -35,6 +35,7 @@ import type {
   ResolveOutcome,
   Thread,
   OpenOutcome,
+  OpenResult,
   RenderResult,
   Hunk,
   ExportResult,
@@ -87,6 +88,14 @@ export interface Ipc {
    * refuses non-empty destinations to avoid stomping unrelated files.
    */
   exportDocument(args: { tabId: string; folder: string }): Promise<ExportResult>;
+  /**
+   * C2 follow-up: re-read `path` from disk, refresh the open tab's cached
+   * source/render, and return the freshened OpenResult so the frontend
+   * can swap its activeTab cache. Called from the external-change reload
+   * listener — without this round-trip the frontend would re-mount stale
+   * HTML.
+   */
+  reloadDocument(path: string): Promise<OpenResult>;
 }
 
 export const tauriIpc: Ipc = {
@@ -112,4 +121,5 @@ export const tauriIpc: Ipc = {
   diffMd: (local, incoming) => invoke<Hunk[]>('diff_md', { local, incoming }),
   exportDocument: (args) =>
     invoke<ExportResult>('export_document', { tabId: args.tabId, folder: args.folder }),
+  reloadDocument: (path) => invoke<OpenResult>('reload_document', { path }),
 };

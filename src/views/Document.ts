@@ -63,6 +63,26 @@ export async function mountDocument(
     toggleBtn.hidden = true;
   }
   toolbar.appendChild(toggleBtn);
+
+  // C3 wire-up: Share button that dispatches a `share-requested` custom
+  // event the Workspace listens for to mount the ShareDialog. Hidden when
+  // there's no path (no document → nothing to share).
+  const shareBtn = document.createElement('button');
+  shareBtn.setAttribute('data-action', 'share');
+  shareBtn.textContent = 'Share…';
+  if (args.path === undefined) {
+    shareBtn.hidden = true;
+  }
+  shareBtn.addEventListener('click', () => {
+    if (!args.path) return;
+    view.dispatchEvent(
+      new CustomEvent('share-requested', {
+        bubbles: true,
+        detail: { tabId: args.tabId, path: args.path },
+      }),
+    );
+  });
+  toolbar.appendChild(shareBtn);
   view.appendChild(toolbar);
 
   const render = document.createElement('div');

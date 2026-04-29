@@ -137,10 +137,29 @@ describe('tauriIpc', () => {
     });
   });
 
-  it('exposes every Phase-1+B3 method as a function', () => {
+  it('setDirty invokes set_dirty with { path, dirty }', async () => {
+    await tauriIpc.setDirty('/x.md', true);
+    expect(invoke).toHaveBeenCalledWith('set_dirty', { path: '/x.md', dirty: true });
+  });
+
+  it('diffMd invokes diff_md with { local, incoming }', async () => {
+    await tauriIpc.diffMd('a', 'b');
+    expect(invoke).toHaveBeenCalledWith('diff_md', { local: 'a', incoming: 'b' });
+  });
+
+  it('exportDocument invokes export_document with { tabId, folder }', async () => {
+    await tauriIpc.exportDocument({ tabId: 't', folder: '/out' });
+    expect(invoke).toHaveBeenCalledWith('export_document', { tabId: 't', folder: '/out' });
+  });
+
+  it('reloadDocument invokes reload_document with { path }', async () => {
+    await tauriIpc.reloadDocument('/x.md');
+    expect(invoke).toHaveBeenCalledWith('reload_document', { path: '/x.md' });
+  });
+
+  it('exposes every IPC method as a function', () => {
     // Pinned Ipc shape so a future rename / dropped method fails loudly here
-    // before drift propagates to view modules. C2 will extend with `diffMd`,
-    // C3 with `exportDocument`.
+    // before drift propagates to view modules.
     const required: (keyof Ipc)[] = [
       'appInfo',
       'getSettings',
@@ -157,10 +176,14 @@ describe('tauriIpc', () => {
       'renderMarkdown',
       'resolveAnchor',
       'saveDocument',
+      'setDirty',
+      'diffMd',
+      'exportDocument',
+      'reloadDocument',
     ];
     for (const m of required) {
       expect(typeof tauriIpc[m]).toBe('function');
     }
-    expect(required.length).toBe(15);
+    expect(required.length).toBe(19);
   });
 });

@@ -2,7 +2,14 @@
 
 //! Tauri binary entry: registers all Phase-1 IPC commands (`app_info` plus
 //! 13 workspace/comments/render commands) plus the Phase-2 `save_document`
-//! and `set_dirty` (B3) and the Phase-3 `diff_md` (C2) — 17 total at this point.
+//! and `set_dirty` (B3) and the Phase-3 `diff_md` (C2), `export_document`
+//! (C3), and `reload_document` (C2 follow-up) — 19 total at this point.
+//!
+//! In addition the binary handles a single CLI subcommand:
+//!     mdviewer migrate-sidecars <dir>
+//! See `migrate_sidecars()` below — this is intentionally NOT a Tauri
+//! command. It runs before `tauri::Builder` so it can be invoked from CI
+//! on a headless machine without spawning the WebView.
 //!
 //! Each handler is a thin shim that locks the `Workspace` mutex and delegates
 //! to a method on `Workspace` (or one of its sub-stores). No business logic
@@ -161,6 +168,7 @@ fn list_threads(state: State<'_, Ws>, tab_id: String) -> Result<Vec<Thread>, Str
 #[tauri::command]
 fn create_thread(
     state: State<'_, Ws>,
+    watcher: State<'_, Mutex<Watcher>>,
     tab_id: String,
     anchor: Anchor,
     body: String,
@@ -168,19 +176,22 @@ fn create_thread(
     let mut ws = state.lock().map_err(|e| e.to_string())?;
     let profile = ws.settings_store().get().profile.clone();
     let store = ws.comments_for_mut(&tab_id).map_err(|e| e.to_string())?;
-    Ok(store.create_thread(NewThread {
+    let thread = store.create_thread(NewThread {
         anchor,
         first_comment: NewComment {
             author: profile.display_name,
             color: profile.color,
             body,
         },
-    }))
+    });
+    persist_sidecar(&ws, &watcher, &tab_id)?;
+    Ok(thread)
 }
 
 #[tauri::command]
 fn post_reply(
     state: State<'_, Ws>,
+    watcher: State<'_, Mutex<Watcher>>,
     tab_id: String,
     thread_id: String,
     body: String,
@@ -197,19 +208,46 @@ fn post_reply(
                 body,
             },
         )
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    persist_sidecar(&ws, &watcher, &tab_id)
 }
 
 #[tauri::command]
 fn resolve_thread(
     state: State<'_, Ws>,
+    watcher: State<'_, Mutex<Watcher>>,
     tab_id: String,
     thread_id: String,
 ) -> Result<(), String> {
     let mut ws = state.lock().map_err(|e| e.to_string())?;
     let by = ws.settings_store().get().profile.display_name.clone();
     let store = ws.comments_for_mut(&tab_id).map_err(|e| e.to_string())?;
-    store.resolve_thread(&thread_id, &by).map_err(|e| e.to_string())
+    store
+        .resolve_thread(&thread_id, &by)
+        .map_err(|e| e.to_string())?;
+    persist_sidecar(&ws, &watcher, &tab_id)
+}
+
+/// After every comments-mutation IPC the in-memory CommentsStore is
+/// authoritative — but to satisfy success-criterion 5 ("exchange via files
+/// alone") the on-disk sidecar must follow. Compute the sidecar path from
+/// the open tab and the active sidecar_pattern, write the v2 envelope, and
+/// prime the watcher's self-write suppression so MDViewer doesn't surface
+/// its own write as an external-change event.
+fn persist_sidecar(
+    ws: &Workspace,
+    watcher: &Mutex<Watcher>,
+    tab_id: &str,
+) -> Result<(), String> {
+    let tab = ws.tab(tab_id).ok_or_else(|| "no such tab".to_string())?;
+    let pattern = ws.settings_store().get().comments.sidecar_pattern.clone();
+    let sc = mdviewer_lib::sidecar::sidecar_path(&tab.path, &pattern);
+    let store = ws.comments_for(tab_id).map_err(|e| e.to_string())?;
+    let bytes = mdviewer_lib::sidecar::save_sidecar(&sc, store).map_err(|e| e.to_string())?;
+    if let Ok(w) = watcher.lock() {
+        w.record_self_write(&sc, mdviewer_lib::watcher::quick_hash(&bytes));
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -261,6 +299,35 @@ fn save_document(
 #[tauri::command]
 fn diff_md(local: String, incoming: String) -> Vec<Hunk> {
     conflict::diff_md(&local, &incoming)
+}
+
+/// Re-read `path` from disk and refresh the matching tab's cached source
+/// + render. Wired to Workspace.ts's `external-change` reload listener so
+/// a watcher-driven reload actually picks up the new bytes — without this
+/// the frontend would re-mount stale cached HTML.
+///
+/// Returns the freshly-rendered OpenResult so the frontend can update its
+/// activeTab cache without a follow-up `open_document` call (which would
+/// short-circuit on the existing-tab branch and re-emit the old HTML).
+#[tauri::command]
+fn reload_document(
+    state: State<'_, Ws>,
+    path: PathBuf,
+) -> Result<mdviewer_lib::workspace::OpenResult, String> {
+    let mut ws = state.lock().map_err(|e| e.to_string())?;
+    ws.refresh_tab(&path).map_err(|e| e.to_string())?;
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+    let tab = ws
+        .list_open_documents()
+        .into_iter()
+        .find(|t| t.path == canonical)
+        .ok_or_else(|| "no open tab for path".to_string())?;
+    Ok(mdviewer_lib::workspace::OpenResult {
+        tab_id: tab.id.clone(),
+        path: tab.path.clone(),
+        html: tab.render.html.clone(),
+        threads: tab.comments.list_threads().to_vec(),
+    })
 }
 
 /// C3: copy a tab's `.md` plus its current sidecar (already in v2 form
@@ -481,6 +548,7 @@ fn main() {
             set_dirty,
             diff_md,
             export_document,
+            reload_document,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

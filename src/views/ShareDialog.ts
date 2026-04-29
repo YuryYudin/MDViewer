@@ -12,10 +12,18 @@ export interface ShareDialogArgs {
   /** Absolute path to the open .md — only used to derive preview filenames. */
   path: string;
   /**
-   * Optional override for the sidecar filename pattern. Defaults to
-   * `<basename>.comments.json` to mirror the Rust `sidecar_pattern`
-   * default — keeps the preview honest without an extra IPC round-trip
-   * just to fetch settings.
+   * Optional sidecar pattern matching the Rust `comments.sidecar_pattern`
+   * setting (e.g. `{name}.md.comments.json`). When supplied, `{name}` is
+   * substituted with the stem of `path`. When omitted, the filename
+   * defaults to `<basename>.comments.json`, which coincides with the
+   * Rust default for `.md` files but disagrees for any custom pattern.
+   * Workspace.ts forwards the value from settings so the preview matches
+   * what export_document actually writes.
+   */
+  sidecarPattern?: string;
+  /**
+   * @deprecated Use `sidecarPattern` for any non-default pattern. This
+   * field is retained for callers that only knew the suffix shape.
    */
   sidecarSuffix?: string;
 }
@@ -40,8 +48,14 @@ export async function mountShareDialog(
   view.appendChild(explainer);
 
   const baseName = basenameFromPath(args.path);
-  const sidecarSuffix = args.sidecarSuffix ?? '.comments.json';
-  const previewNames = [baseName, `${baseName}${sidecarSuffix}`];
+  // Mirror Rust's sidecar_path: substitute `{name}` with the file stem
+  // (basename minus the last extension). Falls back to the legacy
+  // suffix-append shape when no pattern is supplied so existing tests
+  // and callers keep working.
+  const sidecarName = args.sidecarPattern
+    ? args.sidecarPattern.replace('{name}', stemOf(baseName))
+    : `${baseName}${args.sidecarSuffix ?? '.comments.json'}`;
+  const previewNames = [baseName, sidecarName];
 
   const list = document.createElement('ul');
   list.className = 'preview-list';
@@ -113,4 +127,12 @@ function basenameFromPath(p: string): string {
   // by splitting on the last separator of either flavor.
   const idx = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
   return idx >= 0 ? p.slice(idx + 1) : p;
+}
+
+function stemOf(filename: string): string {
+  // Mirror std::path::Path::file_stem: everything before the LAST `.`
+  // (so `archive.tar.gz` → `archive.tar`). For an extensionless name
+  // the stem is the whole name.
+  const idx = filename.lastIndexOf('.');
+  return idx > 0 ? filename.slice(0, idx) : filename;
 }

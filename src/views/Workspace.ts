@@ -4,6 +4,7 @@ import { mountTabBar } from './TabBar';
 import { mountDocument } from './Document';
 import { mountCommentsSidebar } from './CommentsSidebar';
 import { mountConflict } from './Conflict';
+import { mountShareDialog } from './ShareDialog';
 
 export interface WorkspaceState {
   tabs: { id: string; path: string; source?: string; threads?: Thread[]; html?: string }[];
@@ -171,12 +172,26 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
     });
 
     // The external-change listener installed above forwards reload events
-    // to the active document so it can refresh its own render rather than
-    // showing a stale view.
+    // to the active document. We have to round-trip through the IPC's
+    // reload_document so the Rust-side `Workspace` re-reads the bytes
+    // from disk; without that step the refresh below would re-mount the
+    // cached HTML and the user would never see the new content.
     externalListener = (path, action) => {
       if (path !== tab.path) return;
       if (action === 'reload') {
-        void refresh();
+        void (async () => {
+          try {
+            const fresh = await ipc.reloadDocument(path);
+            activeTab.html = fresh.html;
+            activeTab.threads = fresh.threads;
+          } catch {
+            // The reload IPC can fail (file deleted, permissions changed);
+            // fall through to a refresh that will redraw whatever cache
+            // we still have so the user isn't left looking at a black
+            // screen.
+          }
+          void refresh();
+        })();
       }
     };
   }
@@ -208,6 +223,27 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
   // public WorkspaceHandle for now — opening from Recents already drives
   // through ipc.openDocument and a refresh.
   (root as unknown as { __mdv_setActive?: typeof setActive }).__mdv_setActive = setActive;
+
+  // C3 wire-up: Document.ts dispatches `share-requested` when the user
+  // clicks the Share toolbar button. Mount the ShareDialog as an overlay
+  // inside the body region so it sits on top of the document. Auto-
+  // dismiss on `share-exported` (Export succeeded) or `share-dismissed`
+  // (Cancel) so the user lands back on the document view.
+  body.addEventListener('share-requested', (ev) => {
+    const detail = (ev as CustomEvent<{ tabId: string; path: string }>).detail;
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.setAttribute('data-region', 'share-overlay');
+    body.appendChild(overlay);
+    void mountShareDialog(overlay, ipc, {
+      tabId: detail.tabId,
+      path: detail.path,
+      sidecarPattern: settings?.comments.sidecar_pattern,
+    });
+    const dismiss = () => overlay.remove();
+    overlay.addEventListener('share-dismissed', dismiss);
+    overlay.addEventListener('share-exported', dismiss);
+  });
 
   // C2: subscribe to the show-conflict event the IPC layer emits when
   // open_document detects divergence. This catches the case where the

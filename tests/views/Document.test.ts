@@ -258,6 +258,35 @@ describe('Document', () => {
     expect(root.querySelector('[data-anchor="t-out"]')).toBeNull();
   });
 
+  describe('share button', () => {
+    it('hides the share button when no path is supplied', async () => {
+      const root = makeRoot();
+      await mountDocument(root, ipc(), { tabId: 't', html, threads: [] });
+      const btn = root.querySelector<HTMLButtonElement>('[data-action="share"]')!;
+      expect(btn.hidden).toBe(true);
+    });
+
+    it('dispatches share-requested with tabId+path on click', async () => {
+      const root = makeRoot();
+      document.body.appendChild(root);
+      const listener = vi.fn();
+      root.addEventListener('share-requested', listener as EventListener);
+      await mountDocument(root, ipc(), {
+        tabId: 't-7',
+        path: '/tmp/x.md',
+        source: 'hi',
+        settings: settings(),
+        html,
+        threads: [],
+      });
+      (root.querySelector('[data-action="share"]') as HTMLButtonElement).click();
+      expect(listener).toHaveBeenCalled();
+      const ev = listener.mock.calls[0]![0] as CustomEvent;
+      expect(ev.detail).toEqual({ tabId: 't-7', path: '/tmp/x.md' });
+      document.body.removeChild(root);
+    });
+  });
+
   describe('mode toggle', () => {
     it('hides the toggle button when source/path are not provided', async () => {
       const root = makeRoot();

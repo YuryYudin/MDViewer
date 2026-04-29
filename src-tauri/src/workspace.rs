@@ -56,6 +56,12 @@ pub struct OpenResult {
 #[ts(export)]
 pub enum OpenOutcome {
     Document(OpenResult),
+    /// `tab_id` is the id of the open tab if one exists for `path`, or a
+    /// freshly-minted placeholder when no tab is currently mounted (the
+    /// closed-and-reopened branch). Frontend consumers should treat the
+    /// latter as opaque — calling `activate_tab` on a placeholder id
+    /// will fail with "no such tab" because the conflict surfaces
+    /// **before** any tab is registered.
     Conflict {
         tab_id: String,
         path: PathBuf,
