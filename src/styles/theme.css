@@ -1,0 +1,45 @@
+/*
+ * Theme variables. A single class on <body> (`theme-dark`) re-themes every
+ * surface. The Settings → consumer map says theme switches must be honored
+ * everywhere; a class-on-body approach is the only way that scales without
+ * touching every element.
+ */
+
+:root {
+  --bg: #ffffff;
+  --fg: #1a1a1a;
+  --accent: #1d6fe5;
+  --bg-elev-1: #f7f7f7;
+  --bg-elev-2: #efefef;
+  --border: #e0e0e0;
+  --text-faint: #6a6a6a;
+  --danger: #c0392b;
+  --font-size: 14px;
+  --line-height: 1.5;
+  --density-pad: 12px;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+body.theme-dark {
+  --bg: #1a1a1a;
+  --fg: #e6e6e6;
+  --accent: #5fa3ff;
+  --bg-elev-1: #2a2a2a;
+  --bg-elev-2: #353535;
+  --border: #3a3a3a;
+  --text-faint: #9a9a9a;
+  --danger: #ff6b5b;
+}
+
+@media (prefers-color-scheme: dark) {
+  body.theme-follow-system:not(.theme-light) {
+    --bg: #1a1a1a;
+    --fg: #e6e6e6;
+    --accent: #5fa3ff;
+    --bg-elev-1: #2a2a2a;
+    --bg-elev-2: #353535;
+    --border: #3a3a3a;
+    --text-faint: #9a9a9a;
+    --danger: #ff6b5b;
+  }
+}

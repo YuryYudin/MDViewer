@@ -1,0 +1,214 @@
+/* Global app shell layout. All colours come from theme.css variables. */
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: var(--font-size);
+  line-height: var(--line-height);
+}
+
+#app {
+  height: 100%;
+}
+
+.workspace {
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  height: 100%;
+}
+
+.workspace > [data-region='titlebar'] {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+  background: var(--bg-elev-1);
+  border-bottom: 1px solid var(--border);
+  font-size: 12.5px;
+}
+
+.workspace > [data-region='tabbar'] {
+  display: flex;
+  gap: 0;
+  background: var(--bg-elev-1);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+}
+
+.workspace > [data-region='body'] {
+  overflow: auto;
+  position: relative;
+}
+
+.workspace > [data-region='status'] {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 12px;
+  background: var(--bg-elev-1);
+  border-top: 1px solid var(--border);
+  color: var(--text-faint);
+  font-size: 11.5px;
+}
+
+/* Tab strip */
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 0;
+  border-right: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+  font-size: 12.5px;
+  max-width: 240px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tab[data-active='true'] {
+  background: var(--bg);
+  font-weight: 600;
+}
+
+.tab .x {
+  cursor: pointer;
+  color: var(--text-faint);
+  padding: 0 4px;
+}
+
+.tab .x:hover {
+  color: var(--danger);
+}
+
+.tab.new {
+  color: var(--text-faint);
+  font-weight: 400;
+}
+
+/* Start page */
+[data-view='start'] {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 48px 24px;
+  gap: 12px;
+}
+
+[data-view='start'] [data-test='recents'] {
+  list-style: none;
+  padding: 0;
+  margin: 12px 0;
+  width: 100%;
+  max-width: 560px;
+}
+
+[data-view='start'] [data-test='recent-item'] {
+  padding: var(--density-pad);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  margin-bottom: 6px;
+  cursor: pointer;
+  background: var(--bg-elev-1);
+}
+
+[data-view='start'] [data-test='recent-item']:hover {
+  background: var(--bg-elev-2);
+}
+
+[data-view='start'] button {
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-elev-1);
+  color: var(--fg);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+[data-view='start'] button[data-action='open-file'] {
+  background: var(--accent);
+  color: #fff;
+  border-color: transparent;
+}
+
+/* Profile setup */
+[data-view='profile-setup'] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 24px;
+  height: 100%;
+}
+
+[data-view='profile-setup'] .modal {
+  width: 360px;
+  background: var(--bg-elev-1);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 24px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+}
+
+[data-view='profile-setup'] .row {
+  margin: 12px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+[data-view='profile-setup'] input[type='text'] {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+[data-view='profile-setup'] .modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+[data-view='profile-setup'] button {
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+[data-view='profile-setup'] button[data-action='save-profile'] {
+  background: var(--accent);
+  color: #fff;
+  border-color: transparent;
+}
+
+/* Sidebar (used by A10/B-series) */
+.sidebar {
+  border-left: 1px solid var(--border);
+  background: var(--bg-elev-1);
+  width: 320px;
+}
+
+/* Selection popover (used by B-series) */
+.popover {
+  position: absolute;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  padding: 8px;
+}

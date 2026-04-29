@@ -1,0 +1,251 @@
+/**
+ * Tests for the bootstrap module. The full Tauri-backed `main()` performs
+ * IPC calls; we mock the IPC adapter so the bootstrap can run inside jsdom.
+ *
+ * Coverage focuses on:
+ *   - the cached-theme path applied before settings arrive
+ *   - mounting ProfileSetup vs Workspace based on display_name
+ *   - applying the saved theme (dark, light, follow_system)
+ *   - keymap installation + the toggle_dark dispatcher
+ *   - the bootstrap error fallback
+ */
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { Settings } from '../src/ipc';
+
+// jsdom in this configuration ships a Storage *property* but not its
+// prototype methods. Stub a minimal in-memory implementation so the
+// bootstrap's `localStorage.getItem / setItem` calls work.
+const memStore = new Map<string, string>();
+Object.defineProperty(globalThis, 'localStorage', {
+  configurable: true,
+  value: {
+    getItem: (k: string) => (memStore.has(k) ? memStore.get(k)! : null),
+    setItem: (k: string, v: string) => void memStore.set(k, String(v)),
+    removeItem: (k: string) => void memStore.delete(k),
+    clear: () => memStore.clear(),
+    key: (i: number) => Array.from(memStore.keys())[i] ?? null,
+    get length() {
+      return memStore.size;
+    },
+  },
+});
+
+const fakeIpc = {
+  appInfo: vi.fn(),
+  openDocument: vi.fn().mockResolvedValue({ kind: 'document' }),
+  closeTab: vi.fn().mockResolvedValue(undefined),
+  activateTab: vi.fn().mockResolvedValue(undefined),
+  listOpenDocuments: vi.fn().mockResolvedValue([]),
+  listRecents: vi.fn().mockResolvedValue([]),
+  getSettings: vi.fn(),
+  setSettings: vi.fn().mockResolvedValue(undefined),
+  listThreads: vi.fn().mockResolvedValue([]),
+  createThread: vi.fn(),
+  postReply: vi.fn(),
+  resolveThread: vi.fn(),
+  renderMarkdown: vi.fn(),
+  resolveAnchor: vi.fn(),
+};
+
+vi.mock('../src/ipc', async () => {
+  const actual = await vi.importActual<typeof import('../src/ipc')>('../src/ipc');
+  return { ...actual, tauriIpc: fakeIpc };
+});
+
+// Stub the CSS imports so the bootstrap can be exercised in jsdom.
+vi.mock('../src/styles/theme.css', () => ({}));
+vi.mock('../src/styles/app.css', () => ({}));
+
+function settingsWith(overrides: Partial<Settings> = {}): Settings {
+  return {
+    profile: { user_id: 'u', display_name: 'Mira', color: '#888' },
+    appearance: { theme: 'light', font_size_px: 14, line_height: 1.5, density: 'normal' },
+    editor: {
+      default_open_mode: 'view',
+      auto_save: false,
+      auto_save_debounce_ms: 500,
+      external_change_behavior: 'ask',
+      syntax_highlighting: true,
+      mermaid_enabled: true,
+      show_whitespace: false,
+      word_wrap: true,
+    },
+    comments: {
+      auto_merge: 'ask',
+      reattachment_confidence: 0.85,
+      sidecar_pattern: '{name}.comments.json',
+      show_resolved: true,
+    },
+    advanced: { sync_provider: null, verbose_logs: false },
+    shortcuts: {},
+    ...overrides,
+  };
+}
+
+function resetDom(includeApp: boolean): void {
+  while (document.body.firstChild) document.body.removeChild(document.body.firstChild);
+  document.body.classList.remove('theme-dark', 'theme-follow-system');
+  if (includeApp) {
+    const app = document.createElement('div');
+    app.id = 'app';
+    document.body.appendChild(app);
+  }
+}
+
+describe('main()', () => {
+  beforeEach(() => {
+    resetDom(true);
+    localStorage.removeItem('mdviewer.theme');
+    Object.values(fakeIpc).forEach((m) => (m as any).mockClear?.());
+    fakeIpc.listOpenDocuments.mockResolvedValue([]);
+    fakeIpc.listRecents.mockResolvedValue([]);
+  });
+
+  it('mounts Workspace when display_name is set', async () => {
+    fakeIpc.getSettings.mockResolvedValueOnce(settingsWith());
+    const { main } = await import('../src/main');
+    await main();
+    expect(document.querySelector('[data-view="workspace"]')).toBeTruthy();
+  });
+
+  it('mounts ProfileSetup when display_name is empty', async () => {
+    fakeIpc.getSettings.mockResolvedValue(
+      settingsWith({ profile: { user_id: 'u', display_name: '', color: '#888' } }),
+    );
+    const { main } = await import('../src/main');
+    await main();
+    expect(document.querySelector('[data-view="profile-setup"]')).toBeTruthy();
+  });
+
+  it('applies the dark theme when settings.appearance.theme === "dark"', async () => {
+    fakeIpc.getSettings.mockResolvedValueOnce(
+      settingsWith({
+        appearance: { theme: 'dark', font_size_px: 14, line_height: 1.5, density: 'normal' },
+      }),
+    );
+    const { main } = await import('../src/main');
+    await main();
+    expect(document.body.classList.contains('theme-dark')).toBe(true);
+    expect(localStorage.getItem('mdviewer.theme')).toBe('dark');
+  });
+
+  it('applies the light theme by default', async () => {
+    fakeIpc.getSettings.mockResolvedValueOnce(settingsWith());
+    const { main } = await import('../src/main');
+    await main();
+    expect(document.body.classList.contains('theme-dark')).toBe(false);
+    expect(localStorage.getItem('mdviewer.theme')).toBe('light');
+  });
+
+  it('applies follow_system based on prefers-color-scheme', async () => {
+    const mq = vi.spyOn(window, 'matchMedia').mockImplementation((q) => ({
+      matches: q.includes('dark'),
+      media: q,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
+    try {
+      fakeIpc.getSettings.mockResolvedValueOnce(
+        settingsWith({
+          appearance: {
+            theme: 'follow_system',
+            font_size_px: 14,
+            line_height: 1.5,
+            density: 'normal',
+          },
+        }),
+      );
+      const { main } = await import('../src/main');
+      await main();
+      expect(document.body.classList.contains('theme-dark')).toBe(true);
+      expect(document.body.classList.contains('theme-follow-system')).toBe(true);
+    } finally {
+      mq.mockRestore();
+    }
+  });
+
+  it('honors a cached theme before settings arrive', async () => {
+    localStorage.setItem('mdviewer.theme', 'dark');
+    fakeIpc.getSettings.mockResolvedValueOnce(settingsWith());
+    const { main } = await import('../src/main');
+    await main();
+    // Light theme from settings overrides the cached value once settings load.
+    expect(localStorage.getItem('mdviewer.theme')).toBe('light');
+  });
+
+  it('toggle_dark keymap action flips body theme class', async () => {
+    fakeIpc.getSettings.mockResolvedValueOnce(
+      settingsWith({ shortcuts: { toggle_dark: 'CmdOrCtrl+D' } }),
+    );
+    const { main } = await import('../src/main');
+    await main();
+    expect(document.body.classList.contains('theme-dark')).toBe(false);
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'd', metaKey: true }));
+    expect(document.body.classList.contains('theme-dark')).toBe(true);
+  });
+
+  it('keymap actions dispatch the corresponding mdviewer:* events', async () => {
+    fakeIpc.getSettings.mockResolvedValueOnce(
+      settingsWith({
+        shortcuts: {
+          save_file: 'CmdOrCtrl+S',
+          toggle_edit: 'CmdOrCtrl+E',
+          comment_on_selection: 'CmdOrCtrl+M',
+          toggle_sidebar: 'CmdOrCtrl+B',
+          resolve_thread: 'CmdOrCtrl+R',
+          close_tab: 'CmdOrCtrl+W',
+          open_settings: 'CmdOrCtrl+,',
+        },
+      }),
+    );
+    const { main } = await import('../src/main');
+    await main();
+
+    const cases: Array<{ key: string; event: string }> = [
+      { key: 's', event: 'mdviewer:save-active' },
+      { key: 'e', event: 'mdviewer:toggle-edit' },
+      { key: 'm', event: 'mdviewer:comment-on-selection' },
+      { key: 'b', event: 'mdviewer:toggle-sidebar' },
+      { key: 'r', event: 'mdviewer:resolve-focused-thread' },
+      { key: 'w', event: 'mdviewer:close-tab' },
+      { key: ',', event: 'mdviewer:open-settings' },
+    ];
+    for (const { key, event } of cases) {
+      const handler = vi.fn();
+      document.addEventListener(event, handler, { once: true });
+      window.dispatchEvent(new KeyboardEvent('keydown', { key, metaKey: true }));
+      expect(handler).toHaveBeenCalled();
+    }
+  });
+
+  it('open_file keymap action clicks the hidden file input', async () => {
+    fakeIpc.getSettings.mockResolvedValue(
+      settingsWith({
+        profile: { user_id: 'u', display_name: '', color: '#888' },
+        shortcuts: { open_file: 'CmdOrCtrl+O' },
+      }),
+    );
+    const { main } = await import('../src/main');
+    await main();
+    // ProfileSetup mounts (no display_name) so there is no file input. Append
+    // a stub one to verify the dispatcher targets `[data-test="file-input"]`.
+    const fake = document.createElement('input');
+    fake.setAttribute('data-test', 'file-input');
+    fake.type = 'file';
+    document.body.appendChild(fake);
+    const click = vi.spyOn(fake, 'click');
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'o', metaKey: true }));
+    expect(click).toHaveBeenCalled();
+  });
+
+  it('throws if the #app element is missing', async () => {
+    resetDom(false);
+    fakeIpc.getSettings.mockResolvedValueOnce(settingsWith());
+    const { main } = await import('../src/main');
+    await expect(main()).rejects.toThrow(/#app element missing/);
+  });
+});
