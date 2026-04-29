@@ -1,9 +1,11 @@
 //! Sidecar JSON IO: load / save / path resolution.
 //!
 //! The on-disk format is `<doc>.md.comments.json` (configurable via
-//! `settings.comments.sidecar_pattern`). Phase-1 ships `schema_version: 1`;
-//! C1 introduces `schema_version: 2` (Automerge) and a one-way migration
-//! test from this layout.
+//! `settings.comments.sidecar_pattern`). C1 promotes the format to
+//! `schema_version: 2`: a JSON envelope wrapping a base64-encoded
+//! Automerge save() blob. v1 sidecars (Phase-1 plain JSON) are still
+//! readable via a fallback parser, and the migration is in-memory only —
+//! the disk file isn't rewritten until the next save.
 //!
 //! ## Why pattern lives here, not in `comments.rs`
 //!
@@ -12,16 +14,35 @@
 //! a Settings change (rename pattern at runtime) only has to thread through
 //! one module — the `CommentsStore` itself stays oblivious to disk paths.
 
-use crate::comments::{CommentsStore, MergeOutcome, Thread};
+use crate::comments::{merge_stores, store_from_automerge, store_to_automerge, CommentsStore, MergeOutcome, Thread};
 use crate::settings::AutoMergeMode;
 use anyhow::{Context, Result};
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+
+/// On-disk envelope for `schema_version: 2`. The Automerge document is
+/// saved via `AutoCommit::save()` (a binary blob with full op history)
+/// and base64-encoded so the file stays valid JSON. Keeping it JSON
+/// preserves grep-ability and round-trips through serde for tests.
+#[derive(Debug, Serialize, Deserialize)]
+struct EnvelopeV2 {
+    schema_version: u32,
+    /// base64(automerge::AutoCommit::save() bytes)
+    automerge: String,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct OnDiskV1 {
     schema_version: u32,
     threads: Vec<Thread>,
+}
+
+/// Lightweight peek used to detect the schema_version without parsing the
+/// full envelope. Lets us route v1 vs v2 with a single read.
+#[derive(Debug, Deserialize)]
+struct SchemaPeek {
+    schema_version: u32,
 }
 
 /// Resolve the sidecar path next to `md_path` using `pattern`.
@@ -47,22 +68,50 @@ pub fn sidecar_path(md_path: &Path, pattern: &str) -> PathBuf {
 /// not an error — a brand-new document has no comments yet, so we return an
 /// empty store and let the caller decide whether to save when the user
 /// creates the first thread.
+///
+/// Format dispatch:
+/// - `schema_version: 2` -> decode base64 + Automerge `load()`, walk back
+///   to threads.
+/// - `schema_version: 1` -> Phase-1 path; parse the legacy `OnDiskV1` shape
+///   and seed the store directly. We do NOT rewrite the file here — that
+///   would silently mutate a user's document on first read after upgrade.
+///   The next save naturally upgrades the file to v2.
+/// - anything else -> bail with `unsupported schema_version`.
 pub fn load_sidecar(path: &Path) -> Result<CommentsStore> {
     if !path.exists() {
         return Ok(CommentsStore::new());
     }
-    let bytes = std::fs::read_to_string(path).context("read sidecar")?;
-    let on_disk: OnDiskV1 = serde_json::from_str(&bytes).context("parse sidecar")?;
-    if on_disk.schema_version != 1 {
-        // Phase-3 (C1) layers in v2 handling. For Phase-1 we accept v1 only.
-        anyhow::bail!("unsupported schema_version {}", on_disk.schema_version);
+    let bytes = std::fs::read(path).context("read sidecar")?;
+    // Peek at the version first so we can route without trying to parse
+    // the wrong shape (which would surface as a misleading parse error).
+    let peek: SchemaPeek = serde_json::from_slice(&bytes).context("parse sidecar")?;
+    match peek.schema_version {
+        2 => {
+            let env: EnvelopeV2 =
+                serde_json::from_slice(&bytes).context("parse sidecar")?;
+            let am_bytes = base64::engine::general_purpose::STANDARD
+                .decode(&env.automerge)
+                .context("decode automerge payload")?;
+            let store = store_from_automerge(&am_bytes)
+                .context("rebuild CommentsStore from Automerge doc")?;
+            Ok(store)
+        }
+        1 => {
+            // Phase-1 plain JSON. Preserve every thread / comment ID
+            // verbatim so a counterpart's CRDT doesn't see them as "new"
+            // after the first auto-merge.
+            let v1: OnDiskV1 =
+                serde_json::from_slice(&bytes).context("parse sidecar")?;
+            Ok(CommentsStore::from_threads(v1.threads))
+        }
+        other => anyhow::bail!("unsupported schema_version {}", other),
     }
-    Ok(CommentsStore::from_threads(on_disk.threads))
 }
 
-/// Persist `store`'s current threads to `path` as pretty-printed JSON with a
-/// `schema_version: 1` header. Creates parent directories as needed so the
-/// caller doesn't have to worry about a missing workspace folder.
+/// Persist `store`'s current threads to `path` as a v2 envelope:
+/// JSON wrapper around a base64-encoded Automerge save() blob. Creates
+/// parent directories as needed so the caller doesn't have to worry
+/// about a missing workspace folder.
 pub fn save_sidecar(path: &Path, store: &CommentsStore) -> Result<()> {
     if let Some(parent) = path.parent() {
         // `create_dir_all` is a no-op when the directory already exists, so
@@ -71,11 +120,12 @@ pub fn save_sidecar(path: &Path, store: &CommentsStore) -> Result<()> {
             std::fs::create_dir_all(parent).context("create sidecar parent dir")?;
         }
     }
-    let on_disk = OnDiskV1 {
-        schema_version: 1,
-        threads: store.list_threads().to_vec(),
+    let am_bytes = store_to_automerge(store).context("serialize store to Automerge")?;
+    let env = EnvelopeV2 {
+        schema_version: 2,
+        automerge: base64::engine::general_purpose::STANDARD.encode(&am_bytes),
     };
-    let body = serde_json::to_string_pretty(&on_disk)?;
+    let body = serde_json::to_string_pretty(&env)?;
     std::fs::write(path, body).context("write sidecar")?;
     Ok(())
 }
@@ -83,26 +133,30 @@ pub fn save_sidecar(path: &Path, store: &CommentsStore) -> Result<()> {
 /// Decide how to reconcile an `incoming` sidecar (from disk) against a
 /// `local` in-memory store, given the user's auto-merge preference.
 ///
-/// - `Always` -> caller adopts the version with the newer mtime;
-///   this function picks based on `incoming_is_newer`.
+/// - `Always` -> CRDT-merge `local` and `incoming` (deterministic and
+///   conflict-free thanks to Automerge's `doc.merge()`); we no longer
+///   rely on the Phase-1 newest-mtime heuristic because that loses
+///   work whenever both sides edited.
 /// - `Ask` / `Manual` -> return `AskUser` so the frontend can prompt.
 ///
-/// The `mtime` comparison itself happens in B2 (file watcher), which has the
-/// `Metadata::modified()` value — we just receive the precomputed boolean so
-/// this module stays free of `std::fs` for the policy decision.
+/// The `mtime` comparison parameter is retained for API compatibility
+/// with Phase-1 callers (B2's file watcher) but is no longer consulted
+/// in the `Always` path.
 pub fn merge_with_policy(
     local: CommentsStore,
     incoming: CommentsStore,
     mode: AutoMergeMode,
-    incoming_is_newer: bool,
+    _incoming_is_newer: bool,
 ) -> MergeOutcome {
     match mode {
         AutoMergeMode::Always => {
-            if incoming_is_newer {
-                MergeOutcome::Adopted(incoming)
-            } else {
-                MergeOutcome::Adopted(local)
-            }
+            // CRDT merge: union of both sides' threads with deterministic
+            // ordering. Falling back to "adopt incoming" only happens if
+            // the merge itself errors, which would indicate a corrupted
+            // Automerge payload — better to surface the freshest disk
+            // copy than to silently drop everything.
+            let merged = merge_stores(&local, &incoming);
+            MergeOutcome::Adopted(merged)
         }
         AutoMergeMode::Ask | AutoMergeMode::Manual => {
             MergeOutcome::AskUser { local, incoming }

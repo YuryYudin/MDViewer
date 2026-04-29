@@ -15,7 +15,11 @@ fn anchor() -> Anchor {
 }
 
 #[test]
-fn round_trips_through_disk_with_schema_v1_header() {
+fn round_trips_through_disk_with_schema_v2_header() {
+    // C1 promotes the on-disk format to v2 (Automerge envelope). The
+    // round-trip coverage stays the same; only the version literal changes
+    // and the assertion now parses the JSON envelope rather than scanning
+    // the raw bytes.
     let tmp = TempDir::new().unwrap();
     let md = tmp.path().join("sample.md");
     std::fs::write(&md, "Hello world").unwrap();
@@ -34,14 +38,77 @@ fn round_trips_through_disk_with_schema_v1_header() {
     let path = sidecar_path(&md, pattern);
     save_sidecar(&path, &store).unwrap();
 
-    let raw = std::fs::read_to_string(&path).unwrap();
-    assert!(
-        raw.contains("\"schema_version\": 1"),
-        "v1 header expected: {raw}"
-    );
+    let raw = std::fs::read(&path).unwrap();
+    let envelope: serde_json::Value =
+        serde_json::from_slice(&raw).expect("v2 envelope is JSON");
+    assert_eq!(envelope["schema_version"], 2);
 
     let loaded = load_sidecar(&path).unwrap();
     assert_eq!(loaded.list_threads().len(), 1);
+}
+
+#[test]
+fn writes_v2_with_automerge_payload() {
+    let tmp = TempDir::new().unwrap();
+    let md = tmp.path().join("doc.md");
+    std::fs::write(&md, "x").unwrap();
+    let mut store = CommentsStore::new();
+    store.create_thread(NewThread {
+        anchor: anchor(),
+        first_comment: NewComment {
+            author: "A".into(),
+            color: "#f80".into(),
+            body: "hi".into(),
+        },
+    });
+
+    let sc = sidecar_path(&md, "{name}.md.comments.json");
+    save_sidecar(&sc, &store).unwrap();
+
+    let bytes = std::fs::read(&sc).unwrap();
+    // The on-disk envelope is JSON containing schema_version + base64(automerge bytes).
+    let envelope: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(envelope["schema_version"], 2);
+    assert!(envelope["automerge"].is_string());
+    let am_b64 = envelope["automerge"].as_str().unwrap();
+    assert!(!am_b64.is_empty(), "automerge payload should not be empty");
+}
+
+#[test]
+fn loads_v1_and_round_trips_to_v2_on_next_save() {
+    let tmp = TempDir::new().unwrap();
+    let md = tmp.path().join("doc.md");
+    std::fs::write(&md, "x").unwrap();
+    let sc = sidecar_path(&md, "{name}.md.comments.json");
+
+    // Hand-write a v1 file with one thread.
+    let v1 = r##"{
+        "schema_version": 1,
+        "threads": [{
+            "id": "t-1", "anchor": {"start":0,"end":5,"exact":"hello","prefix":"","suffix":""},
+            "comments": [{"id":"c-1","author":"A","color":"#f80","body":"hi","created_at":"2025-01-01T00:00:00Z"}],
+            "resolved": false
+        }]
+    }"##;
+    std::fs::write(&sc, v1).unwrap();
+
+    let store = load_sidecar(&sc).unwrap();
+    assert_eq!(store.list_threads().len(), 1);
+    assert_eq!(store.list_threads()[0].id, "t-1"); // ID preserved
+    assert_eq!(store.list_threads()[0].comments[0].id, "c-1");
+
+    // First save rewrites as v2.
+    save_sidecar(&sc, &store).unwrap();
+    let envelope: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&sc).unwrap()).unwrap();
+    assert_eq!(envelope["schema_version"], 2);
+
+    // Reload yields the same thread set.
+    let reloaded = load_sidecar(&sc).unwrap();
+    assert_eq!(reloaded.list_threads().len(), 1);
+    assert_eq!(reloaded.list_threads()[0].id, "t-1");
+    assert_eq!(reloaded.list_threads()[0].comments[0].id, "c-1");
+    assert_eq!(reloaded.list_threads()[0].comments[0].body, "hi");
 }
 
 #[test]
@@ -67,12 +134,12 @@ fn sidecar_path_honors_pattern() {
 
 #[test]
 fn load_sidecar_rejects_unknown_schema_version() {
-    // Phase-1 only knows v1. v2 lands with C1 and a migration test, so we
-    // explicitly bail rather than silently treating v2 as v1 (which would
-    // drop unknown fields and corrupt the sidecar on re-save).
+    // C1 introduces v2 (Automerge envelope); both v1 and v2 are accepted.
+    // Anything beyond that must bail rather than silently mishandle a future
+    // format. We use schema_version: 99 as a stand-in for "from the future".
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().join("future.md.comments.json");
-    std::fs::write(&path, r#"{"schema_version": 2, "threads": []}"#).unwrap();
+    std::fs::write(&path, r#"{"schema_version": 99, "threads": []}"#).unwrap();
     let err = load_sidecar(&path).unwrap_err();
     assert!(format!("{err}").contains("unsupported schema_version"));
 }
@@ -102,7 +169,10 @@ fn save_sidecar_creates_missing_parent_dirs() {
 }
 
 #[test]
-fn merge_policy_always_picks_newer_side() {
+fn merge_policy_always_unions_threads_from_both_sides() {
+    // C1 promoted Auto-merge=Always from the Phase-1 newest-mtime rule to a
+    // CRDT union. Two distinct threads from local + two distinct threads
+    // from incoming converge to all four — neither side loses work.
     let mut local = CommentsStore::new();
     let _ = local.create_thread(NewThread {
         anchor: anchor(),
@@ -131,16 +201,17 @@ fn merge_policy_always_picks_newer_side() {
         },
     });
 
-    // incoming_is_newer = true -> caller adopts the incoming store.
+    // The `incoming_is_newer` flag is retained for API compatibility but
+    // is no longer consulted under Always — the CRDT merge is order-free.
     let outcome = merge_with_policy(local, incoming, AutoMergeMode::Always, true);
     match outcome {
-        MergeOutcome::Adopted(s) => assert_eq!(s.list_threads().len(), 2),
+        MergeOutcome::Adopted(s) => assert_eq!(s.list_threads().len(), 3),
         MergeOutcome::AskUser { .. } => panic!("Always must not ask"),
     }
 }
 
 #[test]
-fn merge_policy_always_keeps_local_when_local_is_newer() {
+fn merge_policy_always_keeps_local_threads_when_incoming_is_empty() {
     let mut local = CommentsStore::new();
     let _ = local.create_thread(NewThread {
         anchor: anchor(),
@@ -151,7 +222,6 @@ fn merge_policy_always_keeps_local_when_local_is_newer() {
         },
     });
     let incoming = CommentsStore::new();
-    // incoming_is_newer = false -> keep local.
     let outcome = merge_with_policy(local, incoming, AutoMergeMode::Always, false);
     match outcome {
         MergeOutcome::Adopted(s) => assert_eq!(s.list_threads().len(), 1),

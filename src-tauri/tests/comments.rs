@@ -1,5 +1,7 @@
 use mdviewer_lib::anchor::Anchor;
-use mdviewer_lib::comments::{ChangeEvent, CommentsStore, NewComment, NewThread, Thread};
+use mdviewer_lib::comments::{
+    merge_stores, ChangeEvent, CommentsStore, NewComment, NewThread, Thread,
+};
 
 fn anchor() -> Anchor {
     Anchor {
@@ -187,6 +189,78 @@ fn post_reply_emits_reply_event() {
         )
         .unwrap();
     assert_eq!(rx.try_recv().ok(), Some(ChangeEvent::ReplyPosted));
+}
+
+#[test]
+fn merge_order_independent() {
+    // The CRDT promise: applying ops {A, B} or {B, A} converges to the same
+    // end-state. If a regression in Automerge usage (e.g. wrong actor IDs)
+    // duplicated or dropped a thread, this test would fail.
+    let mut a = CommentsStore::new();
+    a.create_thread(NewThread {
+        anchor: anchor(),
+        first_comment: NewComment {
+            author: "A".into(),
+            color: "#f80".into(),
+            body: "from A".into(),
+        },
+    });
+    let mut b = CommentsStore::new();
+    b.create_thread(NewThread {
+        anchor: anchor(),
+        first_comment: NewComment {
+            author: "B".into(),
+            color: "#08f".into(),
+            body: "from B".into(),
+        },
+    });
+
+    let ab = merge_stores(&a, &b);
+    let ba = merge_stores(&b, &a);
+    assert_eq!(ab.list_threads().len(), 2);
+    assert_eq!(ba.list_threads().len(), 2);
+
+    // Sort by id so we compare order-independently.
+    let mut ab_ids: Vec<_> = ab.list_threads().iter().map(|t| t.id.clone()).collect();
+    let mut ba_ids: Vec<_> = ba.list_threads().iter().map(|t| t.id.clone()).collect();
+    ab_ids.sort();
+    ba_ids.sort();
+    assert_eq!(ab_ids, ba_ids);
+}
+
+#[test]
+fn merge_stores_preserves_both_sides_threads() {
+    let mut a = CommentsStore::new();
+    let ta = a.create_thread(NewThread {
+        anchor: anchor(),
+        first_comment: NewComment {
+            author: "Alice".into(),
+            color: "#f80".into(),
+            body: "alice's note".into(),
+        },
+    });
+    let mut b = CommentsStore::new();
+    let tb = b.create_thread(NewThread {
+        anchor: anchor(),
+        first_comment: NewComment {
+            author: "Bob".into(),
+            color: "#08f".into(),
+            body: "bob's note".into(),
+        },
+    });
+
+    let merged = merge_stores(&a, &b);
+    let ids: Vec<&str> = merged.list_threads().iter().map(|t| t.id.as_str()).collect();
+    assert!(ids.contains(&ta.id.as_str()));
+    assert!(ids.contains(&tb.id.as_str()));
+    // Comment bodies must round-trip too.
+    let bodies: Vec<&str> = merged
+        .list_threads()
+        .iter()
+        .flat_map(|t| t.comments.iter().map(|c| c.body.as_str()))
+        .collect();
+    assert!(bodies.contains(&"alice's note"));
+    assert!(bodies.contains(&"bob's note"));
 }
 
 #[test]

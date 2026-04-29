@@ -1,9 +1,24 @@
 //! Comments store: threads + comments with W3C-anchor selectors.
 //!
 //! Phase-1 in-memory representation of an entire document's comments.
-//! Persistence (`<doc>.md.comments.json`) is layered in `sidecar.rs`. Both
-//! modules ship at `schema_version: 1`; C1 will introduce v2 (Automerge) and
-//! a one-way migration test from this format.
+//! Persistence (`<doc>.md.comments.json`) is layered in `sidecar.rs`. C1
+//! introduced `schema_version: 2` — an Automerge-backed envelope — and
+//! exposes `store_to_automerge`, `store_from_automerge`, and `merge_stores`
+//! here so `sidecar.rs` (and Phase-3's auto-merge=Always path) can rely on
+//! a deterministic CRDT merge rather than the Phase-1 newest-mtime rule.
+//!
+//! ## Why threads are stored as JSON-string values keyed by `Thread.id`
+//!
+//! Automerge's strength is per-key conflict-free merging. By keying the
+//! top-level `threads` Map on `Thread.id` we get:
+//! - Two sides creating different threads (distinct ids) merge as a union
+//!   — neither side loses work.
+//! - Migration from v1 preserves ids verbatim, so a counterpart's CRDT
+//!   doesn't see migrated threads as "new" and duplicate them.
+//! - The thread body itself stays an opaque JSON blob; we don't model
+//!   per-field CRDTs because the only edit operations Phase-3 supports
+//!   are append-only (post_reply) and idempotent (resolve), neither of
+//!   which benefit from finer-grained CRDT modelling.
 //!
 //! ## Why `std::sync::mpsc` for fan-out
 //!
@@ -252,4 +267,78 @@ fn new_id(prefix: &str) -> String {
         .as_nanos();
     let seq = ID_COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("{prefix}{n:x}-{seq:x}")
+}
+
+// ---------------------------------------------------------------------------
+// C1: Automerge bridge
+// ---------------------------------------------------------------------------
+
+use anyhow::{Context, Result};
+use automerge::{transaction::Transactable, AutoCommit, ReadDoc, Value, ROOT};
+
+/// Encode a CommentsStore into a compact Automerge save() blob. Each thread
+/// is stored as a JSON-serialized string at the document root keyed by
+/// `Thread.id` — there is **no** wrapper "threads" map, deliberately.
+///
+/// ## Why root-level keys (no wrapper map)
+///
+/// `AutoCommit::new()` mints a fresh actor id every call. Two stores
+/// constructed independently and then merged would otherwise both perform
+/// `put_object(ROOT, "threads", ObjType::Map)` concurrently — Automerge
+/// resolves concurrent object-puts at the same key by keeping one and
+/// discarding the other, which silently drops one side's threads. Putting
+/// each thread directly at root means concurrent writes only ever land on
+/// *different* keys (thread ids are globally unique by construction in
+/// `new_id`), so the union semantic falls out for free.
+pub fn store_to_automerge(store: &CommentsStore) -> Result<Vec<u8>> {
+    let mut doc = AutoCommit::new();
+    for t in store.list_threads() {
+        let json = serde_json::to_string(t).context("serialize thread to JSON")?;
+        doc.put(ROOT, t.id.clone(), json)
+            .with_context(|| format!("put thread {}", t.id))?;
+    }
+    Ok(doc.save())
+}
+
+/// Decode a CommentsStore from a compact Automerge save() blob. Each
+/// root-level scalar key is parsed as a serialized `Thread`. Non-string
+/// values (none expected at our schema, but defensive) are skipped.
+pub fn store_from_automerge(bytes: &[u8]) -> Result<CommentsStore> {
+    let doc = AutoCommit::load(bytes).context("load automerge doc")?;
+    let mut threads = Vec::new();
+    for key in doc.keys(ROOT).collect::<Vec<_>>() {
+        let value = doc
+            .get(ROOT, key.clone())
+            .with_context(|| format!("read thread {key}"))?;
+        if let Some((Value::Scalar(scalar), _)) = value {
+            if let Some(json) = scalar.to_str() {
+                let thread: Thread = serde_json::from_str(json)
+                    .with_context(|| format!("deserialize thread {key}"))?;
+                threads.push(thread);
+            }
+        }
+    }
+    Ok(CommentsStore::from_threads(threads))
+}
+
+/// CRDT-merge two stores into a third, used by the auto-merge=Always path
+/// in `sidecar::merge_with_policy`. The merge is conflict-free for distinct
+/// `Thread.id`s (set union); concurrent edits to the same id resolve by
+/// Automerge's deterministic last-writer-wins on the JSON-string value.
+///
+/// Errors fall back to `local` rather than propagating because callers
+/// would otherwise have to choose between dropping the local edits or
+/// surfacing a serialization error in a UX path that's already handling
+/// "the file changed under you" — neither helps the user.
+pub fn merge_stores(local: &CommentsStore, incoming: &CommentsStore) -> CommentsStore {
+    fn try_merge(local: &CommentsStore, incoming: &CommentsStore) -> Result<CommentsStore> {
+        let local_bytes = store_to_automerge(local)?;
+        let incoming_bytes = store_to_automerge(incoming)?;
+        let mut a = AutoCommit::load(&local_bytes).context("reload local automerge")?;
+        let mut b = AutoCommit::load(&incoming_bytes).context("reload incoming automerge")?;
+        a.merge(&mut b).context("automerge merge")?;
+        store_from_automerge(&a.save())
+    }
+    try_merge(local, incoming)
+        .unwrap_or_else(|_| CommentsStore::from_threads(local.list_threads().to_vec()))
 }
