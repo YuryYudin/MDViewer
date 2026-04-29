@@ -65,6 +65,35 @@ describe('StartPage → click a recent → document mounts', () => {
     const when = await recent.$('[data-test="recent-when"]').getText();
     expect(when).not.toBe('');
 
+    // Layout fidelity (wireframe-01): the status bar must sit at the
+    // bottom of the workspace, not float in the middle. This catches
+    // the regression where a hidden titlebar's grid track shoved the
+    // status bar into the 1fr middle row. Tolerate a few pixels of
+    // anti-aliasing / sub-pixel rounding.
+    const layout = await browser.execute(() => {
+      const ws = document.querySelector('[data-view="workspace"]') as HTMLElement;
+      const status = document.querySelector('[data-region="status"]') as HTMLElement;
+      const tabbar = document.querySelector('[data-region="tabbar"]') as HTMLElement;
+      const wsRect = ws.getBoundingClientRect();
+      const statusRect = status.getBoundingClientRect();
+      const tabbarRect = tabbar.getBoundingClientRect();
+      return {
+        statusBottom: statusRect.bottom,
+        wsBottom: wsRect.bottom,
+        statusTop: statusRect.top,
+        tabbarTop: tabbarRect.top,
+        wsTop: wsRect.top,
+        tabbarHeight: tabbarRect.height,
+        statusHeight: statusRect.height,
+      };
+    });
+    expect(Math.abs(layout.statusBottom - layout.wsBottom)).toBeLessThan(2);
+    // Status sits below the body, not above it.
+    expect(layout.statusTop).toBeGreaterThan(layout.tabbarTop + 100);
+    // Tabbar is the wireframe-spec 36 px (allow ±1 for rounding).
+    expect(Math.abs(layout.tabbarHeight - 36)).toBeLessThanOrEqual(1);
+    expect(Math.abs(layout.statusHeight - 22)).toBeLessThanOrEqual(1);
+
     await recent.click();
 
     // After the click, Workspace's onOpened callback runs setActive +

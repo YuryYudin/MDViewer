@@ -46,8 +46,9 @@ describe('Theme switch repaints all chrome regions', () => {
     // property is set on body via `.theme-dark` and inherited downward; a
     // region that's escaped the cascade (e.g. has its own --bg override)
     // would surface as a different value here.
+    // The OS provides the title bar; the in-app titlebar region was
+    // removed, so it's no longer in this list.
     const regions = [
-      '[data-view="titlebar"]',
       '[data-view="tabs"]',
       '[data-view="document"]',
       '[data-view="sidebar-comments"]',

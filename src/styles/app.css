@@ -30,20 +30,12 @@ body {
  * ===================================================================== */
 .workspace {
   display: grid;
-  /* The in-app titlebar is hidden by default — macOS / Windows / Linux
-   * already render an OS title with the window's title attribute, and
-   * stacking our own title underneath it produces the duplicate that
-   * was visible in the screenshot. We keep the data-region in the DOM
-   * so spec selectors and theming hooks still resolve, but it occupies
-   * zero rows by default. To resurrect a custom in-app titlebar later
-   * (e.g. for a Windows host with `decorations: false`), drop the
-   * `display: none` rule below and restore the row to 36px. */
-  grid-template-rows: 0 36px 1fr 22px;
+  /* Three rows: tabbar / body / status. The OS supplies the title bar.
+   * To add a custom in-app titlebar later (e.g. for a frameless window
+   * mode), append a row in front and a matching <div data-region="titlebar">
+   * in Workspace.ts. */
+  grid-template-rows: 36px 1fr 22px;
   height: 100%;
-}
-
-.workspace > [data-region='titlebar'] {
-  display: none;
 }
 
 .workspace > [data-region='tabbar'] {

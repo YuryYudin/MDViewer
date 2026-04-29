@@ -54,11 +54,15 @@ function makeIpc(openIds: string[] = []): Ipc {
 }
 
 describe('Workspace', () => {
-  it('mounts the workspace shell with all four regions', async () => {
+  it('mounts the workspace shell with three regions (tabbar / body / status)', async () => {
+    // The OS supplies the window title; the in-app titlebar region was
+    // removed because it (a) duplicated the OS title and (b) confused
+    // CSS Grid's auto-placement when hidden, slotting items into the
+    // wrong tracks.
     const root = document.createElement('div');
     await mountWorkspace(root, makeIpc());
     expect(root.querySelector('[data-view="workspace"]')).toBeTruthy();
-    expect(root.querySelector('[data-region="titlebar"]')).toBeTruthy();
+    expect(root.querySelector('[data-region="titlebar"]')).toBeNull();
     expect(root.querySelector('[data-region="tabbar"]')).toBeTruthy();
     expect(root.querySelector('[data-region="body"]')).toBeTruthy();
     expect(root.querySelector('[data-region="status"]')).toBeTruthy();

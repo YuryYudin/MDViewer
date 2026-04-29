@@ -34,26 +34,22 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
   const shell = document.createElement('div');
   shell.setAttribute('data-view', 'workspace');
   shell.className = 'workspace';
-  for (const region of ['titlebar', 'tabbar', 'body', 'status']) {
+  // Three regions: tabbar (36px), body (1fr), status (22px). The OS
+  // already renders the window title in the native chrome — an in-app
+  // titlebar would duplicate it, and leaving a hidden 4th track in the
+  // grid causes auto-placement to slot the visible items into the wrong
+  // tracks (tabbar collapsing, status floating in the middle).
+  for (const region of ['tabbar', 'body', 'status']) {
     const el = document.createElement('div');
     el.setAttribute('data-region', region);
-    // The status region also serves as wireframe-03's status-bar; expose
-    // it via data-view so spec selectors (and CSS theming) can target it
-    // by purpose, not just position.
+    // The status region also serves as wireframe-01/03/05's status-bar
+    // and the tabbar is wireframe "tabs"; expose those via data-view so
+    // spec selectors and theming hooks can target them by purpose.
     if (region === 'status') el.setAttribute('data-view', 'status-bar');
-    if (region === 'titlebar') el.setAttribute('data-view', 'titlebar');
     if (region === 'tabbar') el.setAttribute('data-view', 'tabs');
     shell.appendChild(el);
   }
   root.appendChild(shell);
-
-  // Static title in the titlebar; the active tab path will be wired in by
-  // A10 once Document.ts owns the active doc.
-  const titlebar = shell.querySelector<HTMLElement>('[data-region="titlebar"]')!;
-  const titleText = document.createElement('span');
-  titleText.className = 'title';
-  titleText.textContent = 'MDViewer';
-  titlebar.appendChild(titleText);
 
   // Status bar (wireframe-01/03/05): profile chip on the left, a flexible
   // spacer, and "Tauri 2 · vX.Y.Z" version label on the right. The
