@@ -1,0 +1,523 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>11 · Settings</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+  /* Settings-specific layout */
+  .settings-wrap {
+    display: grid;
+    grid-template-columns: 200px 1fr;
+    height: 100%;
+    background: var(--surface);
+  }
+  .settings-nav {
+    border-right: 1px solid var(--border);
+    background: var(--surface-2);
+    padding: 14px 0;
+    overflow: auto;
+  }
+  .settings-nav a {
+    display: block;
+    padding: 7px 18px;
+    font-size: 13px;
+    color: var(--text-dim);
+    text-decoration: none;
+    cursor: default;
+    border-left: 3px solid transparent;
+  }
+  .settings-nav a.active {
+    color: var(--text);
+    border-left-color: var(--accent);
+    background: var(--surface);
+    font-weight: 600;
+  }
+  .settings-pane {
+    overflow: auto;
+    padding: 24px 36px 80px;
+  }
+  .settings-pane h2 {
+    font-size: 17px;
+    margin: 0 0 4px;
+  }
+  .settings-pane .subtitle {
+    color: var(--text-dim);
+    font-size: 13px;
+    margin: 0 0 18px;
+  }
+  .settings-section {
+    border-top: 1px solid var(--border);
+    padding: 22px 0 6px;
+  }
+  .settings-section:first-of-type { border-top: none; padding-top: 0; }
+  .settings-section h2 + .subtitle { margin-top: 4px; }
+  .settings-row {
+    display: grid;
+    grid-template-columns: 220px 1fr;
+    gap: 16px;
+    align-items: center;
+    padding: 8px 0;
+    border-bottom: 1px dashed var(--border);
+  }
+  .settings-row:last-child { border-bottom: none; }
+  .settings-row label.k {
+    font-size: 13px;
+    color: var(--text);
+    font-weight: 500;
+  }
+  .settings-row .help {
+    grid-column: 1 / -1;
+    color: var(--text-dim);
+    font-size: 12px;
+    margin-top: -4px;
+    padding-bottom: 2px;
+  }
+  .settings-row input[type="text"], .settings-row input[type="number"], .settings-row select {
+    padding: 5px 8px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-size: 13px;
+    font-family: var(--sans);
+    background: var(--surface);
+    color: var(--text);
+  }
+  .settings-row input[type="text"] { width: 280px; }
+  .settings-row select { min-width: 180px; }
+  .settings-row input[type="number"] { width: 80px; }
+
+  .theme-options {
+    display: flex;
+    gap: 8px;
+  }
+  .theme-card {
+    border: 2px solid var(--border);
+    border-radius: 6px;
+    padding: 8px;
+    cursor: pointer;
+    width: 110px;
+    text-align: center;
+    background: var(--surface-2);
+  }
+  .theme-card.selected {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+  .theme-card .swatchset {
+    display: flex;
+    height: 38px;
+    border-radius: 3px;
+    overflow: hidden;
+    margin-bottom: 6px;
+    border: 1px solid var(--border);
+  }
+  .theme-card .swatchset div { flex: 1; }
+  .theme-card .label-row {
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  .theme-card.selected .label-row { color: var(--text); font-weight: 600; }
+
+  .toggle {
+    position: relative;
+    width: 36px; height: 20px;
+    background: var(--border);
+    border-radius: 10px;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .toggle.on { background: var(--accent); }
+  .toggle .knob {
+    position: absolute; top: 2px; left: 2px;
+    width: 16px; height: 16px;
+    background: white;
+    border-radius: 50%;
+    transition: left 0.15s;
+  }
+  .toggle.on .knob { left: 18px; }
+
+  .slider-row { display: flex; align-items: center; gap: 12px; }
+  .slider-row input[type="range"] { flex: 1; max-width: 240px; }
+  .slider-row .val {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text-dim);
+    min-width: 40px;
+    text-align: right;
+  }
+
+  .shortcut-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    padding: 6px 0;
+    border-bottom: 1px dashed var(--border);
+    font-size: 13px;
+  }
+  .shortcut-row:last-child { border-bottom: none; }
+  .shortcut-row .keys {
+    display: inline-flex;
+    gap: 4px;
+  }
+  .shortcut-row .key {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-bottom-width: 2px;
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    cursor: pointer;
+  }
+  .shortcut-row .key:hover { background: var(--accent-soft); }
+
+  .pill-future {
+    display: inline-block;
+    background: var(--surface-2);
+    border: 1px dashed var(--border-strong);
+    border-radius: 10px;
+    padding: 1px 8px;
+    font-size: 11px;
+    color: var(--text-faint);
+    margin-left: 8px;
+    vertical-align: middle;
+  }
+  .save-bar {
+    position: sticky;
+    bottom: 0;
+    background: var(--surface);
+    padding: 10px 0 4px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    margin-top: 16px;
+  }
+  .save-bar button {
+    padding: 6px 14px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: var(--sans);
+    font-size: 13px;
+  }
+  .save-bar button.primary {
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent);
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="titlebar">
+    <span class="traffic"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
+    <span class="title">Settings — MDViewer</span>
+    <span class="menus"><span>File</span><span>Edit</span><span>View</span><span>Comments</span><span>Help</span></span>
+  </div>
+
+  <div class="tabbar">
+    <div class="tab">RFC-031-rate-limiting.md <span class="x">×</span></div>
+    <div class="tab active" data-testid="tab-settings">⚙ Settings <span class="x">×</span></div>
+    <div class="tab new">+</div>
+  </div>
+
+  <div class="body no-sidebar">
+    <div class="editor-pane" style="padding: 0; background: var(--surface);">
+      <div class="settings-wrap" data-testid="settings-page">
+        <nav class="settings-nav" data-testid="settings-nav">
+          <a class="active" href="#profile" data-testid="nav-profile">Profile</a>
+          <a href="#appearance" data-testid="nav-appearance">Appearance</a>
+          <a href="#editor" data-testid="nav-editor">Editor &amp; viewer</a>
+          <a href="#comments" data-testid="nav-comments">Comments</a>
+          <a href="#shortcuts" data-testid="nav-shortcuts">Shortcuts</a>
+          <a href="#advanced" data-testid="nav-advanced">Advanced</a>
+          <a href="#about" data-testid="nav-about">About</a>
+        </nav>
+
+        <div class="settings-pane" data-testid="settings-pane">
+
+          <!-- ═══ PROFILE ═══ -->
+          <section class="settings-section" id="profile" data-testid="section-profile">
+            <h2>Profile</h2>
+            <p class="subtitle">How comments you write are labeled. Stored only on this computer; takes effect immediately for new comments.</p>
+
+            <div class="settings-row">
+              <label class="k" for="display-name">Display name</label>
+              <input id="display-name" type="text" value="Mira Halvorsen" data-testid="settings-name-input">
+            </div>
+
+            <div class="settings-row">
+              <label class="k">Avatar color</label>
+              <div class="color-picker" data-testid="settings-color-picker">
+                <span class="swatch amber selected"></span>
+                <span class="swatch teal"></span>
+                <span class="swatch rose"></span>
+                <span class="swatch indigo"></span>
+                <span class="swatch olive"></span>
+                <span class="swatch slate"></span>
+              </div>
+            </div>
+
+            <div class="settings-row">
+              <label class="k">Preview</label>
+              <div>
+                <span class="avatar amber" style="display: inline-flex; vertical-align: middle;">M</span>
+                <strong style="vertical-align: middle; margin-left: 6px;">Mira Halvorsen</strong>
+              </div>
+            </div>
+
+            <div class="settings-row">
+              <label class="k">Stable user ID</label>
+              <div style="font-family: var(--mono); font-size: 12px; color: var(--text-faint);">
+                bc6b2d1e-7f04-4e2a-b8e6-83f1a0c3e7e0
+                <button data-testid="regenerate-id" style="margin-left: 8px; font-size: 11px; padding: 1px 6px; border: 1px solid var(--border); background: var(--surface); border-radius: 3px; cursor: pointer; font-family: var(--sans);">Regenerate…</button>
+              </div>
+              <div class="help">Travels with comments you write so renames don't fragment authorship. Regenerating starts a new identity for future comments.</div>
+            </div>
+          </section>
+
+          <!-- ═══ APPEARANCE ═══ -->
+          <section class="settings-section" id="appearance" data-testid="section-appearance">
+            <h2>Appearance</h2>
+            <p class="subtitle">Visual theme of the app. <a href="12-dark-mode.html" style="color: var(--accent);">See dark-mode wireframe →</a></p>
+
+            <div class="settings-row">
+              <label class="k">Theme</label>
+              <div class="theme-options" data-testid="theme-picker">
+                <div class="theme-card" data-theme="light" data-testid="theme-light">
+                  <div class="swatchset"><div style="background:#fff;"></div><div style="background:#f7f7f5;"></div><div style="background:#ececea;"></div></div>
+                  <div class="label-row">Light</div>
+                </div>
+                <div class="theme-card" data-theme="dark" data-testid="theme-dark">
+                  <div class="swatchset"><div style="background:#161614;"></div><div style="background:#1f1f1d;"></div><div style="background:#252522;"></div></div>
+                  <div class="label-row">Dark</div>
+                </div>
+                <div class="theme-card selected" data-theme="system" data-testid="theme-system">
+                  <div class="swatchset"><div style="background:#fff;"></div><div style="background:#252522;"></div><div style="background:#161614;"></div></div>
+                  <div class="label-row">Follow system</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="settings-row">
+              <label class="k" for="font-size">Editor font size</label>
+              <div class="slider-row">
+                <input type="range" id="font-size" min="11" max="20" value="14" data-testid="font-size-slider">
+                <span class="val">14 pt</span>
+              </div>
+            </div>
+
+            <div class="settings-row">
+              <label class="k" for="line-height">Line height</label>
+              <div class="slider-row">
+                <input type="range" id="line-height" min="120" max="200" value="155" data-testid="line-height-slider">
+                <span class="val">1.55</span>
+              </div>
+            </div>
+
+            <div class="settings-row">
+              <label class="k" for="ui-density">UI density</label>
+              <select id="ui-density" data-testid="ui-density-select">
+                <option>Comfortable</option>
+                <option selected>Default</option>
+                <option>Compact</option>
+              </select>
+            </div>
+          </section>
+
+          <!-- ═══ EDITOR & VIEWER ═══ -->
+          <section class="settings-section" id="editor" data-testid="section-editor">
+            <h2>Editor &amp; viewer</h2>
+            <p class="subtitle">How documents open and how edits are saved.</p>
+
+            <div class="settings-row">
+              <label class="k" for="default-mode">Default mode when opening a document</label>
+              <select id="default-mode" data-testid="default-mode-select">
+                <option selected>View</option>
+                <option>Edit</option>
+                <option>Last used per file</option>
+              </select>
+            </div>
+
+            <div class="settings-row">
+              <label class="k">Auto-save edits</label>
+              <div style="display: flex; align-items: center; gap: 10px;">
+                <span class="toggle on" data-testid="autosave-toggle"><span class="knob"></span></span>
+                <span style="font-size: 12.5px; color: var(--text-dim);">On — debounced after</span>
+                <input type="number" min="0" max="10" value="1" data-testid="autosave-debounce" style="width: 56px;">
+                <span style="font-size: 12.5px; color: var(--text-dim);">s of inactivity</span>
+              </div>
+            </div>
+
+            <div class="settings-row">
+              <label class="k" for="external-change">When .md changes outside the app</label>
+              <select id="external-change" data-testid="external-change-select">
+                <option selected>Ask before reloading</option>
+                <option>Reload automatically</option>
+                <option>Ignore until manually reloaded</option>
+              </select>
+              <div class="help">If you have unsaved edits, the app always asks regardless of this setting.</div>
+            </div>
+
+            <div class="settings-row">
+              <label class="k">Render code blocks with syntax highlighting</label>
+              <span class="toggle on" data-testid="syntax-highlight-toggle"><span class="knob"></span></span>
+            </div>
+
+            <div class="settings-row">
+              <label class="k">Render Mermaid diagrams</label>
+              <span class="toggle on" data-testid="mermaid-toggle"><span class="knob"></span></span>
+              <div class="help">Renders <code>```mermaid</code> blocks to SVG. Disable to view diagram source instead.</div>
+            </div>
+
+            <div class="settings-row">
+              <label class="k">Show whitespace in edit mode</label>
+              <span class="toggle" data-testid="show-whitespace-toggle"><span class="knob"></span></span>
+            </div>
+
+            <div class="settings-row">
+              <label class="k" for="line-wrap">Word wrap in edit mode</label>
+              <select id="line-wrap" data-testid="line-wrap-select">
+                <option selected>Soft wrap (visual)</option>
+                <option>Wrap at column…</option>
+                <option>No wrap</option>
+              </select>
+            </div>
+          </section>
+
+          <!-- ═══ COMMENTS ═══ -->
+          <section class="settings-section" id="comments" data-testid="section-comments">
+            <h2>Comments</h2>
+            <p class="subtitle">How threads are stored, displayed, and reattached when text changes.</p>
+
+            <div class="settings-row">
+              <label class="k">Show resolved threads in sidebar by default</label>
+              <span class="toggle" data-testid="show-resolved-toggle"><span class="knob"></span></span>
+              <div class="help">When off, resolved threads are hidden but still kept in history; toggle the sidebar filter to view them.</div>
+            </div>
+
+            <div class="settings-row">
+              <label class="k" for="sidecar-suffix">Sidecar filename pattern</label>
+              <input id="sidecar-suffix" type="text" value="{document}.md.comments.json" data-testid="sidecar-suffix-input">
+              <div class="help">Where comments for a document are stored. The token <code>{document}</code> is replaced by the .md base name. Changing this won't move existing sidecars.</div>
+            </div>
+
+            <div class="settings-row">
+              <label class="k" for="reattach-threshold">Anchor reattachment confidence</label>
+              <div class="slider-row">
+                <input type="range" id="reattach-threshold" min="50" max="95" value="75" data-testid="reattach-threshold-slider">
+                <span class="val">75%</span>
+              </div>
+              <div class="help">When text under a comment changes, the app tries to relocate the anchor by fuzzy match. Below this confidence, the comment is marked orphan instead.</div>
+            </div>
+
+            <div class="settings-row">
+              <label class="k" for="auto-merge">Auto-merge incoming sidecars</label>
+              <select id="auto-merge" data-testid="auto-merge-select">
+                <option selected>Always (CRDT — conflict-free)</option>
+                <option>Ask before merging</option>
+                <option>Manual import only</option>
+              </select>
+            </div>
+
+            <div class="settings-row">
+              <label class="k">Sync provider</label>
+              <select disabled data-testid="sync-provider-select">
+                <option selected>Local files only</option>
+                <option disabled>Google Drive (planned)</option>
+                <option disabled>iCloud Drive (planned)</option>
+              </select>
+              <span class="pill-future">Cloud sync — planned</span>
+            </div>
+          </section>
+
+          <!-- ═══ SHORTCUTS ═══ -->
+          <section class="settings-section" id="shortcuts" data-testid="section-shortcuts">
+            <h2>Shortcuts</h2>
+            <p class="subtitle">Click any binding to remap.</p>
+
+            <div class="shortcut-row">
+              <span>Open file…</span>
+              <span class="keys"><span class="key">⌘</span><span class="key">O</span></span>
+            </div>
+            <div class="shortcut-row">
+              <span>Save .md</span>
+              <span class="keys"><span class="key">⌘</span><span class="key">S</span></span>
+            </div>
+            <div class="shortcut-row">
+              <span>Toggle View / Edit</span>
+              <span class="keys"><span class="key">⌘</span><span class="key">⇧</span><span class="key">E</span></span>
+            </div>
+            <div class="shortcut-row">
+              <span>Comment on selection</span>
+              <span class="keys"><span class="key">⌘</span><span class="key">M</span></span>
+            </div>
+            <div class="shortcut-row">
+              <span>Toggle comments sidebar</span>
+              <span class="keys"><span class="key">⌘</span><span class="key">/</span></span>
+            </div>
+            <div class="shortcut-row">
+              <span>Resolve current thread</span>
+              <span class="keys"><span class="key">⌘</span><span class="key">⏎</span></span>
+            </div>
+            <div class="shortcut-row">
+              <span>Toggle dark mode</span>
+              <span class="keys"><span class="key">⌘</span><span class="key">⇧</span><span class="key">D</span></span>
+            </div>
+          </section>
+
+          <!-- ═══ ADVANCED ═══ -->
+          <section class="settings-section" id="advanced" data-testid="section-advanced">
+            <h2>Advanced</h2>
+            <p class="subtitle">Diagnostics and developer options.</p>
+
+            <div class="settings-row">
+              <label class="k">Verbose logs</label>
+              <span class="toggle" data-testid="verbose-logs-toggle"><span class="knob"></span></span>
+              <div class="help">Writes detailed logs to <code>~/Library/Logs/MDViewer/mdviewer.log</code>.</div>
+            </div>
+
+            <div class="settings-row">
+              <label class="k">Open developer tools (WebView)</label>
+              <button data-testid="open-devtools" style="padding: 4px 10px; border: 1px solid var(--border); background: var(--surface); border-radius: 4px; cursor: pointer; font-family: var(--sans); font-size: 12.5px;">Open…</button>
+            </div>
+
+            <div class="settings-row">
+              <label class="k">Reset to defaults</label>
+              <button data-testid="reset-defaults" style="padding: 4px 10px; border: 1px solid var(--warn-border); background: var(--warn-bg); color: #6a3a0c; border-radius: 4px; cursor: pointer; font-family: var(--sans); font-size: 12.5px;">Reset all settings…</button>
+            </div>
+          </section>
+
+          <!-- ═══ ABOUT ═══ -->
+          <section class="settings-section" id="about" data-testid="section-about">
+            <h2>About</h2>
+            <p class="subtitle">MDViewer — cross-platform markdown viewer with collaborative comments.</p>
+            <div style="font-size: 13px; color: var(--text-dim); line-height: 1.7;">
+              Version 0.1.0 · Tauri 2 · Apache-2.0<br>
+              <a href="#" style="color: var(--accent);">Release notes</a> · <a href="#" style="color: var(--accent);">Report an issue</a> · <a href="#" style="color: var(--accent);">License</a>
+            </div>
+          </section>
+
+          <div class="save-bar" data-testid="save-bar">
+            <button data-testid="settings-revert">Revert</button>
+            <button class="primary" data-testid="settings-apply">Apply</button>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="statusbar">
+    <span class="pill">Settings</span>
+    <span>Mira · amber</span>
+    <span class="grow"></span>
+    <span>Profile changes apply immediately · Editor &amp; viewer changes apply on Apply</span>
+  </div>
+</div>
+
+<div class="legend"><a href="10-share-dialog.html">← prev</a><a href="index.html">all</a><a href="12-dark-mode.html">next →</a></div>
+</body>
+</html>

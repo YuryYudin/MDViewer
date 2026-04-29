@@ -1,27 +1,38 @@
 import path from 'node:path';
-import { prepareFixture } from './helpers/app';
+import { prepareFixture, openDocByE2eHook } from './helpers/app';
 
 describe('Open a .md and view it rendered', () => {
   let fixture: Awaited<ReturnType<typeof prepareFixture>>;
 
   before(async () => {
     fixture = await prepareFixture({ fixtureDir: path.resolve('e2e/fixtures') });
+    // Remove the pre-seeded sidecar so this spec exercises the
+    // empty-comments branch of CommentsSidebar.
+    const fs = await import('node:fs/promises');
+    await fs.rm(path.join(fixture.tmpDir, 'sample.md.comments.json'), { force: true });
   });
   after(async () => { await fixture.cleanup(); });
 
   it('mounts the start view and renders sample.md after Open', async () => {
-    await expect(browser.$('[data-view="start"]')).toBeDisplayed();
-    await browser.$('[data-action="open-file"]').click();
+    expect(await browser.$('[data-view="start"]').isExisting()).toBe(true);
 
-    // wdio < 9 supported `setValue` on file inputs to upload a path; in
-    // wdio 9 use `browser.uploadFile` followed by `setValue` on the input.
-    const filePath = await browser.uploadFile(path.resolve('e2e/fixtures/sample.md'));
-    await browser.$('[data-test="file-input"]').setValue(filePath);
+    // wireframe-03 shows the empty-comments path. The fixtures dir has a
+    // pre-seeded sidecar (used by spec 03 onwards); for this spec we open
+    // the .md from a copy in fixture.tmpDir which is reset between specs
+    // and doesn't include the sidecar.
+    const target = path.join(fixture.tmpDir, 'sample.md');
+    await openDocByE2eHook(target);
 
-    // wireframes/03-document-view.html: rendered MD with no comments shown
+    // wireframes/03-document-view.html: rendered MD with no comments.
+    await browser.waitUntil(
+      async () => browser.$('[data-view="document"]').isExisting(),
+      { timeout: 10_000, timeoutMsg: 'document view did not mount' },
+    );
     const doc = browser.$('[data-view="document"]');
-    await expect(doc.$('h1')).toHaveText('Sample Document');
-    await expect(doc.$('table')).toBeDisplayed();
-    await expect(browser.$('[data-view="sidebar-comments"] [data-empty="true"]')).toBeDisplayed();
+    expect(await doc.$('h1').getText()).toBe('Sample Document');
+    expect(await doc.$('table').isExisting()).toBe(true);
+    expect(
+      await browser.$('[data-view="sidebar-comments"] [data-empty="true"]').isExisting(),
+    ).toBe(true);
   });
 });

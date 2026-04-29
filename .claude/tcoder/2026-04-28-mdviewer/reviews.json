@@ -1,0 +1,568 @@
+[
+  {
+    "type": "design-review",
+    "scope": "design",
+    "iteration": 1,
+    "issues_found": 17,
+    "severity": {
+      "critical": 0,
+      "high": 4,
+      "medium": 11,
+      "low": 2
+    },
+    "actionable": 17,
+    "dismissed": 0,
+    "dismissals": [],
+    "fixed": 17,
+    "remaining": 0,
+    "verdict": "fail",
+    "timestamp": "2026-04-28T16:10:57Z"
+  },
+  {
+    "type": "design-review",
+    "scope": "design",
+    "iteration": 2,
+    "issues_found": 4,
+    "severity": {
+      "critical": 0,
+      "high": 0,
+      "medium": 1,
+      "low": 3
+    },
+    "actionable": 4,
+    "dismissed": 0,
+    "dismissals": [],
+    "fixed": 4,
+    "remaining": 0,
+    "verdict": "pass",
+    "timestamp": "2026-04-28T16:13:57Z"
+  },
+  {
+    "type": "plan-review",
+    "scope": "plan",
+    "iteration": 1,
+    "issues_found": 12,
+    "severity": {
+      "critical": 2,
+      "high": 6,
+      "medium": 4,
+      "low": 0
+    },
+    "actionable": 12,
+    "dismissed": 0,
+    "dismissals": [],
+    "fixed": 12,
+    "remaining": 0,
+    "verdict": "fail",
+    "timestamp": "2026-04-28T19:42:04Z",
+    "note": "Post-restructure first review. All 12 actionable issues fixed inline."
+  },
+  {
+    "type": "plan-review",
+    "scope": "plan",
+    "iteration": 2,
+    "issues_found": 12,
+    "severity": {
+      "critical": 0,
+      "high": 6,
+      "medium": 5,
+      "low": 1
+    },
+    "actionable": 12,
+    "dismissed": 0,
+    "dismissals": [],
+    "fixed": 12,
+    "remaining": 0,
+    "verdict": "fail",
+    "timestamp": "2026-04-28T19:50:55Z"
+  },
+  {
+    "type": "plan-review",
+    "scope": "plan",
+    "iteration": 3,
+    "issues_found": 9,
+    "severity": {
+      "critical": 0,
+      "high": 4,
+      "medium": 4,
+      "low": 1
+    },
+    "actionable": 9,
+    "dismissed": 0,
+    "dismissals": [],
+    "fixed": 9,
+    "remaining": 0,
+    "verdict": "pass",
+    "timestamp": "2026-04-28T19:58:10Z",
+    "note": "Iter 3 of post-restructure. All 9 issues fixed inline. Severity-gated termination since no issues remain."
+  },
+  {
+    "type": "task-review",
+    "scope": "A1",
+    "verdict": "pass",
+    "iteration": 1,
+    "issues_found": 3,
+    "severity": {
+      "critical": 0,
+      "high": 0,
+      "medium": 0,
+      "low": 3
+    },
+    "actionable": 3,
+    "dismissed": 0,
+    "dismissals": [],
+    "fixed": 3,
+    "remaining": 0,
+    "timestamp": "2026-04-28T20:45:23Z"
+  },
+  {
+    "type": "e2e-gate",
+    "scope": "red",
+    "sha": "fc57b2703bd51a45756808bd54911cf31bc8dc93",
+    "failure_count": 10,
+    "verdict": "pass",
+    "timestamp": "2026-04-28T20:46:34Z"
+  },
+  {
+    "type": "task-review",
+    "scope": "A2",
+    "verdict": "pass",
+    "iteration": 1,
+    "issues_found": 0,
+    "severity": {
+      "critical": 0,
+      "high": 0,
+      "medium": 0,
+      "low": 0
+    },
+    "actionable": 0,
+    "dismissed": 0,
+    "dismissals": [],
+    "fixed": 0,
+    "remaining": 0,
+    "timestamp": "2026-04-28T20:54:53Z"
+  },
+  {
+    "type": "task-review",
+    "scope": "A2b",
+    "verdict": "pass",
+    "iteration": 1,
+    "issues_found": 0,
+    "severity": {
+      "critical": 0,
+      "high": 0,
+      "medium": 0,
+      "low": 0
+    },
+    "actionable": 0,
+    "dismissed": 0,
+    "dismissals": [],
+    "fixed": 0,
+    "remaining": 0,
+    "timestamp": "2026-04-28T21:07:20Z"
+  },
+  {
+    "type": "task-review",
+    "scope": "A3",
+    "verdict": "pass",
+    "iteration": 1,
+    "issues_found": 4,
+    "severity": {
+      "critical": 0,
+      "high": 0,
+      "medium": 0,
+      "low": 4
+    },
+    "actionable": 4,
+    "dismissed": 1,
+    "dismissals": [
+      {
+        "id": 1,
+        "reasoning": "TDD-discipline finding is informational only — outcome is correct"
+      }
+    ],
+    "fixed": 3,
+    "remaining": 0,
+    "timestamp": "2026-04-28T21:18:27Z"
+  },
+  {
+    "type": "task-review",
+    "scope": "A4",
+    "verdict": "pass",
+    "iteration": 1,
+    "issues_found": 2,
+    "severity": {
+      "critical": 0,
+      "high": 0,
+      "medium": 0,
+      "low": 2
+    },
+    "actionable": 2,
+    "dismissed": 0,
+    "dismissals": [],
+    "fixed": 2,
+    "remaining": 0,
+    "timestamp": "2026-04-28T21:25:35Z"
+  },
+  {
+    "type": "task-review",
+    "scope": "A5",
+    "verdict": "pass",
+    "iteration": 1,
+    "issues_found": 0,
+    "severity": {
+      "critical": 0,
+      "high": 0,
+      "medium": 0,
+      "low": 0
+    },
+    "actionable": 0,
+    "dismissed": 0,
+    "dismissals": [],
+    "fixed": 0,
+    "remaining": 0,
+    "timestamp": "2026-04-28T21:43:15Z"
+  },
+  {
+    "type": "task-review",
+    "scope": "A6",
+    "verdict": "pass",
+    "iteration": 1,
+    "issues_found": 4,
+    "severity": {
+      "critical": 1,
+      "high": 1,
+      "medium": 0,
+      "low": 2
+    },
+    "actionable": 4,
+    "dismissed": 1,
+    "dismissals": [
+      {
+        "id": 3,
+        "reasoning": "TDD informational; matches spec single-commit"
+      }
+    ],
+    "fixed": 3,
+    "remaining": 0,
+    "timestamp": "2026-04-28T21:53:33Z"
+  },
+  {
+    "type": "task-review",
+    "scope": "A7",
+    "verdict": "pass",
+    "iteration": 1,
+    "issues_found": 4,
+    "severity": {
+      "critical": 0,
+      "high": 0,
+      "medium": 1,
+      "low": 3
+    },
+    "actionable": 4,
+    "dismissed": 2,
+    "dismissals": [
+      {
+        "id": 2,
+        "reasoning": "Clock injection deferred — current resolved_at tests pass; C1 can refactor when it needs pinned timestamps for migration tests"
+      },
+      {
+        "id": 3,
+        "reasoning": "Cosmetic — fallback path is unreachable but defensive; keeping current code"
+      }
+    ],
+    "fixed": 2,
+    "remaining": 0,
+    "timestamp": "2026-04-28T22:05:56Z"
+  },
+  {
+    "type": "task-review",
+    "scope": "A8a",
+    "verdict": "pass",
+    "iteration": 1,
+    "issues_found": 0,
+    "severity": {
+      "critical": 0,
+      "high": 0,
+      "medium": 0,
+      "low": 0
+    },
+    "actionable": 0,
+    "dismissed": 0,
+    "dismissals": [],
+    "fixed": 0,
+    "remaining": 0,
+    "timestamp": "2026-04-28T22:16:06Z"
+  },
+  {
+    "type": "task-review",
+    "scope": "A8b",
+    "verdict": "pass",
+    "iteration": 1,
+    "issues_found": 6,
+    "severity": {
+      "critical": 0,
+      "high": 0,
+      "medium": 2,
+      "low": 4
+    },
+    "actionable": 6,
+    "dismissed": 3,
+    "dismissals": [
+      {
+        "id": 1,
+        "reasoning": "anchor::self import is documentation-only — no main.rs caller exists; spec hint not behaviorally required"
+      },
+      {
+        "id": 4,
+        "reasoning": "show-conflict emit test requires tauri::test::mock_builder; documented as deferred to B2/B3 in test file's Known coverage gaps section"
+      },
+      {
+        "id": 5,
+        "reasoning": "main.rs 0% coverage explicitly accepted by design's Test Coverage section as Tauri framework wiring"
+      }
+    ],
+    "fixed": 3,
+    "remaining": 0,
+    "timestamp": "2026-04-29T03:11:57Z"
+  },
+  {
+    "type": "task-review",
+    "scope": "A9",
+    "verdict": "pass",
+    "iteration": 1,
+    "issues_found": 3,
+    "severity": {
+      "critical": 0,
+      "high": 0,
+      "medium": 0,
+      "low": 3
+    },
+    "actionable": 3,
+    "dismissed": 3,
+    "dismissals": [
+      {
+        "id": 1,
+        "reasoning": "TDD informational; matches single-commit pattern of prior tasks"
+      },
+      {
+        "id": 2,
+        "reasoning": "Modifier-key edge case not exercised by A3 default_shortcuts; documenting as future hardening"
+      },
+      {
+        "id": 3,
+        "reasoning": "Redundant follow-system CSS fallback is harmless and adds defense-in-depth if main.ts ever fails to mount"
+      }
+    ],
+    "fixed": 0,
+    "remaining": 0,
+    "timestamp": "2026-04-29T03:28:57Z"
+  },
+  {
+    "type": "task-review",
+    "scope": "A10",
+    "verdict": "pass",
+    "iteration": 1,
+    "issues_found": 1,
+    "severity": {
+      "critical": 0,
+      "high": 0,
+      "medium": 0,
+      "low": 1
+    },
+    "actionable": 1,
+    "dismissed": 1,
+    "dismissals": [
+      {
+        "id": 1,
+        "reasoning": "TDD informational; orchestrator committed on agent's behalf after chat truncation"
+      }
+    ],
+    "fixed": 0,
+    "remaining": 0,
+    "timestamp": "2026-04-29T03:43:16Z"
+  },
+  {
+    "type": "task-review",
+    "scope": "A11",
+    "verdict": "pass",
+    "iteration": 1,
+    "issues_found": 6,
+    "severity": {
+      "critical": 0,
+      "high": 0,
+      "medium": 2,
+      "low": 4
+    },
+    "actionable": 6,
+    "dismissed": 4,
+    "dismissals": [
+      {
+        "id": 2,
+        "reasoning": "select.value cast inconsistency is cosmetic — option set is fixed, no runtime risk"
+      },
+      {
+        "id": 4,
+        "reasoning": "TDD informational; orchestrator-style commit cadence"
+      },
+      {
+        "id": 5,
+        "reasoning": "DevTools/Reset buttons match wireframe 11 Advanced section, deferred consumer wiring is by design"
+      },
+      {
+        "id": 6,
+        "reasoning": "Color picker double-fire is harmless redundancy; setSettings is idempotent on identical values"
+      }
+    ],
+    "fixed": 2,
+    "remaining": 0,
+    "timestamp": "2026-04-29T03:56:02Z"
+  },
+  {
+    "type": "impl-review",
+    "scope": "phase-a",
+    "verdict": "pass",
+    "iteration": 1,
+    "issues_found": 0,
+    "severity": {
+      "critical": 0,
+      "high": 0,
+      "medium": 0,
+      "low": 0
+    },
+    "actionable": 0,
+    "dismissed": 0,
+    "dismissals": [],
+    "fixed": 0,
+    "remaining": 0,
+    "timestamp": "2026-04-29T04:01:47Z"
+  },
+  {
+    "type": "task-review",
+    "scope": "B1",
+    "verdict": "pass",
+    "iteration": 1,
+    "issues_found": 3,
+    "severity": {
+      "critical": 0,
+      "high": 0,
+      "medium": 0,
+      "low": 3
+    },
+    "actionable": 3,
+    "dismissed": 3,
+    "dismissals": [
+      {
+        "id": 1,
+        "reasoning": "matches! pattern is the spec's prescribed test shape; tightening would be a refactor not a fix"
+      },
+      {
+        "id": 2,
+        "reasoning": "degenerate edge case (Bitap aligning exactly on suffix start) — unreachable in practice"
+      },
+      {
+        "id": 3,
+        "reasoning": "TDD informational; matches project's single-commit cadence"
+      }
+    ],
+    "fixed": 0,
+    "remaining": 0,
+    "timestamp": "2026-04-29T04:20:11Z"
+  },
+  {
+    "type": "task-review",
+    "scope": "B2",
+    "verdict": "pass",
+    "iteration": 1,
+    "issues_found": 3,
+    "severity": {
+      "critical": 0,
+      "high": 0,
+      "medium": 0,
+      "low": 3
+    },
+    "actionable": 3,
+    "dismissed": 3,
+    "dismissals": [
+      {
+        "id": 1,
+        "reasoning": "TDD informational; matches spec single-commit"
+      },
+      {
+        "id": 2,
+        "reasoning": "Lock held during fs::read is acceptable for typical .md sizes; documented behavior"
+      },
+      {
+        "id": 3,
+        "reasoning": "2s window matches design intent; widening would make stale matches ambiguous"
+      }
+    ],
+    "fixed": 0,
+    "remaining": 0,
+    "timestamp": "2026-04-29T04:33:26Z"
+  },
+  {
+    "type": "task-review",
+    "scope": "B3",
+    "verdict": "pass",
+    "iteration": 1,
+    "issues_found": 3,
+    "severity": {
+      "critical": 0,
+      "high": 1,
+      "medium": 1,
+      "low": 1
+    },
+    "actionable": 3,
+    "dismissed": 1,
+    "dismissals": [
+      {
+        "id": 2,
+        "reasoning": "TDD informational; matches project's single-commit cadence and tests still alongside implementation"
+      }
+    ],
+    "fixed": 2,
+    "remaining": 0,
+    "note": "Medium-severity race window closed by restructuring save_document to take a priming closure that fires before rename. Low-severity parent-dir fsync also addressed defensively.",
+    "timestamp": "2026-04-29T04:49:17Z"
+  },
+  {
+    "type": "task-review",
+    "scope": "B4",
+    "verdict": "pass",
+    "iteration": 1,
+    "issues_found": 0,
+    "severity": {
+      "critical": 0,
+      "high": 0,
+      "medium": 0,
+      "low": 0
+    },
+    "actionable": 0,
+    "dismissed": 0,
+    "dismissals": [],
+    "fixed": 0,
+    "remaining": 0,
+    "timestamp": "2026-04-29T05:00:37Z"
+  },
+  {
+    "type": "impl-review",
+    "scope": "phase-b",
+    "verdict": "pass",
+    "iteration": 1,
+    "issues_found": 5,
+    "severity": {
+      "critical": 0,
+      "high": 3,
+      "medium": 2,
+      "low": 0
+    },
+    "actionable": 5,
+    "dismissed": 0,
+    "dismissals": [],
+    "fixed": 5,
+    "remaining": 0,
+    "note": "All 5 issues addressed by the phase-b integration-glue commit 13c7796. Watcher is now registered on open; Workspace.ts mounts real Document + CommentsSidebar with orphans; external-change listener installed; set_dirty IPC plumbed; flaky timeouts widened.",
+    "timestamp": "2026-04-29T05:09:11Z"
+  }
+]

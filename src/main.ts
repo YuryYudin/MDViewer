@@ -40,10 +40,30 @@ export async function main(): Promise<void> {
   };
   applyTheme(currentTheme);
 
+  let workspace: Awaited<ReturnType<typeof mountWorkspace>> | null = null;
   if (!settings.profile.display_name) {
     await mountProfileSetup(root, tauriIpc);
   } else {
-    await mountWorkspace(root, tauriIpc);
+    workspace = await mountWorkspace(root, tauriIpc);
+  }
+
+  // E2E side-channel: tauri-webdriver-automation can't drive the OS file
+  // dialog and `setValue` on a <input type=file> uploads file *contents*
+  // (not a path) — but openDocument needs an absolute path string. Expose
+  // a minimal hook on `window` so specs can drive the open flow without
+  // round-tripping through DOM file inputs. Only attached when the
+  // WebDriver bridge is present, so production builds never expose it.
+  if (typeof window !== 'undefined' && (window as unknown as { __WEBDRIVER__?: unknown }).__WEBDRIVER__) {
+    (window as unknown as Record<string, unknown>).__mdviewerE2E = {
+      async open(absPath: string): Promise<void> {
+        const outcome = await tauriIpc.openDocument(absPath);
+        const setActive = (root as unknown as {
+          __mdv_setActive?: (o: typeof outcome) => void;
+        }).__mdv_setActive;
+        if (setActive) setActive(outcome);
+        if (workspace) await workspace.refresh();
+      },
+    };
   }
 
   const dispatchAction = (action: Action): void => {

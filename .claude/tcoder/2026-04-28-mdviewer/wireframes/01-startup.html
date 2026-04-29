@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>01 · Startup &amp; Recent Files</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app" id="app-shell">
+  <div class="titlebar">
+    <span class="traffic"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
+    <span class="title">MDViewer</span>
+    <span class="menus" data-testid="menus">
+      <span>File</span><span>Edit</span><span>View</span><span>Comments</span><span>Help</span>
+    </span>
+  </div>
+
+  <div class="tabbar" data-testid="tabbar">
+    <div class="tab new" data-testid="new-tab">+ Open file</div>
+  </div>
+
+  <div class="body no-sidebar">
+    <div class="editor-pane" id="startup-pane">
+      <div class="startup">
+        <div class="stack">
+          <h2>Welcome back, Mira</h2>
+          <p class="sub">Open a markdown file to start reading or commenting. MDViewer keeps comments in a sidecar file next to the document, so the .md itself stays untouched.</p>
+
+          <div class="recent-list" data-testid="recent-list">
+            <div class="recent-item">
+              <div>
+                <div>Q3-design-review.md</div>
+                <div class="path">~/Documents/reviews/Q3-design-review.md</div>
+              </div>
+              <div class="when">2 hours ago</div>
+            </div>
+            <div class="recent-item">
+              <div>
+                <div>RFC-031-rate-limiting.md</div>
+                <div class="path">~/Work/rfcs/RFC-031-rate-limiting.md</div>
+              </div>
+              <div class="when">Yesterday</div>
+            </div>
+            <div class="recent-item">
+              <div>
+                <div>onboarding-handbook.md</div>
+                <div class="path">~/Documents/team/onboarding-handbook.md</div>
+              </div>
+              <div class="when">Mar 14</div>
+            </div>
+          </div>
+
+          <div class="actions">
+            <button class="primary" data-testid="open-button">Open file…</button>
+            <button data-testid="new-doc-button">New document</button>
+            <button data-testid="settings-button">Settings…</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="statusbar">
+    <span data-testid="profile-chip">Mira · amber</span>
+    <span class="grow"></span>
+    <span>Tauri 2 · v0.1.0</span>
+  </div>
+</div>
+
+<div class="legend"><a href="index.html">← all wireframes</a><a href="02-profile-setup.html">next →</a></div>
+</body>
+</html>

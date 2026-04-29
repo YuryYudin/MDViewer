@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>03 · Rendered Document</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app">
+  <div class="titlebar">
+    <span class="traffic"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
+    <span class="title">RFC-031-rate-limiting.md — MDViewer</span>
+    <span class="menus"><span>File</span><span>Edit</span><span>View</span><span>Comments</span><span>Help</span></span>
+  </div>
+
+  <div class="tabbar" data-testid="tabbar">
+    <div class="tab active" data-testid="tab-active">RFC-031-rate-limiting.md <span class="x">×</span></div>
+    <div class="tab">onboarding-handbook.md <span class="x">×</span></div>
+    <div class="tab new">+</div>
+  </div>
+
+  <div class="body">
+    <div class="editor-pane" data-testid="editor-pane">
+      <div class="mode-toggle" data-testid="mode-toggle">
+        <button class="on" data-mode="view">View</button>
+        <button data-mode="edit">Edit</button>
+      </div>
+
+      <article class="md" data-testid="rendered-md">
+        <h1>RFC-031: Per-tenant Rate Limiting</h1>
+        <p><em>Status: draft · Author: Priya Iyer · Updated 2026-04-22</em></p>
+
+        <h2>Summary</h2>
+        <p>Today the gateway enforces a single global request budget. As we onboard larger
+        customers, a single tenant's traffic spike can degrade response times for every
+        other tenant. This RFC proposes a per-tenant token-bucket limiter at the gateway.</p>
+
+        <h2>Goals</h2>
+        <ul>
+          <li>Bound the worst-case impact one tenant can have on shared infrastructure.</li>
+          <li>Expose limit headroom to tenants via response headers.</li>
+          <li>Operate without adding a synchronous round-trip to a central counter.</li>
+        </ul>
+
+        <h2>Design</h2>
+        <p>Each gateway pod owns a local token bucket per (tenant, route-class) pair,
+        replenished from a global ledger every <code>refresh_interval</code> seconds. The
+        global ledger lives in Redis and is updated atomically using a Lua script.</p>
+
+        <pre><code>def consume(tenant: str, route_class: str, n: int = 1) -&gt; bool:
+    bucket = local_buckets[(tenant, route_class)]
+    if bucket.tokens &gt;= n:
+        bucket.tokens -= n
+        return True
+    return False  # 429 returned to client</code></pre>
+
+        <h3>Why per-pod buckets, not per-edge</h3>
+        <p>Per-edge buckets concentrate state and increase contention. Per-pod buckets
+        trade some accuracy for resilience and horizontal scalability.</p>
+
+        <h2>Operational concerns</h2>
+        <table>
+          <thead><tr><th>Concern</th><th>Mitigation</th></tr></thead>
+          <tbody>
+            <tr><td>Unbalanced pods</td><td>Sticky tenant routing at L7</td></tr>
+            <tr><td>Cold-start lag</td><td>Pods preload bucket state at boot</td></tr>
+            <tr><td>Lua script drift</td><td>Versioned and shipped via config service</td></tr>
+          </tbody>
+        </table>
+
+        <div class="mermaid-block">
+          [ Mermaid diagram — sequence: Client → Gateway → Local bucket → (async) Redis ledger ]
+        </div>
+
+        <h2>Open questions</h2>
+        <ol>
+          <li>How do we communicate budget exhaustion to billing in real time?</li>
+          <li>Should burst credit accrue overnight for low-traffic tenants?</li>
+        </ol>
+      </article>
+    </div>
+
+    <aside class="sidebar" data-testid="sidebar">
+      <div class="sidebar-header">
+        <span class="grow">Comments</span>
+        <select disabled><option>All</option><option>Open</option><option>Resolved</option></select>
+      </div>
+      <div class="threads" data-testid="threads">
+        <div style="padding: 28px 8px; color: var(--text-faint); text-align: center; font-size: 12.5px;">
+          No comments on this document yet.<br>
+          Select any text in the rendered view to start a thread.
+        </div>
+      </div>
+      <div style="padding: 8px 12px; border-top: 1px solid var(--border); color: var(--text-faint); font-size: 11.5px;">
+        Sidecar: <span style="font-family: var(--mono);">RFC-031-rate-limiting.md.comments.json</span> · not yet created
+      </div>
+    </aside>
+  </div>
+
+  <div class="statusbar">
+    <span class="pill">View</span>
+    <span data-testid="profile-chip">Mira · amber</span>
+    <span class="grow"></span>
+    <span data-testid="line-count">128 lines</span>
+    <span>·</span>
+    <span data-testid="word-count">412 words</span>
+  </div>
+</div>
+
+<div class="legend"><a href="02-profile-setup.html">← prev</a><a href="index.html">all</a><a href="04-selection-popover.html">next →</a></div>
+</body>
+</html>

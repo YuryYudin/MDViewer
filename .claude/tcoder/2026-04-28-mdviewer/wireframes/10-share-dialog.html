@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>10 · Share Dialog</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app">
+  <div class="titlebar">
+    <span class="traffic"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
+    <span class="title">RFC-031-rate-limiting.md — MDViewer</span>
+    <span class="menus"><span>File</span><span>Edit</span><span>View</span><span>Comments</span><span>Help</span></span>
+  </div>
+
+  <div class="tabbar">
+    <div class="tab active dirty">RFC-031-rate-limiting.md <span class="x">×</span></div>
+    <div class="tab new">+</div>
+  </div>
+
+  <div class="body">
+    <div class="editor-pane" style="position: relative;">
+      <article class="md" style="filter: blur(0.5px); opacity: 0.6;">
+        <h1>RFC-031: Per-tenant Rate Limiting</h1>
+        <p>Today the gateway enforces a single global request budget…</p>
+      </article>
+
+      <div class="scrim">
+        <div class="modal" id="share-modal" data-testid="share-modal" style="width: 520px;">
+          <h2>Share document &amp; comments</h2>
+          <p>MDViewer keeps comments in a sidecar file beside the .md. To share both, the app
+             prepares a folder containing the two files. Recipients open the .md in MDViewer
+             and the comments are picked up automatically.</p>
+
+          <div style="background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin-bottom: 14px; font-family: var(--mono); font-size: 12px;">
+            <div style="color: var(--text-dim); margin-bottom: 6px;">Will be packaged into <strong>RFC-031-rate-limiting.zip</strong>:</div>
+            <div>📄 RFC-031-rate-limiting.md</div>
+            <div>💬 RFC-031-rate-limiting.md.comments.json</div>
+            <div style="color: var(--text-faint); margin-top: 6px; font-size: 11px; font-family: var(--sans);">4 threads · 9 comments · 1 orphan</div>
+          </div>
+
+          <div style="font-size: 12.5px; color: var(--text-dim); margin-bottom: 6px;">Include in package:</div>
+          <div style="display: flex; flex-direction: column; gap: 4px; font-size: 13px; margin-bottom: 14px;">
+            <label><input type="checkbox" checked data-testid="share-include-resolved"> Include resolved threads (1)</label>
+            <label><input type="checkbox" data-testid="share-include-orphans"> Include orphaned comments (1)</label>
+            <label><input type="checkbox" checked data-testid="share-include-profile"> Include my profile color so my comments are visually consistent</label>
+          </div>
+
+          <div style="font-size: 12px; color: var(--text-faint); margin-bottom: 6px;">
+            Tip: keep both files together. If a recipient opens just the .md, the comments
+            won't appear — MDViewer looks for the sidecar in the same folder.
+          </div>
+
+          <div class="modal-actions">
+            <button data-testid="share-cancel">Cancel</button>
+            <button data-testid="share-reveal">Show in Finder</button>
+            <button class="primary" data-testid="share-export">Export &amp; reveal…</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <aside class="sidebar"><div class="sidebar-header"><span class="grow">Comments · 4</span></div></aside>
+  </div>
+
+  <div class="statusbar">
+    <span class="pill">View</span>
+    <span class="grow"></span>
+    <span>Sharing…</span>
+  </div>
+</div>
+
+<div class="legend"><a href="09-orphan-comments.html">← prev</a><a href="index.html">all</a><a href="11-settings.html">next →</a></div>
+</body>
+</html>

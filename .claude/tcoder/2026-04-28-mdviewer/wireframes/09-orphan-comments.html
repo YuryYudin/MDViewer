@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>09 · Orphaned Comments</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app">
+  <div class="titlebar">
+    <span class="traffic"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
+    <span class="title">RFC-031-rate-limiting.md — MDViewer</span>
+    <span class="menus"><span>File</span><span>Edit</span><span>View</span><span>Comments</span><span>Help</span></span>
+  </div>
+
+  <div class="tabbar">
+    <div class="tab active dirty">RFC-031-rate-limiting.md <span class="x">×</span></div>
+    <div class="tab new">+</div>
+  </div>
+
+  <div class="conflict-banner" data-testid="orphan-banner" style="background: var(--warn-bg); border-bottom: 1px solid var(--warn-border);">
+    <strong>2 comments couldn't be reattached</strong>
+    <span>The text these comments referred to was changed too much for automatic relocation. They're shown below as orphans — you can reattach them by hand or delete.</span>
+  </div>
+
+  <div class="body">
+    <div class="editor-pane">
+      <div class="mode-toggle"><button class="on">View</button><button>Edit</button></div>
+      <article class="md">
+        <h1>RFC-031: Per-tenant Rate Limiting</h1>
+
+        <h2>Summary</h2>
+        <p>Across Q1 we observed two incidents where one customer's traffic burst pushed
+        gateway p99 from 80ms to over 1.2s, affecting every other tenant on the shared
+        infrastructure. This RFC proposes a per-tenant token-bucket limiter at the gateway.</p>
+
+        <h2>Design</h2>
+        <p>Each gateway pod owns a local token bucket per (tenant, route-class) pair,
+        replenished from a global ledger every <code>refresh_interval</code> seconds.</p>
+
+        <h3>Operational concerns</h3>
+        <p>Lua scripts are versioned and shipped via the config service.</p>
+      </article>
+    </div>
+
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <span class="grow">Comments · 4 (2 orphan)</span>
+        <select data-testid="filter-orphan">
+          <option>Orphan only (2)</option><option>All</option><option>Open</option>
+        </select>
+      </div>
+
+      <div class="threads">
+        <div class="thread orphan" data-testid="orphan-1" data-thread-id="t-orphan-1">
+          <div style="font-size: 11.5px; color: #8a5a10; margin-bottom: 6px;">⚠ Anchor lost — original quote no longer matches text</div>
+          <div class="quote">"a single tenant's traffic spike can degrade response times for every other tenant"</div>
+          <div class="comment">
+            <span class="avatar amber">M</span>
+            <div>
+              <div class="meta"><strong>Mira</strong> · 2 hr ago</div>
+              <div class="body">Should we quantify this? Got tail-latency data from last quarter…</div>
+            </div>
+          </div>
+          <div class="thread-actions">
+            <button data-testid="orphan-relocate">Reattach by hand…</button>
+            <button data-testid="orphan-keep">Keep as orphan</button>
+            <button data-testid="orphan-delete" style="margin-left:auto; color: var(--text-dim);">Delete</button>
+          </div>
+        </div>
+
+        <div class="thread orphan" data-thread-id="t-orphan-2">
+          <div style="font-size: 11.5px; color: #8a5a10; margin-bottom: 6px;">⚠ Best partial match has confidence 38% (threshold 75%)</div>
+          <div class="quote">"central counter"</div>
+          <div class="comment">
+            <span class="avatar rose">D</span>
+            <div>
+              <div class="meta"><strong>Daniyar</strong> · 1 hr ago</div>
+              <div class="body">"Central counter" is ambiguous — do you mean Redis or ZK?</div>
+            </div>
+          </div>
+          <div class="thread-actions">
+            <button>Reattach by hand…</button>
+            <button>Keep as orphan</button>
+            <button style="margin-left:auto; color: var(--text-dim);">Delete</button>
+          </div>
+        </div>
+
+        <div class="thread" data-thread-id="t4">
+          <div class="quote">"Versioned and shipped via config service"</div>
+          <div class="comment">
+            <span class="avatar rose">D</span>
+            <div>
+              <div class="meta"><strong>Daniyar</strong> · 5 min</div>
+              <div class="body">Config service rollouts can lag…</div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </aside>
+  </div>
+
+  <div class="statusbar">
+    <span class="pill" style="background: var(--warn-bg); color: #8a5a10;">Reattachment needed</span>
+    <span class="grow"></span>
+    <button data-testid="reattach-skip" style="font-size:11px; padding:2px 8px; border:1px solid var(--border); background: var(--surface); border-radius:3px; cursor:pointer;">Skip for now</button>
+  </div>
+</div>
+
+<div class="legend"><a href="08-conflict-diff.html">← prev</a><a href="index.html">all</a><a href="10-share-dialog.html">next →</a></div>
+</body>
+</html>

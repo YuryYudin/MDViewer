@@ -1,0 +1,625 @@
+{
+  "schema": 1,
+  "status": "Complete",
+  "workflow": "direct-merge",
+  "execution_mode": "subagents",
+  "goal": "Ship MDViewer: a cross-platform Tauri 2 desktop app that renders .md files, supports threaded comments anchored to selected text, and exchanges document plus comments via files alone — delivered in three sequential phases (viewer + comments, editing + reattachment, CRDT collaboration + distribution).",
+  "architecture": "Tauri 2 application with a Rust backend (markdown parsing via pulldown-cmark with data-src-offset annotations, syntect highlighting, anchor model with W3C TextQuoteSelector + TextPositionSelector, comments store, sidecar IO, settings, file watcher) and a TypeScript frontend (vanilla TS view layer rendering the WebView UI, theme variables, IPC adapters). Phase 1 ships a JSON sidecar (schema_version 1); Phase 3 migrates to Automerge CRDT (schema_version 2) and adds conflict-diff plus per-OS bundling.",
+  "tech_stack": "Rust (tauri 2, pulldown-cmark, syntect, notify, serde, anyhow, tracing, automerge, diff-match-patch-rs/dissimilar — Phase-2 selection), TypeScript + Vite, Vitest (frontend unit), cargo llvm-cov (Rust coverage), Playwright (E2E), Mermaid (lazy-loaded).",
+  "coverage": {
+    "command": "cargo llvm-cov --workspace --html && npm run test:coverage",
+    "threshold": 90,
+    "baseline": null
+  },
+  "e2e": {
+    "command": "npm run test:e2e",
+    "spec_files": [
+      "e2e/01-open-render.spec.ts",
+      "e2e/02-profile-setup.spec.ts",
+      "e2e/03-add-comment.spec.ts",
+      "e2e/04-reply-resolve.spec.ts",
+      "e2e/05-edit-reattach.spec.ts",
+      "e2e/06-auto-merge.spec.ts",
+      "e2e/07-conflict-diff.spec.ts",
+      "e2e/08-share-export.spec.ts",
+      "e2e/09-settings-take-effect.spec.ts",
+      "e2e/10-theme-switch.spec.ts"
+    ],
+    "scenarios": [
+      {
+        "name": "Open a .md and view it rendered",
+        "wireframe": "wireframes/03-document-view.html"
+      },
+      {
+        "name": "Set up profile on first launch",
+        "wireframe": "wireframes/02-profile-setup.html"
+      },
+      {
+        "name": "Add a comment to a selection",
+        "wireframe": "wireframes/04-selection-popover.html"
+      },
+      {
+        "name": "Reply and resolve a thread",
+        "wireframe": "wireframes/06-thread-detail.html"
+      },
+      {
+        "name": "Edit the underlying .md and reattach anchors",
+        "wireframe": "wireframes/07-edit-mode.html"
+      },
+      {
+        "name": "Auto-merge incoming comment sidecar",
+        "wireframe": "wireframes/05-document-with-comments.html"
+      },
+      {
+        "name": "Resolve a text conflict on the .md",
+        "wireframe": "wireframes/08-conflict-diff.html"
+      },
+      {
+        "name": "Share a document and its sidecar",
+        "wireframe": "wireframes/10-share-dialog.html"
+      },
+      {
+        "name": "Change settings and see them take effect",
+        "wireframe": "wireframes/11-settings.html"
+      },
+      {
+        "name": "Switch theme without restart",
+        "wireframe": "wireframes/12-dark-mode.html"
+      }
+    ]
+  },
+  "phases": [
+    {
+      "letter": "A",
+      "name": "Phase 1 — Viewer + Local Comments",
+      "status": "Complete (2026-04-29)",
+      "depends_on": [],
+      "rationale": "Establishes the Tauri scaffold, multi-document workspace, markdown rendering pipeline with offset annotations, anchor storage, threaded comments, JSON sidecar, theme/Settings/profile/recents — all foundations later phases extend.",
+      "tasks": [
+        {
+          "id": "A1",
+          "name": "E2E spec scaffolding (RED) and coverage tooling",
+          "kind": "e2e-red",
+          "status": "complete",
+          "depends_on": [],
+          "files": {
+            "create": [
+              "e2e/01-open-render.spec.ts",
+              "e2e/02-profile-setup.spec.ts",
+              "e2e/03-add-comment.spec.ts",
+              "e2e/04-reply-resolve.spec.ts",
+              "e2e/05-edit-reattach.spec.ts",
+              "e2e/06-auto-merge.spec.ts",
+              "e2e/07-conflict-diff.spec.ts",
+              "e2e/08-share-export.spec.ts",
+              "e2e/09-settings-take-effect.spec.ts",
+              "e2e/10-theme-switch.spec.ts",
+              "e2e/fixtures/recompute-offsets.mjs",
+              "e2e/fixtures/sample.md",
+              "e2e/fixtures/sample.md.comments.json",
+              "e2e/helpers/app.ts",
+              "package.json",
+              "tsconfig.json",
+              "vitest.config.ts",
+              "wdio.conf.ts"
+            ],
+            "modify": [],
+            "test": []
+          },
+          "verification": "npm run test:e2e 2>&1 | tee /tmp/e2e-red.txt || true; test \"$(grep -cE \"✖\" /tmp/e2e-red.txt)\" -ge 10",
+          "done_when": "Playwright, Vitest with @vitest/coverage-v8, and cargo llvm-cov are installed; all 10 e2e spec files exist asserting Given/When/Then scenarios; running the suite reports 10 failing specs (no implementation exists)."
+        },
+        {
+          "id": "A2",
+          "name": "Tauri 2 scaffold (Rust crate, frontend root, build constants)",
+          "status": "complete",
+          "depends_on": [
+            "A1"
+          ],
+          "files": {
+            "create": [
+              "src-tauri/Cargo.toml",
+              "src-tauri/build.rs",
+              "src-tauri/tauri.conf.json",
+              "src-tauri/src/main.rs",
+              "src-tauri/src/lib.rs",
+              "src/index.html",
+              "src/main.ts",
+              "vite.config.ts"
+            ],
+            "modify": [
+              "package.json"
+            ],
+            "test": [
+              "src-tauri/tests/scaffold.rs"
+            ]
+          },
+          "verification": "cd src-tauri && cargo test --test scaffold && cd .. && npm run build",
+          "done_when": "tauri dev launches a window loading src/index.html; build.rs emits MDVIEWER_VERSION and MDVIEWER_COMMIT_HASH constants exported via lib.rs; scaffold integration test asserts the constants are non-empty; npm run build succeeds."
+        },
+        {
+          "id": "A2b",
+          "name": "TS-codegen pipeline (ts-rs export bin)",
+          "status": "complete",
+          "depends_on": [
+            "A2"
+          ],
+          "files": {
+            "create": [
+              "src-tauri/src/bin/export_types.rs",
+              "src/types-generated.ts",
+              "tests/codegen.test.ts"
+            ],
+            "modify": [
+              "package.json",
+              "src-tauri/Cargo.toml",
+              "src-tauri/src/lib.rs"
+            ],
+            "test": []
+          },
+          "verification": "(cd src-tauri && cargo run --bin export_types) && npm run test -- tests/codegen.test.ts",
+          "done_when": "A `cargo run --bin export_types` invocation rewrites `src/types-generated.ts` with `BuildInfo` (the only IPC type that exists in A2). `package.json` gains `npm run gen:types` mapping to that command. `tests/codegen.test.ts` imports `BuildInfo` from `src/types-generated.ts` and asserts the file's mtime ≤ 24h or the test fails (forces regeneration before commit). All later Rust modules (A3-A7) add their public IPC types to `export_types.rs::Types::export_all()`; ipc.ts re-exports the file so the frontend never hand-writes the shapes."
+        },
+        {
+          "id": "A3",
+          "name": "Settings store with shortcuts schema",
+          "status": "complete",
+          "depends_on": [
+            "A2b"
+          ],
+          "files": {
+            "create": [
+              "src-tauri/src/settings.rs"
+            ],
+            "modify": [
+              "src-tauri/src/lib.rs"
+            ],
+            "test": [
+              "src-tauri/tests/settings.rs"
+            ]
+          },
+          "verification": "cd src-tauri && cargo test --test settings",
+          "done_when": "Settings struct serializes/deserializes to TOML in app_config_dir; load/save round-trip preserves all fields (profile, appearance, editor, comments, shortcuts table, sync_provider=null, advanced); change-event channel delivers typed events; default values match the design's Settings page."
+        },
+        {
+          "id": "A4",
+          "name": "Recents (MRU) store",
+          "status": "complete",
+          "depends_on": [
+            "A3",
+            "A2b"
+          ],
+          "files": {
+            "create": [
+              "src-tauri/src/recents.rs"
+            ],
+            "modify": [
+              "src-tauri/src/lib.rs"
+            ],
+            "test": [
+              "src-tauri/tests/recents.rs"
+            ]
+          },
+          "verification": "cd src-tauri && cargo test --test recents",
+          "done_when": "Recents file persists in app_config_dir; push moves an existing path to the top, dedupes; cap of 10 entries; missing paths are pruned on load; tests pass."
+        },
+        {
+          "id": "A5",
+          "name": "Markdown document parser with data-src-offset annotations",
+          "status": "complete",
+          "depends_on": [
+            "A4",
+            "A2b"
+          ],
+          "files": {
+            "create": [
+              "src-tauri/src/document.rs"
+            ],
+            "modify": [
+              "src-tauri/src/lib.rs"
+            ],
+            "test": [
+              "src-tauri/tests/document.rs"
+            ]
+          },
+          "verification": "cd src-tauri && cargo test --test document",
+          "done_when": "render_markdown emits HTML for GFM (tables, task-lists, autolinks); inline text-bearing nodes carry data-src-offset attributes whose start matches the source byte offset; syntect highlights code blocks when enabled and emits raw <pre><code> when disabled; ```mermaid blocks are passed through with class=\"mermaid\" or rendered raw when the toggle is off; round-trip property test confirms every offset attribute resolves back to the original source slice."
+        },
+        {
+          "id": "A6",
+          "name": "Anchor model with exact-match resolve (Phase 1 subset)",
+          "status": "complete",
+          "depends_on": [
+            "A5"
+          ],
+          "files": {
+            "create": [
+              "src-tauri/src/anchor.rs"
+            ],
+            "modify": [
+              "src-tauri/src/lib.rs"
+            ],
+            "test": [
+              "src-tauri/tests/anchor.rs"
+            ]
+          },
+          "verification": "cd src-tauri && cargo test --test anchor",
+          "done_when": "Anchor type encodes TextQuoteSelector (exact + prefix + suffix) and TextPositionSelector (start/end byte offsets); resolve_anchor returns offsets when exact text matches; returns Orphan when the quote is not found verbatim (fuzzy matching deferred to Phase B); serde round-trip preserves all fields."
+        },
+        {
+          "id": "A7",
+          "name": "Comments store and JSON sidecar IO (schema_version 1)",
+          "status": "complete",
+          "depends_on": [
+            "A6",
+            "A3"
+          ],
+          "files": {
+            "create": [
+              "src-tauri/src/comments.rs",
+              "src-tauri/src/sidecar.rs"
+            ],
+            "modify": [
+              "src-tauri/src/lib.rs"
+            ],
+            "test": [
+              "src-tauri/tests/comments.rs",
+              "src-tauri/tests/sidecar.rs"
+            ]
+          },
+          "verification": "cd src-tauri && cargo test --test comments --test sidecar",
+          "done_when": "Threads/comments/replies CRUD operations work; resolve sets resolved_at + resolved_by; sidecar at <doc>.md.comments.json round-trips with schema_version: 1 header; missing-sidecar load returns empty store; auto-merge mode setting is wired (Always = newest mtime wins; Ask/Manual prompt path leaves a callback for the frontend); change-event channel notifies subscribers."
+        },
+        {
+          "id": "A8a",
+          "name": "Workspace tab manager (Rust struct + tests)",
+          "status": "complete",
+          "depends_on": [
+            "A7",
+            "A4"
+          ],
+          "files": {
+            "create": [
+              "src-tauri/src/workspace.rs"
+            ],
+            "modify": [
+              "src-tauri/src/lib.rs"
+            ],
+            "test": [
+              "src-tauri/tests/workspace.rs"
+            ]
+          },
+          "verification": "(cd src-tauri && cargo test --test workspace)",
+          "done_when": "Workspace exposes new(data_dir), open_document(path, opts) -> OpenOutcome (Document or Conflict), close_tab, activate_tab, list_open_documents, active_tab_id, settings_store, settings_store update accessor, recents_store, comments_for, comments_for_mut, resolve_anchor_for_tab. workspace.rs imports crate::anchor / comments / document / recents / sidecar / settings explicitly. Borrow-checker safe: open_document detaches the existing-tab snapshot before mutating self.active. Two-tabs integration test confirms independent state. No tauri commands here — this task does NOT modify main.rs."
+        },
+        {
+          "id": "A8b",
+          "name": "Phase-1 IPC commands and registration test",
+          "status": "complete",
+          "depends_on": [
+            "A8a",
+            "A2b"
+          ],
+          "files": {
+            "create": [],
+            "modify": [
+              "src-tauri/src/main.rs"
+            ],
+            "test": [
+              "src-tauri/tests/ipc_registration.rs"
+            ]
+          },
+          "verification": "(cd src-tauri && cargo test --test ipc_registration && cargo build)",
+          "done_when": "main.rs registers all 13 Phase-1 IPC commands plus app_info. Each handler delegates to a Workspace method that already exists per A8a (no new shims). SettingsStore::update is used (no `set` method exists). CommentsStore methods called are list_threads / create_thread(NewThread{..}) returning Thread / post_reply(&id, NewComment{..}) / resolve_thread(&id, by). The open_document IPC handler emits `show-conflict` when Workspace returns OpenOutcome::Conflict. ipc_registration.rs is a pure-Rust integration test that exercises Workspace shapes and serde envelopes (CommentsStore unknown-tab error, SettingsStore::update round-trip, RenderResult/OpenOutcome serde, Anchor JSON round-trip) — it does NOT use tauri::test mocks, since their API surface drifts across Tauri 2.x patches."
+        },
+        {
+          "id": "A9",
+          "name": "Frontend shell, theme, IPC adapter, StartPage, ProfileSetup",
+          "status": "complete",
+          "depends_on": [
+            "A8b"
+          ],
+          "files": {
+            "create": [
+              "src/ipc.ts",
+              "src/keymap.ts",
+              "src/styles/app.css",
+              "src/styles/theme.css",
+              "src/views/ProfileSetup.ts",
+              "src/views/StartPage.ts",
+              "src/views/TabBar.ts",
+              "src/views/Workspace.ts",
+              "tests/keymap.test.ts"
+            ],
+            "modify": [
+              "src/main.ts",
+              "src/index.html"
+            ],
+            "test": [
+              "tests/views/Workspace.test.ts",
+              "tests/views/TabBar.test.ts",
+              "tests/views/StartPage.test.ts",
+              "tests/views/ProfileSetup.test.ts"
+            ]
+          },
+          "verification": "npm run test -- tests/views/Workspace.test.ts tests/views/TabBar.test.ts tests/views/StartPage.test.ts tests/views/ProfileSetup.test.ts",
+          "done_when": "main.ts boots, applies the saved theme (Light/Dark/Follow-system), and mounts Workspace; StartPage matches wireframe 01 (recents + Open + Settings); ProfileSetup matches wireframe 02 and persists name+color via set_settings; TabBar matches wireframes 01 and 03 and dispatches activate_tab/close_tab; Vitest jsdom suites assert each view's render contract."
+        },
+        {
+          "id": "A10",
+          "name": "Document, CommentsSidebar, SelectionPopover, ThreadDetail views",
+          "status": "complete",
+          "depends_on": [
+            "A9"
+          ],
+          "files": {
+            "create": [
+              "src/views/Document.ts",
+              "src/views/CommentsSidebar.ts",
+              "src/views/SelectionPopover.ts",
+              "src/views/ThreadDetail.ts"
+            ],
+            "modify": [],
+            "test": [
+              "tests/views/Document.test.ts",
+              "tests/views/CommentsSidebar.test.ts",
+              "tests/views/SelectionPopover.test.ts",
+              "tests/views/ThreadDetail.test.ts"
+            ]
+          },
+          "verification": "npm run test -- tests/views/Document.test.ts tests/views/CommentsSidebar.test.ts tests/views/SelectionPopover.test.ts tests/views/ThreadDetail.test.ts",
+          "done_when": "Document mounts the rendered HTML, lazy-loads Mermaid for ```mermaid blocks (skipped when toggle is off), translates DOM selection into source offsets via data-src-offset, and renders existing-thread highlights from resolve_anchor; SelectionPopover matches wireframe 04 and creates a thread via IPC; CommentsSidebar matches wireframes 05 and respects show-resolved filter; ThreadDetail matches wireframe 06 with reply composer and Resolve button; jsdom unit tests cover each interaction."
+        },
+        {
+          "id": "A11",
+          "name": "Settings view (full panel)",
+          "status": "complete",
+          "depends_on": [
+            "A9"
+          ],
+          "files": {
+            "create": [
+              "src/views/Settings.ts"
+            ],
+            "modify": [],
+            "test": [
+              "tests/views/Settings.test.ts"
+            ]
+          },
+          "verification": "npm run test -- tests/views/Settings.test.ts",
+          "done_when": "Settings page matches wireframe 11 with Profile / Appearance / Editor & viewer / Comments / Shortcuts (read-only) / Advanced / About sections; each control reads/writes via get_settings/set_settings; theme change applies immediately to every visible surface; Sync provider control is rendered disabled with the deferred-feature note; About panel shows MDVIEWER_VERSION and commit hash."
+        }
+      ]
+    },
+    {
+      "letter": "B",
+      "name": "Phase 2 — Light Editing and Anchor Reattachment",
+      "status": "Complete (2026-04-29)",
+      "depends_on": [
+        "A"
+      ],
+      "rationale": "Adds the View/Edit toggle, raw textarea editor, IPC-backed save with watcher self-suppression, fuzzy anchor reattachment, file-watcher with external-change behavior, and orphan-comments UX. Builds on Phase A's anchor and document modules.",
+      "tasks": [
+        {
+          "id": "B1",
+          "name": "Diff-match-patch crate selection and fuzzy reattachment",
+          "status": "complete",
+          "depends_on": [],
+          "files": {
+            "create": [
+              "src-tauri/benches/anchor_bench.rs"
+            ],
+            "modify": [
+              "src-tauri/Cargo.toml",
+              "src-tauri/src/anchor.rs",
+              "src-tauri/src/workspace.rs",
+              "src-tauri/tests/anchor.rs"
+            ],
+            "test": [
+              "src-tauri/tests/workspace.rs"
+            ]
+          },
+          "verification": "cd src-tauri && cargo test --test anchor && cargo bench --bench anchor_bench -- --quick",
+          "done_when": "diff-match-patch-rs is added to Cargo.toml after benchmarking against dissimilar on representative documents (decision recorded in src-tauri/src/anchor.rs module-doc comment with the latency numbers); resolve_anchor falls back to fuzzy match when the exact quote is missing, scores results against the configured reattachment_confidence threshold (read from settings), and returns Orphan below threshold; property tests over insertion/deletion/replacement edits assert correct reattachment vs orphan classification; Unicode boundary regression test passes."
+        },
+        {
+          "id": "B2",
+          "name": "File watcher with external-change behavior",
+          "status": "complete",
+          "depends_on": [
+            "B1"
+          ],
+          "files": {
+            "create": [
+              "src-tauri/src/watcher.rs"
+            ],
+            "modify": [
+              "src-tauri/Cargo.toml",
+              "src-tauri/src/main.rs",
+              "src-tauri/src/lib.rs"
+            ],
+            "test": [
+              "src-tauri/tests/watcher.rs"
+            ]
+          },
+          "verification": "cd src-tauri && cargo test --test watcher",
+          "done_when": "notify-based watcher tracks each open .md plus its sidecar; external changes emit a typed event whose payload honors the Ask/Reload/Ignore setting; external sidecar changes route through sidecar.rs with the user's auto-merge policy; integration tests cover all three modes plus the unsaved-edits override (which always asks regardless of setting)."
+        },
+        {
+          "id": "B3",
+          "name": "save_document IPC and watcher self-write suppression",
+          "status": "complete",
+          "depends_on": [
+            "B2"
+          ],
+          "files": {
+            "create": [],
+            "modify": [
+              "src-tauri/src/document.rs",
+              "src-tauri/src/main.rs",
+              "src-tauri/src/watcher.rs",
+              "src-tauri/src/workspace.rs",
+              "src-tauri/tests/document.rs",
+              "src-tauri/tests/watcher.rs",
+              "src/ipc.ts"
+            ],
+            "test": [
+              "tests/ipc.test.ts"
+            ]
+          },
+          "verification": "cd src-tauri && cargo test --test document --test watcher",
+          "done_when": "save_document(path, contents) writes bytes atomically and registers (path, content_hash, timestamp) with watcher.rs as a self-originated write; the watcher matches and drops the resulting filesystem event; integration test asserts a save followed by no reload prompt; second integration test asserts an external write to the same file still triggers the event."
+        },
+        {
+          "id": "B4",
+          "name": "Edit view, mode toggle, orphan-comments UX",
+          "status": "complete",
+          "depends_on": [
+            "B1",
+            "B3"
+          ],
+          "files": {
+            "create": [
+              "src/views/Edit.ts",
+              "src/views/OrphanComments.ts"
+            ],
+            "modify": [
+              "src/views/Document.ts",
+              "src/views/CommentsSidebar.ts"
+            ],
+            "test": [
+              "tests/views/Edit.test.ts",
+              "tests/views/OrphanComments.test.ts"
+            ]
+          },
+          "verification": "npm run test -- tests/views/Edit.test.ts tests/views/OrphanComments.test.ts",
+          "done_when": "Edit view matches wireframe 07 with raw textarea, debounced autosave (interval read from settings), word-wrap and show-whitespace toggles; Document toggles between View/Edit; on returning to View, anchors below the configured confidence appear in OrphanComments matching wireframe 09 with Relocate / Keep / Delete actions; jsdom tests assert mode transitions and orphan state."
+        }
+      ]
+    },
+    {
+      "letter": "C",
+      "name": "Phase 3 — CRDT Collaboration and Distribution",
+      "status": "Complete (2026-04-29)",
+      "depends_on": [
+        "B"
+      ],
+      "rationale": "Replaces the JSON sidecar with Automerge (schema_version 2) plus migration; adds the conflict-diff UI for divergent .md text; adds the share/export dialog and the migrate-sidecars CLI subcommand; finalizes per-OS bundling. Sequencing keeps CRDT migration before the conflict and share UIs that depend on the new sidecar shape.",
+      "tasks": [
+        {
+          "id": "C1",
+          "name": "Automerge sidecar (schema_version 2) with migration from v1",
+          "status": "in_progress",
+          "depends_on": [],
+          "files": {
+            "create": [],
+            "modify": [
+              "src-tauri/Cargo.toml",
+              "src-tauri/src/sidecar.rs",
+              "src-tauri/src/comments.rs",
+              "src-tauri/tests/sidecar.rs",
+              "src-tauri/tests/comments.rs"
+            ],
+            "test": []
+          },
+          "verification": "cd src-tauri && cargo test --test sidecar --test comments",
+          "done_when": "automerge crate added; sidecars persist as compact Automerge bytes with schema_version: 2 header; loaders detect schema_version < 2 and convert the JSON document into a fresh Automerge doc preserving thread/comment/reply IDs, then rewrite on next save; merge-order-independence test (apply ops {A,B} vs {B,A}) yields equal end-state; v1-to-v2 round-trip test asserts no thread loss; Auto-merge=Always reload is conflict-free under both-sides-edited fixture."
+        },
+        {
+          "id": "C2",
+          "name": "Conflict diff (Rust hunks + side-by-side view)",
+          "status": "pending",
+          "depends_on": [
+            "C1"
+          ],
+          "files": {
+            "create": [
+              "src-tauri/src/conflict.rs",
+              "src/views/Conflict.ts"
+            ],
+            "modify": [
+              "src-tauri/src/bin/export_types.rs",
+              "src-tauri/src/lib.rs",
+              "src-tauri/src/main.rs",
+              "src-tauri/src/workspace.rs",
+              "src/ipc.ts",
+              "src/types-generated.ts",
+              "src/views/Workspace.ts"
+            ],
+            "test": [
+              "src-tauri/tests/conflict.rs",
+              "tests/views/Conflict.test.ts"
+            ]
+          },
+          "verification": "cd src-tauri && cargo test --test conflict && cd .. && npm run test -- tests/views/Conflict.test.ts",
+          "done_when": "diff produces hunks identifying overlapping ranges between local and incoming .md; conflict.rs emits a structured payload (line-anchored, additions/deletions); Conflict view matches wireframe 08 with hunk-by-hunk Accept Left / Accept Right / Hand-edit controls and a Finish merge button that writes the resolved bytes via save_document."
+        },
+        {
+          "id": "C3",
+          "name": "Share/export dialog and migrate-sidecars CLI subcommand",
+          "status": "pending",
+          "depends_on": [
+            "C1"
+          ],
+          "files": {
+            "create": [
+              "src/views/ShareDialog.ts"
+            ],
+            "modify": [
+              "src-tauri/Cargo.toml",
+              "src-tauri/src/main.rs",
+              "src-tauri/src/workspace.rs",
+              "src/ipc.ts"
+            ],
+            "test": [
+              "tests/views/ShareDialog.test.ts"
+            ]
+          },
+          "verification": "cd src-tauri && cargo run -- migrate-sidecars ./fixtures && cd .. && npm run test -- tests/views/ShareDialog.test.ts",
+          "done_when": "Share dialog matches wireframe 10 and on Export produces a folder containing <doc>.md and <doc>.md.comments.json (already in v2 format) ready to send; mdviewer migrate-sidecars <dir> walks the directory, loads each .md.comments.json, rewrites schema_version < 2 sidecars in-place, prints a summary; both flows are tested."
+        },
+        {
+          "id": "C4",
+          "name": "Per-OS bundling pipeline (.dmg / .msi / .AppImage / .deb)",
+          "status": "pending",
+          "depends_on": [
+            "C3",
+            "C2"
+          ],
+          "files": {
+            "create": [
+              ".github/workflows/release.yml"
+            ],
+            "modify": [
+              "src-tauri/tauri.conf.json",
+              "package.json"
+            ],
+            "test": []
+          },
+          "verification": "npm run tauri -- build --debug",
+          "done_when": "tauri.conf.json declares macOS (.dmg or .app), Windows (.msi or .exe), and Linux (.AppImage and .deb) bundle targets; release.yml builds each on its native runner and uploads artifacts; local tauri build --debug produces an artifact for the host platform; code signing left as a follow-up note in the workflow."
+        },
+        {
+          "id": "C5",
+          "name": "E2E suite green (verification only)",
+          "kind": "e2e-green",
+          "status": "pending",
+          "depends_on": [
+            "C4",
+            "C3",
+            "C2",
+            "C1"
+          ],
+          "files": {
+            "create": [],
+            "modify": [],
+            "test": []
+          },
+          "verification": "npm run test:e2e",
+          "done_when": "All 10 Playwright specs (open-render, profile-setup, add-comment, reply-resolve, edit-reattach, auto-merge, conflict-diff, share-export, settings-take-effect, theme-switch) pass against a built MDViewer; coverage thresholds (cargo llvm-cov >= 90% on touched modules, npm run test:coverage >= 90% on touched files) are met."
+        }
+      ]
+    }
+  ],
+  "integration_branch": "integrate/mdviewer"
+}

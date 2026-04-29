@@ -51,3 +51,25 @@ export async function tripleClick(selector: string): Promise<void> {
     .down().up()
     .perform();
 }
+
+/**
+ * E2E hook: open a .md by absolute path, bypassing the OS file dialog and
+ * the `<input type=file>` flow (neither is driveable by tauri-webdriver-
+ * automation on macOS — `setValue` uploads file contents, not a path).
+ * The app exposes `window.__mdviewerE2E.open(path)` when running under
+ * the WebDriver harness; this helper invokes it via a non-element script
+ * call (which is the only execute_sync path the plugin handles correctly).
+ */
+export async function openDocByE2eHook(absPath: string): Promise<void> {
+  await browser.executeAsync(
+    function (path: string, done: (v: unknown) => void): void {
+      const w = window as unknown as { __mdviewerE2E?: { open(p: string): Promise<void> } };
+      if (!w.__mdviewerE2E) {
+        done({ error: 'e2e hook missing' });
+        return;
+      }
+      w.__mdviewerE2E.open(path).then(() => done(null), (e) => done({ error: String(e) }));
+    },
+    absPath,
+  );
+}

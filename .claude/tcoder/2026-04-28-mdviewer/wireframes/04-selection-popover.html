@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>04 · Selection Popover</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app">
+  <div class="titlebar">
+    <span class="traffic"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
+    <span class="title">RFC-031-rate-limiting.md — MDViewer</span>
+    <span class="menus"><span>File</span><span>Edit</span><span>View</span><span>Comments</span><span>Help</span></span>
+  </div>
+
+  <div class="tabbar">
+    <div class="tab active">RFC-031-rate-limiting.md <span class="x">×</span></div>
+    <div class="tab">onboarding-handbook.md <span class="x">×</span></div>
+    <div class="tab new">+</div>
+  </div>
+
+  <div class="body">
+    <div class="editor-pane">
+      <div class="mode-toggle"><button class="on">View</button><button>Edit</button></div>
+
+      <article class="md">
+        <h1>RFC-031: Per-tenant Rate Limiting</h1>
+        <p><em>Status: draft · Author: Priya Iyer · Updated 2026-04-22</em></p>
+
+        <h2>Summary</h2>
+        <p>Today the gateway enforces a single global request budget. As we onboard larger
+        customers, <span style="background: #cfe1ff; outline: 1px solid #335cff;" data-testid="user-selection">a single tenant's traffic spike can degrade response times for every
+        other tenant</span>. This RFC proposes a per-tenant token-bucket limiter at the gateway.</p>
+
+        <div class="popover" style="top: 168px; left: 220px;" data-testid="selection-popover">
+          <button data-testid="popover-comment">💬 Comment</button>
+          <span class="sep"></span>
+          <button data-testid="popover-copy">Copy</button>
+          <button data-testid="popover-link">Copy link</button>
+        </div>
+
+        <h2>Goals</h2>
+        <ul>
+          <li>Bound the worst-case impact one tenant can have on shared infrastructure.</li>
+          <li>Expose limit headroom to tenants via response headers.</li>
+          <li>Operate without adding a synchronous round-trip to a central counter.</li>
+        </ul>
+
+        <h2>Design</h2>
+        <p>Each gateway pod owns a local token bucket per (tenant, route-class) pair,
+        replenished from a global ledger every <code>refresh_interval</code> seconds.</p>
+
+        <pre><code>def consume(tenant: str, route_class: str, n: int = 1):
+    bucket = local_buckets[(tenant, route_class)]
+    if bucket.tokens &gt;= n:
+        bucket.tokens -= n
+        return True
+    return False</code></pre>
+      </article>
+    </div>
+
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <span class="grow">Comments</span>
+        <select disabled><option>All</option></select>
+      </div>
+      <div class="threads">
+        <div style="padding: 28px 8px; color: var(--text-faint); text-align: center; font-size: 12.5px;">
+          Click <strong>Comment</strong> in the popover to start a thread on the selected text.
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <div class="statusbar">
+    <span class="pill">View</span>
+    <span>Mira · amber</span>
+    <span class="grow"></span>
+    <span data-testid="selection-info">87 chars selected</span>
+  </div>
+</div>
+
+<div class="legend"><a href="03-document-view.html">← prev</a><a href="index.html">all</a><a href="05-document-with-comments.html">next →</a></div>
+</body>
+</html>

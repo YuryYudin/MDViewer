@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>08 · Text-Conflict Resolution</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app">
+  <div class="titlebar">
+    <span class="traffic"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
+    <span class="title">RFC-031-rate-limiting.md — Resolve text conflict</span>
+    <span class="menus"><span>File</span><span>Edit</span><span>View</span><span>Comments</span><span>Help</span></span>
+  </div>
+
+  <div class="tabbar">
+    <div class="tab active">RFC-031-rate-limiting.md <span class="x">×</span></div>
+    <div class="tab new">+</div>
+  </div>
+
+  <div class="conflict-banner" data-testid="conflict-banner">
+    <strong>Text conflict</strong>
+    <span>You imported a copy of this document that has 4 text changes overlapping with your local edits. Choose which version of each conflict to keep, or hand-edit. Comments from the other copy will be merged automatically afterwards.</span>
+  </div>
+
+  <div class="body no-sidebar">
+    <div class="diff-wrap" data-testid="diff-wrap">
+      <div class="diff-pane" data-testid="diff-mine">
+        <div class="diff-head">
+          <span class="grow"><strong>Your copy</strong> <span class="who">— Mira · last saved 14 min ago</span></span>
+          <button data-testid="keep-mine">Keep mine</button>
+        </div>
+        <div class="diff-body">
+          <div class="diff-line ctx"><span class="ln">14</span><span class="marker"> </span><span>## Summary</span></div>
+          <div class="diff-line ctx"><span class="ln">15</span><span class="marker"> </span><span></span></div>
+          <div class="diff-line ctx"><span class="ln">16</span><span class="marker"> </span><span>Today the gateway enforces a single global request budget.</span></div>
+          <div class="diff-line del"><span class="ln">17</span><span class="marker">−</span><span>As we onboard larger customers, a single tenant's traffic</span></div>
+          <div class="diff-line del"><span class="ln">18</span><span class="marker">−</span><span>spike can degrade response times for every other tenant.</span></div>
+          <div class="diff-line add"><span class="ln">17</span><span class="marker">+</span><span>As we scale, a single noisy tenant routinely degrades p99</span></div>
+          <div class="diff-line add"><span class="ln">18</span><span class="marker">+</span><span>latency for every other tenant on the shared gateway.</span></div>
+          <div class="diff-line ctx"><span class="ln">19</span><span class="marker"> </span><span>This RFC proposes a per-tenant token-bucket limiter…</span></div>
+          <div class="diff-line ctx"><span class="ln">20</span><span class="marker"> </span><span></span></div>
+          <div class="diff-line ctx"><span class="ln">21</span><span class="marker"> </span><span>## Goals</span></div>
+        </div>
+      </div>
+
+      <div class="diff-pane" data-testid="diff-theirs">
+        <div class="diff-head">
+          <span class="grow"><strong>Incoming copy</strong> <span class="who">— Priya · 2 min ago</span></span>
+          <button class="primary" data-testid="keep-theirs">Keep theirs</button>
+        </div>
+        <div class="diff-body">
+          <div class="diff-line ctx"><span class="ln">14</span><span class="marker"> </span><span>## Summary</span></div>
+          <div class="diff-line ctx"><span class="ln">15</span><span class="marker"> </span><span></span></div>
+          <div class="diff-line ctx"><span class="ln">16</span><span class="marker"> </span><span>Today the gateway enforces a single global request budget.</span></div>
+          <div class="diff-line del"><span class="ln">17</span><span class="marker">−</span><span>As we onboard larger customers, a single tenant's traffic</span></div>
+          <div class="diff-line del"><span class="ln">18</span><span class="marker">−</span><span>spike can degrade response times for every other tenant.</span></div>
+          <div class="diff-line add"><span class="ln">17</span><span class="marker">+</span><span>Across Q1 we observed two incidents where one customer's</span></div>
+          <div class="diff-line add"><span class="ln">18</span><span class="marker">+</span><span>traffic burst pushed gateway p99 from 80ms to over 1.2s,</span></div>
+          <div class="diff-line add"><span class="ln">19</span><span class="marker">+</span><span>affecting every other tenant on the shared infrastructure.</span></div>
+          <div class="diff-line ctx"><span class="ln">20</span><span class="marker"> </span><span>This RFC proposes a per-tenant token-bucket limiter…</span></div>
+          <div class="diff-line ctx"><span class="ln">21</span><span class="marker"> </span><span></span></div>
+          <div class="diff-line ctx"><span class="ln">22</span><span class="marker"> </span><span>## Goals</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="statusbar">
+    <span class="pill" style="background: var(--warn-bg); color: #8a5a10;">Conflict</span>
+    <span data-testid="conflict-progress">Hunk 1 of 4</span>
+    <span class="grow"></span>
+    <button data-testid="conflict-prev" style="font-size:11px; padding:2px 8px; border:1px solid var(--border); background: var(--surface); border-radius:3px; cursor:pointer;">← Prev hunk</button>
+    <button data-testid="conflict-next" style="font-size:11px; padding:2px 8px; border:1px solid var(--border); background: var(--surface); border-radius:3px; cursor:pointer;">Next hunk →</button>
+    <button data-testid="conflict-edit" style="font-size:11px; padding:2px 8px; border:1px solid var(--border); background: var(--surface); border-radius:3px; cursor:pointer;">Hand-edit…</button>
+    <button data-testid="conflict-finish" style="font-size:11px; padding:2px 10px; border:1px solid var(--accent); background: var(--accent); color:white; border-radius:3px; cursor:pointer;">Finish merge</button>
+  </div>
+</div>
+
+<div class="legend"><a href="07-edit-mode.html">← prev</a><a href="index.html">all</a><a href="09-orphan-comments.html">next →</a></div>
+</body>
+</html>

@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>02 · Profile Setup</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app">
+  <div class="titlebar">
+    <span class="traffic"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
+    <span class="title">MDViewer</span>
+    <span class="menus"><span>File</span><span>Edit</span><span>View</span><span>Comments</span><span>Help</span></span>
+  </div>
+
+  <div class="tabbar"><div class="tab new">+ Open file</div></div>
+
+  <div class="body no-sidebar">
+    <div class="editor-pane" style="position: relative;">
+      <div class="startup" style="filter: blur(1px); opacity: 0.6;">
+        <div class="stack">
+          <h2>Welcome to MDViewer</h2>
+          <p class="sub">Tell us how you'd like comments you write to be labeled.</p>
+        </div>
+      </div>
+
+      <div class="scrim">
+        <div class="modal" id="profile-modal" data-testid="profile-modal">
+          <h2>Set up your profile</h2>
+          <p>Your name and color appear next to comments you write. They're stored only on this computer — change them anytime in <em>Settings → Profile</em>.</p>
+
+          <div class="row">
+            <label for="name">Display name</label>
+            <input id="name" name="name" type="text" value="Mira Halvorsen" data-testid="profile-name-input">
+          </div>
+
+          <div class="row">
+            <label>Avatar color</label>
+            <div class="color-picker" data-testid="color-picker">
+              <span class="swatch amber selected" data-color="amber" title="Amber"></span>
+              <span class="swatch teal" data-color="teal" title="Teal"></span>
+              <span class="swatch rose" data-color="rose" title="Rose"></span>
+              <span class="swatch indigo" data-color="indigo" title="Indigo"></span>
+              <span class="swatch olive" data-color="olive" title="Olive"></span>
+              <span class="swatch slate" data-color="slate" title="Slate"></span>
+            </div>
+          </div>
+
+          <p style="font-size: 12px; margin: 14px 0 0; color: var(--text-faint);">
+            Preview:&nbsp;
+            <span class="avatar amber" style="display:inline-flex; vertical-align: middle;">M</span>
+            <strong style="color: var(--text);"> Mira Halvorsen</strong>
+          </p>
+
+          <div class="modal-actions">
+            <button data-testid="profile-skip">Skip for now</button>
+            <button class="primary" data-testid="profile-save">Save profile</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="statusbar"><span class="grow"></span><span>First-run setup</span></div>
+</div>
+
+<div class="legend"><a href="01-startup.html">← prev</a><a href="index.html">all</a><a href="03-document-view.html">next →</a></div>
+</body>
+</html>

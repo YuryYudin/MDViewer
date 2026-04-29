@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>12 · Dark Mode</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body class="theme-dark" data-testid="theme-root">
+<div class="app">
+  <div class="titlebar">
+    <span class="traffic"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
+    <span class="title">RFC-031-rate-limiting.md — MDViewer (dark)</span>
+    <span class="menus"><span>File</span><span>Edit</span><span>View</span><span>Comments</span><span>Help</span></span>
+  </div>
+
+  <div class="tabbar">
+    <div class="tab active dirty">RFC-031-rate-limiting.md <span class="x">×</span></div>
+    <div class="tab">onboarding-handbook.md <span class="x">×</span></div>
+    <div class="tab new">+</div>
+  </div>
+
+  <div class="body">
+    <div class="editor-pane">
+      <div class="mode-toggle"><button class="on">View</button><button>Edit</button></div>
+
+      <article class="md">
+        <h1>RFC-031: Per-tenant Rate Limiting</h1>
+        <p><em>Status: draft · Author: Priya Iyer · Updated 2026-04-22</em></p>
+
+        <h2>Summary</h2>
+        <p>Today the gateway enforces a single global request budget. As we onboard larger
+        customers, <span class="anchor active" data-thread-id="t1">a single tenant's traffic spike can degrade response times for every other tenant</span>.
+        This RFC proposes a per-tenant token-bucket limiter at the gateway.</p>
+
+        <h2>Goals</h2>
+        <ul>
+          <li>Bound the worst-case impact one tenant can have on shared infrastructure.</li>
+          <li>Expose limit headroom to tenants via response headers.</li>
+          <li>Operate without adding a synchronous round-trip to a <span class="anchor" data-thread-id="t2">central counter</span>.</li>
+        </ul>
+
+        <h2>Design</h2>
+        <p>Each gateway pod owns a local token bucket per (tenant, route-class) pair,
+        replenished from a global ledger every <code>refresh_interval</code> seconds.</p>
+
+        <pre><code>def consume(tenant: str, route_class: str, n: int = 1) -&gt; bool:
+    bucket = local_buckets[(tenant, route_class)]
+    if bucket.tokens &gt;= n:
+        bucket.tokens -= n
+        return True
+    return False  # 429 returned to client</code></pre>
+
+        <h3>Why per-pod buckets, not per-edge</h3>
+        <p><span class="anchor resolved" data-thread-id="t3">Per-edge buckets concentrate state and increase contention</span>. Per-pod buckets
+        trade some accuracy for resilience and horizontal scalability.</p>
+
+        <table>
+          <thead><tr><th>Concern</th><th>Mitigation</th></tr></thead>
+          <tbody>
+            <tr><td>Unbalanced pods</td><td>Sticky tenant routing at L7</td></tr>
+            <tr><td>Cold-start lag</td><td>Pods preload bucket state at boot</td></tr>
+          </tbody>
+        </table>
+
+        <div class="mermaid-block">
+          [ Mermaid diagram — sequence: Client → Gateway → Local bucket → (async) Redis ledger ]
+        </div>
+      </article>
+    </div>
+
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <span class="grow">Comments · 4</span>
+        <select><option>All</option></select>
+      </div>
+
+      <div class="threads">
+        <div class="thread active" data-thread-id="t1">
+          <div class="quote">"a single tenant's traffic spike can degrade response times for every other tenant"</div>
+          <div class="comment">
+            <span class="avatar amber">M</span>
+            <div>
+              <div class="meta"><strong>Mira</strong> · 2 min ago</div>
+              <div class="body">Should we quantify this? Got tail-latency data from last quarter — p99 went from 80ms to 1.2s.</div>
+            </div>
+          </div>
+          <div class="comment">
+            <span class="avatar teal">P</span>
+            <div>
+              <div class="meta"><strong>Priya</strong> · just now</div>
+              <div class="body">Agreed — I'll inline that chart from the postmortem.</div>
+            </div>
+          </div>
+          <div class="thread-actions">
+            <button>Reply</button>
+            <button>Resolve</button>
+          </div>
+        </div>
+
+        <div class="thread" data-thread-id="t2">
+          <div class="quote">"central counter"</div>
+          <div class="comment">
+            <span class="avatar rose">D</span>
+            <div>
+              <div class="meta"><strong>Daniyar</strong> · 18 min ago</div>
+              <div class="body">"Central counter" is ambiguous — Redis or ZK?</div>
+            </div>
+          </div>
+          <div class="thread-actions">
+            <button>Reply</button>
+            <button>Resolve</button>
+          </div>
+        </div>
+
+        <div class="thread resolved" data-thread-id="t3">
+          <div class="quote">"Per-edge buckets concentrate state and increase contention"</div>
+          <div class="comment">
+            <span class="avatar amber">M</span>
+            <div>
+              <div class="meta"><strong>Mira</strong> · 1 hr ago · <em>resolved</em></div>
+              <div class="body">Want a sentence on what 'per-edge' means in our topology.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style="padding: 8px 12px; border-top: 1px solid var(--border); font-size: 11.5px; color: var(--text-faint); display: flex; align-items: center; gap: 8px;">
+        Theme: <strong style="color: var(--text);">Dark</strong>
+        <span style="margin-left: auto;"><a href="11-settings.html" style="color: var(--accent);">Change in Settings →</a></span>
+      </div>
+    </aside>
+  </div>
+
+  <div class="statusbar">
+    <span class="pill">View</span>
+    <span data-testid="theme-status">🌙 Dark</span>
+    <span>Mira · amber</span>
+    <span class="grow"></span>
+    <span>128 lines · 412 words</span>
+  </div>
+</div>
+
+<div class="legend"><a href="11-settings.html">← prev</a><a href="index.html">all</a></div>
+</body>
+</html>

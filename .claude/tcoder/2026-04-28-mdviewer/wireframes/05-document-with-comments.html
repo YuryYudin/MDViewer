@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>05 · Document with Comments</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app">
+  <div class="titlebar">
+    <span class="traffic"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
+    <span class="title">RFC-031-rate-limiting.md — MDViewer</span>
+    <span class="menus"><span>File</span><span>Edit</span><span>View</span><span>Comments</span><span>Help</span></span>
+  </div>
+
+  <div class="tabbar">
+    <div class="tab active dirty" data-testid="tab-dirty">RFC-031-rate-limiting.md <span class="x">×</span></div>
+    <div class="tab">onboarding-handbook.md <span class="x">×</span></div>
+    <div class="tab new">+</div>
+  </div>
+
+  <div class="body">
+    <div class="editor-pane">
+      <div class="mode-toggle"><button class="on">View</button><button>Edit</button></div>
+
+      <article class="md">
+        <h1>RFC-031: Per-tenant Rate Limiting</h1>
+        <p><em>Status: draft · Author: Priya Iyer · Updated 2026-04-22</em></p>
+
+        <h2>Summary</h2>
+        <p>Today the gateway enforces a single global request budget. As we onboard larger
+        customers, <span class="anchor active" data-thread-id="t1">a single tenant's traffic spike can degrade response times for every other tenant</span>.
+        This RFC proposes a per-tenant token-bucket limiter at the gateway.</p>
+
+        <h2>Goals</h2>
+        <ul>
+          <li>Bound the worst-case impact one tenant can have on shared infrastructure.</li>
+          <li>Expose limit headroom to tenants via response headers.</li>
+          <li>Operate without adding a synchronous round-trip to a <span class="anchor" data-thread-id="t2">central counter</span>.</li>
+        </ul>
+
+        <h2>Design</h2>
+        <p>Each gateway pod owns a local token bucket per (tenant, route-class) pair,
+        replenished from a global ledger every <code>refresh_interval</code> seconds. The
+        global ledger lives in Redis and is updated atomically using a Lua script.</p>
+
+        <pre><code>def consume(tenant: str, route_class: str, n: int = 1) -&gt; bool:
+    bucket = local_buckets[(tenant, route_class)]
+    if bucket.tokens &gt;= n:
+        bucket.tokens -= n
+        return True
+    return False  # 429 returned to client</code></pre>
+
+        <h3>Why per-pod buckets, not per-edge</h3>
+        <p><span class="anchor resolved" data-thread-id="t3">Per-edge buckets concentrate state and increase contention</span>. Per-pod buckets
+        trade some accuracy for resilience and horizontal scalability.</p>
+
+        <h2>Operational concerns</h2>
+        <table>
+          <thead><tr><th>Concern</th><th>Mitigation</th></tr></thead>
+          <tbody>
+            <tr><td>Unbalanced pods</td><td>Sticky tenant routing at L7</td></tr>
+            <tr><td>Cold-start lag</td><td>Pods preload bucket state at boot</td></tr>
+            <tr><td>Lua script drift</td><td><span class="anchor" data-thread-id="t4">Versioned and shipped via config service</span></td></tr>
+          </tbody>
+        </table>
+      </article>
+    </div>
+
+    <aside class="sidebar" data-testid="sidebar">
+      <div class="sidebar-header">
+        <span class="grow">Comments · 4</span>
+        <select data-testid="filter-select">
+          <option>All</option><option>Open (3)</option><option>Resolved (1)</option>
+        </select>
+      </div>
+
+      <div class="threads">
+
+        <div class="thread active" data-testid="thread-t1" data-thread-id="t1">
+          <div class="quote">"a single tenant's traffic spike can degrade response times for every other tenant"</div>
+          <div class="comment">
+            <span class="avatar amber">M</span>
+            <div>
+              <div class="meta"><strong>Mira</strong> · 2 min ago</div>
+              <div class="body">Should we quantify this? Got tail-latency data from last quarter — the noisy-neighbor case showed p99 going from 80ms to 1.2s.</div>
+            </div>
+          </div>
+          <div class="comment">
+            <span class="avatar teal">P</span>
+            <div>
+              <div class="meta"><strong>Priya</strong> · just now</div>
+              <div class="body">Yeah, agreed — I'll inline that chart from the postmortem. Will update.</div>
+            </div>
+          </div>
+          <div class="thread-actions">
+            <button data-testid="thread-reply">Reply</button>
+            <button data-testid="thread-resolve">Resolve</button>
+          </div>
+        </div>
+
+        <div class="thread" data-thread-id="t2">
+          <div class="quote">"central counter"</div>
+          <div class="comment">
+            <span class="avatar rose">D</span>
+            <div>
+              <div class="meta"><strong>Daniyar</strong> · 18 min ago</div>
+              <div class="body">"Central counter" is ambiguous — do you mean a shared Redis or a coordination service like ZK? Worth a sentence on what we're avoiding and why.</div>
+            </div>
+          </div>
+          <div class="thread-actions">
+            <button>Reply</button>
+            <button>Resolve</button>
+          </div>
+        </div>
+
+        <div class="thread resolved" data-thread-id="t3">
+          <div class="quote">"Per-edge buckets concentrate state and increase contention"</div>
+          <div class="comment">
+            <span class="avatar amber">M</span>
+            <div>
+              <div class="meta"><strong>Mira</strong> · 1 hr ago · <em>resolved</em></div>
+              <div class="body">Want a sentence on what 'per-edge' means in our topology — first-time readers won't know.</div>
+            </div>
+          </div>
+          <div class="comment">
+            <span class="avatar teal">P</span>
+            <div>
+              <div class="meta"><strong>Priya</strong> · 32 min ago</div>
+              <div class="body">Added a footnote linking to the topology doc. Resolving.</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="thread" data-thread-id="t4">
+          <div class="quote">"Versioned and shipped via config service"</div>
+          <div class="comment">
+            <span class="avatar rose">D</span>
+            <div>
+              <div class="meta"><strong>Daniyar</strong> · 5 min ago</div>
+              <div class="body">Config service rollouts can lag by minutes. Are we OK with stale Lua during that window?</div>
+            </div>
+          </div>
+          <div class="thread-actions">
+            <button>Reply</button>
+            <button>Resolve</button>
+          </div>
+        </div>
+
+      </div>
+    </aside>
+  </div>
+
+  <div class="statusbar">
+    <span class="pill">View</span>
+    <span>Mira · amber</span>
+    <span class="grow"></span>
+    <span data-testid="unsaved-marker">● unsaved comments</span>
+  </div>
+</div>
+
+<div class="legend"><a href="04-selection-popover.html">← prev</a><a href="index.html">all</a><a href="06-thread-detail.html">next →</a></div>
+</body>
+</html>

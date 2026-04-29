@@ -10,8 +10,13 @@ import type { Ipc } from '../ipc';
 function isE2eMode(): boolean {
   const fromEnv = (import.meta as unknown as { env?: Record<string, string> }).env?.MDVIEWER_E2E;
   if (fromEnv === '1') return true;
-  if (typeof window !== 'undefined' && (window as unknown as { __MDVIEWER_E2E?: boolean }).__MDVIEWER_E2E) {
-    return true;
+  if (typeof window !== 'undefined') {
+    const w = window as unknown as { __MDVIEWER_E2E?: boolean; __WEBDRIVER__?: unknown };
+    if (w.__MDVIEWER_E2E) return true;
+    // tauri-webdriver-automation injects window.__WEBDRIVER__ as a non-
+    // configurable property; its presence is a reliable signal we're under
+    // the e2e harness on macOS, where the OS file dialog can't be driven.
+    if (w.__WEBDRIVER__) return true;
   }
   return false;
 }

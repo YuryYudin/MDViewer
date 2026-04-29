@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>07 · Edit Mode</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app">
+  <div class="titlebar">
+    <span class="traffic"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
+    <span class="title">RFC-031-rate-limiting.md — MDViewer</span>
+    <span class="menus"><span>File</span><span>Edit</span><span>View</span><span>Comments</span><span>Help</span></span>
+  </div>
+
+  <div class="tabbar">
+    <div class="tab active dirty">RFC-031-rate-limiting.md <span class="x">×</span></div>
+    <div class="tab new">+</div>
+  </div>
+
+  <div class="body">
+    <div class="editor-pane edit-raw">
+      <div class="mode-toggle"><button>View</button><button class="on" data-mode="edit">Edit</button></div>
+      <textarea class="raw-editor" data-testid="raw-editor" spellcheck="false"># RFC-031: Per-tenant Rate Limiting
+
+*Status: draft · Author: Priya Iyer · Updated 2026-04-22*
+
+## Summary
+
+Today the gateway enforces a single global request budget. As we onboard larger
+customers, a single tenant's traffic spike can degrade response times for every
+other tenant. This RFC proposes a per-tenant token-bucket limiter at the gateway.
+
+## Goals
+
+- Bound the worst-case impact one tenant can have on shared infrastructure.
+- Expose limit headroom to tenants via response headers.
+- Operate without adding a synchronous round-trip to a central counter.
+
+## Design
+
+Each gateway pod owns a local token bucket per (tenant, route-class) pair,
+replenished from a global ledger every `refresh_interval` seconds. The global
+ledger lives in Redis and is updated atomically using a Lua script.
+
+```python
+def consume(tenant: str, route_class: str, n: int = 1) -> bool:
+    bucket = local_buckets[(tenant, route_class)]
+    if bucket.tokens >= n:
+        bucket.tokens -= n
+        return True
+    return False  # 429 returned to client
+```
+</textarea>
+    </div>
+
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <span class="grow">Comments · 4</span>
+        <select disabled><option>All</option></select>
+      </div>
+
+      <div class="threads" data-testid="threads-edit-mode" style="opacity: 0.55;">
+        <div style="font-size: 11.5px; color: var(--text-dim); padding: 2px 4px 8px; line-height:1.45;">
+          Comments are read-only while editing. Anchors will be reattached when you switch back to View.
+        </div>
+
+        <div class="thread" data-thread-id="t1">
+          <div class="quote">"a single tenant's traffic spike can degrade response times for every other tenant"</div>
+          <div class="comment">
+            <span class="avatar amber">M</span>
+            <div>
+              <div class="meta"><strong>Mira</strong> · 2 min</div>
+              <div class="body">Should we quantify this?…</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="thread" data-thread-id="t2">
+          <div class="quote">"central counter"</div>
+          <div class="comment">
+            <span class="avatar rose">D</span>
+            <div>
+              <div class="meta"><strong>Daniyar</strong> · 18 min</div>
+              <div class="body">"Central counter" is ambiguous…</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="thread resolved" data-thread-id="t3">
+          <div class="quote">"Per-edge buckets concentrate state…"</div>
+          <div class="comment">
+            <span class="avatar teal">P</span>
+            <div>
+              <div class="meta"><strong>Priya</strong> · 32 min · <em>resolved</em></div>
+              <div class="body">Added a footnote linking…</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <div class="statusbar">
+    <span class="pill" style="background: #fde6c0; color: #8a5a10;">Edit</span>
+    <span>Mira · amber</span>
+    <span class="grow"></span>
+    <span data-testid="dirty-marker">● 3 unsaved edits</span>
+    <span>·</span>
+    <span data-testid="save-shortcut">⌘S to save</span>
+  </div>
+</div>
+
+<div class="legend"><a href="06-thread-detail.html">← prev</a><a href="index.html">all</a><a href="08-conflict-diff.html">next →</a></div>
+</body>
+</html>
