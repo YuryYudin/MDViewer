@@ -177,12 +177,18 @@ export const config: Options.Testrunner = {
   // paint is sub-second so the race never surfaces; on macos-14 GitHub
   // runners it shows up as 4 specs failing with `Received: false` on
   // the very first assertion.
-  before: async () => {
-    // Wait for an actual *content* view, not just the workspace shell.
-    // The shell appears synchronously in mountWorkspace(); the content
-    // view (start / document / profile-setup) only appears after the
-    // first IPC roundtrip resolves listOpenDocuments. On a fresh CI
-    // macOS that roundtrip can take several seconds.
+  beforeTest: async () => {
+    // Wait for an actual *content* view (not just the workspace shell)
+    // before each test asserts on DOM. Two reasons:
+    //   1. The shell appears synchronously in mountWorkspace(); the
+    //      content view (start / document / profile-setup) only appears
+    //      after the first IPC roundtrip resolves listOpenDocuments. On
+    //      a fresh CI macOS that roundtrip can take several seconds.
+    //   2. Specs that call browser.reloadSession() in their own `before`
+    //      hook get a freshly-loading WebView; without a per-test wait
+    //      the first assertion races the reload.
+    // beforeTest is the right granularity — runs before every `it`,
+    // after any pre-test reloadSession.
     await browser.waitUntil(
       async () => {
         try {
