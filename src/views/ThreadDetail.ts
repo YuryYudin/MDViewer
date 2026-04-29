@@ -61,6 +61,12 @@ export function mountThreadDetail(
     const body = ta.value;
     await ipc.postReply(getTabId(), thread.id, body);
     ta.value = '';
+    // Notify the parent so it can re-fetch threads and re-render. Without
+    // this the new reply lives in the backend but isn't visible in the UI
+    // until the user re-opens the doc.
+    root.dispatchEvent(
+      new CustomEvent('thread-replied', { bubbles: true, detail: { id: thread.id } }),
+    );
   });
   composer.appendChild(post);
 
@@ -69,6 +75,9 @@ export function mountThreadDetail(
   resolve.textContent = 'Resolve';
   resolve.addEventListener('click', async () => {
     await ipc.resolveThread(getTabId(), thread.id);
+    root.dispatchEvent(
+      new CustomEvent('thread-resolved', { bubbles: true, detail: { id: thread.id } }),
+    );
   });
   composer.appendChild(resolve);
 

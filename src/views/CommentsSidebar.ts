@@ -1,5 +1,6 @@
 import type { Ipc, Thread } from '../ipc';
 import { mountOrphanComments } from './OrphanComments';
+import { mountThreadDetail } from './ThreadDetail';
 
 /**
  * Mount the comments sidebar (wireframe 05). User-supplied author names and
@@ -19,7 +20,7 @@ import { mountOrphanComments } from './OrphanComments';
  */
 export function mountCommentsSidebar(
   root: HTMLElement,
-  _ipc: Ipc,
+  ipc: Ipc,
   threads: Thread[],
   opts: {
     showResolved: boolean;
@@ -27,6 +28,11 @@ export function mountCommentsSidebar(
     onRelocateOrphan?(id: string): void;
     onKeepOrphan?(id: string): void;
     onDeleteOrphan?(id: string): void;
+    /** When set, the inline ThreadDetail mount uses this for postReply /
+     *  resolveThread IPC calls. Without it, ThreadDetail isn't rendered
+     *  (the test-mode call sites for CommentsSidebar in unit tests don't
+     *  always supply a tabId). */
+    activeTabId?: string;
   },
 ): void {
   root.replaceChildren();
@@ -93,6 +99,18 @@ export function mountCommentsSidebar(
         new CustomEvent('thread-activate', { bubbles: true, detail: { id: t.id } }),
       );
     });
+
+    // Inline ThreadDetail (wireframe-06) — rendered as a child of each
+    // thread article so the reply composer + Resolve button are reachable
+    // without a separate panel. Only attached when the parent supplied an
+    // activeTabId; CommentsSidebar's unit-test call sites that omit it
+    // keep the existing flat shape.
+    if (opts.activeTabId) {
+      const detailRoot = document.createElement('div');
+      detailRoot.className = 'thread-detail-mount';
+      mountThreadDetail(detailRoot, ipc, t, () => opts.activeTabId!);
+      article.appendChild(detailRoot);
+    }
     root.appendChild(article);
   }
 }
