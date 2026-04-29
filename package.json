@@ -20,7 +20,10 @@
     "build:msi": "tauri build --bundles msi",
     "build:appimage": "tauri build --bundles appimage",
     "build:deb": "tauri build --bundles deb",
-    "build:debug": "tauri build --debug"
+    "build:debug": "tauri build --debug",
+    "package": "./scripts/build.sh",
+    "package:debug": "./scripts/build.sh --debug",
+    "package:skip-tests": "./scripts/build.sh --skip-tests"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",
