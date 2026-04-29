@@ -185,6 +185,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
+      # tauri-wd is the WebDriver server wdio.conf.ts expects on
+      # 127.0.0.1:4444. Locally it's installed at ~/.cargo/bin/tauri-wd
+      # via `cargo install`. CI runners don't have it, so install it here.
+      # Pinned to the same version we run locally (0.1.3) so a plugin
+      # release can't silently break the spec suite.
+      - name: Install tauri-wd
+        run: cargo install tauri-webdriver-automation --version 0.1.3 --locked
       - run: npm ci
       - name: Run e2e
         run: npm run test:e2e
