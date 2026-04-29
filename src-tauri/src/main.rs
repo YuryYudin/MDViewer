@@ -22,6 +22,11 @@ use std::sync::Mutex;
 use tauri::{Emitter, Manager, State};
 
 use mdviewer_lib::{
+    // Parent-module imports (`self`) on document/anchor avoid the E0252
+    // collision that would arise if `anchor::resolve_anchor` /
+    // `document::render_markdown` were brought in by name alongside the
+    // `#[tauri::command] fn`s of the same name. Anchor and ResolveOutcome
+    // are also imported by name for ergonomic use in command signatures.
     anchor::{Anchor, ResolveOutcome},
     build_info,
     comments::{NewComment, NewThread, Thread},
@@ -116,7 +121,7 @@ fn set_settings(state: State<'_, Ws>, settings: Settings) -> Result<(), String> 
     // a closure; the store's update impl emits change events for diffed fields.
     state
         .lock()
-        .unwrap()
+        .map_err(|e| e.to_string())?
         .settings_store()
         .update(|s| *s = settings)
         .map_err(|e| e.to_string())
@@ -126,7 +131,7 @@ fn set_settings(state: State<'_, Ws>, settings: Settings) -> Result<(), String> 
 fn list_threads(state: State<'_, Ws>, tab_id: String) -> Result<Vec<Thread>, String> {
     state
         .lock()
-        .unwrap()
+        .map_err(|e| e.to_string())?
         .comments_for(&tab_id)
         .map(|c| c.list_threads().to_vec())
         .map_err(|e| e.to_string())
@@ -139,7 +144,7 @@ fn create_thread(
     anchor: Anchor,
     body: String,
 ) -> Result<Thread, String> {
-    let mut ws = state.lock().unwrap();
+    let mut ws = state.lock().map_err(|e| e.to_string())?;
     let profile = ws.settings_store().get().profile.clone();
     let store = ws.comments_for_mut(&tab_id).map_err(|e| e.to_string())?;
     Ok(store.create_thread(NewThread {
@@ -159,7 +164,7 @@ fn post_reply(
     thread_id: String,
     body: String,
 ) -> Result<(), String> {
-    let mut ws = state.lock().unwrap();
+    let mut ws = state.lock().map_err(|e| e.to_string())?;
     let profile = ws.settings_store().get().profile.clone();
     let store = ws.comments_for_mut(&tab_id).map_err(|e| e.to_string())?;
     store
@@ -180,7 +185,7 @@ fn resolve_thread(
     tab_id: String,
     thread_id: String,
 ) -> Result<(), String> {
-    let mut ws = state.lock().unwrap();
+    let mut ws = state.lock().map_err(|e| e.to_string())?;
     let by = ws.settings_store().get().profile.display_name.clone();
     let store = ws.comments_for_mut(&tab_id).map_err(|e| e.to_string())?;
     store.resolve_thread(&thread_id, &by).map_err(|e| e.to_string())
@@ -199,7 +204,7 @@ fn resolve_anchor(
 ) -> Result<ResolveOutcome, String> {
     state
         .lock()
-        .unwrap()
+        .map_err(|e| e.to_string())?
         .resolve_anchor_for_tab(&tab_id, &anchor)
         .map_err(|e| e.to_string())
 }
