@@ -52,9 +52,9 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
   root.appendChild(shell);
 
   // Status bar (wireframe-01/03/05): profile chip on the left, a flexible
-  // spacer, and "Tauri 2 · vX.Y.Z" version label on the right. The
-  // generic "Ready" the previous implementation showed has no precedent
-  // in any wireframe.
+  // spacer, and "MDViewer vX.Y.Z" version label on the right. (The
+  // wireframes' "Tauri 2 · vX.Y.Z" placeholder mentioned the runtime,
+  // not the product — users see the product name.)
   const status = shell.querySelector<HTMLElement>('[data-region="status"]')!;
   const userName = document.createElement('span');
   userName.setAttribute('data-test', 'user-name');
@@ -71,7 +71,7 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
   // the IPC fails (defensive — unit tests stub it out).
   void ipc.appInfo()
     .then((info) => {
-      versionText.textContent = `Tauri 2 · v${info.version}`;
+      versionText.textContent = `MDViewer v${info.version}`;
     })
     .catch(() => {});
 

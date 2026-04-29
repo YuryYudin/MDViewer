@@ -65,12 +65,12 @@ describe('Workspace shell — wireframe layout', () => {
     expect(order).toEqual(['user-name', 'grow', 'version-label']);
   });
 
-  it('renders Tauri version via app_info into the status bar', async () => {
+  it('renders the product version via app_info into the status bar', async () => {
     const root = document.createElement('div');
     await mountWorkspace(root, ipc());
     // appInfo is async; the version label fills in on the next tick.
     await new Promise((r) => setTimeout(r, 0));
     const v = root.querySelector('[data-test="version-label"]')!;
-    expect(v.textContent).toBe('Tauri 2 · v0.1.0');
+    expect(v.textContent).toBe('MDViewer v0.1.0');
   });
 });
