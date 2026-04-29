@@ -210,14 +210,17 @@ impl Workspace {
             .ok_or_else(|| anyhow::anyhow!("no such tab: {tab_id}"))
     }
 
-    /// Phase-1: exact-quote search. B1 widens this to read
-    /// `settings.comments.reattachment_confidence` and dispatch through
-    /// `anchor::resolve_anchor_with_threshold`.
+    /// Phase-2 (B1): exact-quote search with fuzzy fallback. The confidence
+    /// threshold is read from `settings.comments.reattachment_confidence`
+    /// (1..=100, default 75). Anchors below the threshold come back as
+    /// `Orphan`. The IPC command surface is unchanged — only the body that
+    /// dispatches through `anchor::resolve_anchor_with_threshold` is widened.
     pub fn resolve_anchor_for_tab(&self, tab_id: &str, a: &Anchor) -> Result<ResolveOutcome> {
         let tab = self
             .tabs
             .get(tab_id)
             .ok_or_else(|| anyhow::anyhow!("no such tab: {tab_id}"))?;
-        Ok(anchor::resolve_anchor(&tab.source, a))
+        let threshold = self.settings.get().comments.reattachment_confidence;
+        Ok(anchor::resolve_anchor_with_threshold(&tab.source, a, threshold))
     }
 }

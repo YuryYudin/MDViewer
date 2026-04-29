@@ -184,6 +184,56 @@ fn store_accessors_expose_settings_and_recents() {
 }
 
 #[test]
+fn resolve_anchor_for_tab_reads_threshold_from_settings() {
+    // B1: a fuzzy-resolvable anchor at default 75% confidence must orphan
+    // when the user raises `comments.reattachment_confidence` to 95.
+    use mdviewer_lib::anchor::{Anchor, ResolveOutcome};
+    let (mut ws, tmp) = fresh();
+    let md = tmp.path().join("a.md");
+    // Source: the user inserted " short" before "phrase", breaking exact
+    // match. The Bitap fuzzy path can still locate the quote at modest
+    // thresholds but the prefix/suffix context score drops below 95.
+    // The user inserted " big" inside the quote. Bitap finds the fuzzy
+    // match at 75% (match_threshold = 0.25) but not at 95%
+    // (match_threshold = 0.05) — exactly the discriminator the threshold
+    // setting is supposed to control.
+    fs::write(&md, "Hello selectable big phrase one. More text.").unwrap();
+    let opened = open_doc(&mut ws, &md);
+    let stale_anchor = Anchor {
+        start: 6,
+        end: 28,
+        exact: "selectable phrase one.".into(),
+        prefix: "Hello ".into(),
+        suffix: " More text.".into(),
+    };
+
+    // Default threshold (75) — fuzzy resolves.
+    let out = ws
+        .resolve_anchor_for_tab(&opened.tab_id, &stale_anchor)
+        .unwrap();
+    assert!(
+        matches!(out, ResolveOutcome::Resolved { .. }),
+        "expected Resolved at 75% threshold, got {out:?}"
+    );
+
+    // Raise the bar to 95 — must orphan now because the fuzzy match is
+    // no longer confident enough.
+    ws.settings_store_mut()
+        .update(|s| {
+            s.comments.reattachment_confidence = 95;
+        })
+        .unwrap();
+    let strict = ws
+        .resolve_anchor_for_tab(&opened.tab_id, &stale_anchor)
+        .unwrap();
+    assert_eq!(
+        strict,
+        ResolveOutcome::Orphan,
+        "raising threshold to 95 should orphan an only-fuzzy match"
+    );
+}
+
+#[test]
 fn opening_md_with_existing_sidecar_loads_all_threads_anchored() {
     // Success criterion 5: "hand a counterpart their .md plus its sidecar,
     // and when the counterpart opens the .md all existing threads appear

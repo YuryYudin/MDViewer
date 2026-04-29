@@ -38,7 +38,13 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ts-rs = "8"
 toml = "0.8"
+diff-match-patch-rs = "0.4"
 
 [dev-dependencies]
 tempfile = "3"
 pretty_assertions = "1"
+criterion = "0.5"
+
+[[bench]]
+name = "anchor_bench"
+harness = false
