@@ -142,5 +142,25 @@ describe('StartPage → click a recent → document mounts', () => {
     });
     expect(scroll.clientHeight).toBeGreaterThan(0);
     expect(scroll.scrollHeight).toBeGreaterThanOrEqual(scroll.clientHeight);
+
+    // Body content must fill the body region. A regression where the
+    // doc/sidebar collapsed to half-height (because percentage heights
+    // didn't propagate through the grid+:has chain) showed as wide
+    // empty space below the document. Assert the rendered document
+    // and sidebar occupy ≥ 95 % of the body region's height.
+    const fill = await browser.execute(() => {
+      const body = document.querySelector('[data-region="body"]') as HTMLElement;
+      const doc = document.querySelector('[data-view="document"]') as HTMLElement;
+      const sidebar = document.querySelector(
+        '[data-region="body"] > [data-region="sidebar"]',
+      ) as HTMLElement;
+      return {
+        bodyHeight: body.getBoundingClientRect().height,
+        docHeight: doc.getBoundingClientRect().height,
+        sidebarHeight: sidebar.getBoundingClientRect().height,
+      };
+    });
+    expect(fill.docHeight / fill.bodyHeight).toBeGreaterThanOrEqual(0.95);
+    expect(fill.sidebarHeight / fill.bodyHeight).toBeGreaterThanOrEqual(0.95);
   });
 });

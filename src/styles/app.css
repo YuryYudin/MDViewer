@@ -29,21 +29,26 @@ body {
  * Workspace shell — titlebar / tabbar / body / status grid
  * ===================================================================== */
 .workspace {
-  display: grid;
-  /* Three rows: tabbar / body / status. The OS supplies the title bar.
-   * To add a custom in-app titlebar later (e.g. for a frameless window
-   * mode), append a row in front and a matching <div data-region="titlebar">
-   * in Workspace.ts.
+  /* Flex column instead of grid: every percentage-height child resolves
+   * against a parent that has a deterministic height in the natural
+   * flow, which CSS Grid's `1fr` does NOT for percentage-height
+   * descendants in some cases (it's "indefinite for resolution
+   * purposes" per the spec, even when the track has computed pixels).
+   * We hit that on the document pane — body's grid track was 1fr but
+   * `height: 100%` on docRoot resolved against an indefinite container
+   * and collapsed to its content's min-content height instead.
    *
-   * `minmax(0, 1fr)` (not the default `1fr` = `minmax(auto, 1fr)`) is
-   * load-bearing: without it, when the body's children have a min-content
-   * height taller than the viewport (long markdown documents, code
-   * blocks, etc.) the body row expands past its share of the grid and
-   * shoves the 22px status row off-screen entirely. The middle track
-   * must be allowed to shrink below child min-content; the children
-   * themselves handle their own scrollbars. */
-  grid-template-rows: 36px minmax(0, 1fr) 22px;
+   * Flex doesn't have that quirk: `flex: 1; min-height: 0` is a
+   * deterministic height the children's `flex: 1` chains through. */
+  display: flex;
+  flex-direction: column;
   height: 100%;
+}
+.workspace > [data-region='tabbar'] { flex: 0 0 36px; }
+.workspace > [data-region='status'] { flex: 0 0 22px; }
+.workspace > [data-region='body'] {
+  flex: 1;
+  min-height: 0;
 }
 
 .workspace > [data-region='tabbar'] {
@@ -56,11 +61,9 @@ body {
 }
 
 .workspace > [data-region='body'] {
-  /* The body hosts either StartPage (single-pane) or Document+sidebar.
-   * grid-template-columns is set by sub-rules below. min-height: 0 keeps
-   * the inner overflow region from blowing past the viewport. */
+  /* Hosts either StartPage (single-pane) or Document+sidebar. The
+   * doc/sidebar split is set by the :has(...) rule below. */
   position: relative;
-  min-height: 0;
   background: var(--bg);
 }
 
@@ -87,34 +90,35 @@ body {
   font-size: 11.5px;
 }
 
-/* When the body holds a Document + sidebar, lay them out side-by-side.
- * Document.ts mounts its tree first, then a sibling div with
- * data-region="sidebar" is appended. The 1fr / 320px split matches
- * wireframe-05.
- *
- * `minmax(0, 1fr)` for the doc column (not bare `1fr`) so the document's
- * intrinsic min-content height/width can't push the body region past the
- * workspace's middle row. `overflow: hidden` on the body itself enforces
- * the containment — children must scroll, not the region. */
+/* When the body holds a Document + sidebar, lay them out side-by-side
+ * via flex. Document.ts mounts its tree first; a sibling
+ * <div data-region="sidebar"> is appended next. The 1fr / 320px split
+ * matches wireframe-05. */
 .workspace > [data-region='body']:has([data-view='document']) {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
-  overflow: hidden;
+  display: flex;
+  flex-direction: row;
   height: 100%;
-}
-.workspace > [data-region='body']:has([data-view='document']) > * {
-  /* Pin every direct child to the body's full row height so the
-   * scrollbars live on the children (Document's render region, sidebar
-   * threads list) instead of the body itself. */
   min-height: 0;
-  height: 100%;
+  overflow: hidden;
+}
+/* docRoot wrapper: takes the remaining width, stays a flex column so
+ * the document can fill its full height. */
+.workspace > [data-region='body']:has([data-view='document']) > div:not([data-region='sidebar']) {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
 }
 .workspace > [data-region='body']:has([data-view='document']) > [data-region='sidebar'] {
+  flex: 0 0 320px;
+  min-height: 0;
   border-left: 1px solid var(--border);
   background: var(--surface-2);
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 /* =====================================================================
@@ -325,12 +329,11 @@ body {
 [data-view='document'] {
   display: flex;
   flex-direction: column;
+  /* `flex: 1` chained from docRoot above; min-height: 0 lets the inner
+   * render region's `overflow: auto` produce a real scrollable viewport
+   * instead of expanding to content min-content. */
+  flex: 1 1 auto;
   min-height: 0;
-  /* Pin to the parent docRoot's bounded height. Without this the
-   * flex chain has no anchor, so [data-region='render']'s `flex: 1;
-   * overflow: auto` can't compute a scrollable viewport — the content
-   * just collapses to its min-content and refuses to scroll. */
-  height: 100%;
   overflow: hidden;
 }
 [data-view='document'] [data-region='doc-toolbar'] {
@@ -574,8 +577,13 @@ body {
 [data-view='thread-detail'] .composer button {
   padding: 3px 10px;
   border-radius: 4px;
-  border: 1px solid var(--border);
-  background: var(--surface);
+  /* surface-2 + border-strong + explicit text color so the secondary
+   * Resolve button stays visible against the thread article's
+   * --surface background in dark mode. The previous --surface +
+   * --border combination matched the thread bg too closely. */
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text);
   cursor: pointer;
   font-family: var(--sans);
   font-size: 12px;

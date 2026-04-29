@@ -122,12 +122,18 @@ function assertVisible(probes: Probe[], where: string): void {
     // the parent's bg — they're "visible" via text contrast alone.
     if (p.bgRgb[0] >= 0) {
       const bgVsParent = rgbDiff(p.bgRgb, p.parentBgRgb);
+      // Threshold raised from 12 → 30. The previous bar passed buttons
+      // whose only differentiation was a 1px border with low color
+      // contrast against the parent (Resolve button regression), which
+      // human eyes still register as "blends in". 30 in summed-RGB is
+      // roughly "you can see it without leaning toward the screen".
       const hasBorder =
-        p.borderWidth > 0 && rgbDiff(parseRgb(p.borderColor), p.bgRgb) > 12;
-      if (bgVsParent < 12 && !hasBorder) {
+        p.borderWidth > 0 && rgbDiff(parseRgb(p.borderColor), p.bgRgb) > 30;
+      if (bgVsParent < 30 && !hasBorder) {
         throw new Error(
-          `${where}: ${p.selector} ("${p.text}") has same bg as parent and no visible border ` +
-            `(bg=${p.bgRgb.join(',')} parent=${p.parentBgRgb.join(',')} border=${p.borderColor}@${p.borderWidth})`,
+          `${where}: ${p.selector} ("${p.text}") has near-identical bg vs parent and no high-contrast border ` +
+            `(bg=${p.bgRgb.join(',')} parent=${p.parentBgRgb.join(',')} border=${p.borderColor}@${p.borderWidth} ` +
+            `bgVsParent=${bgVsParent})`,
         );
       }
     }
