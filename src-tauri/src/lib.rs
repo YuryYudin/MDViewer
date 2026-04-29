@@ -28,6 +28,7 @@ pub fn build_info() -> BuildInfo {
 }
 
 pub mod anchor;
+pub mod cli;
 pub mod comments;
 pub mod conflict;
 pub mod document;

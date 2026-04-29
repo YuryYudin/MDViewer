@@ -125,6 +125,23 @@ export async function main(): Promise<void> {
     await mountWorkspaceAndStash();
   }
 
+  // Rust emits `workspace-changed` when a path enters the workspace from
+  // outside the WebView's own IPC flow — macOS RunEvent::Opened (Phase 2)
+  // and tauri-plugin-single-instance second invocations (Phase 3). Both
+  // already mutated Workspace state on the Rust side; the frontend just
+  // needs to re-fetch and repaint. Fire-and-forget; if the runtime is
+  // missing (jsdom unit tests), the import fails silently.
+  void (async () => {
+    try {
+      const { listen } = await import('@tauri-apps/api/event');
+      await listen('workspace-changed', () => {
+        if (workspace) void workspace.refresh();
+      });
+    } catch {
+      // No Tauri runtime — skip (unit tests stub the bridge anyway).
+    }
+  })();
+
   // E2E side-channel: tauri-webdriver-automation can't drive the OS file
   // dialog and `setValue` on a <input type=file> uploads file *contents*
   // (not a path) — but openDocument needs an absolute path string. Expose

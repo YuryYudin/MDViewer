@@ -28,6 +28,13 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["devtools"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
+# Funnels every secondary `mdviewer …` invocation into the running
+# instance instead of spawning a duplicate window. The callback receives
+# the second invocation's argv + cwd; we route them through the same
+# CLI parser used at boot so all three entry points (cold start, macOS
+# Launch Services re-launch, second `mdviewer foo.md`) converge on
+# `Workspace::open_document`.
+tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 pulldown-cmark = "0.11"

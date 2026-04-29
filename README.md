@@ -81,6 +81,22 @@ npm install
 npm run tauri dev
 ```
 
+### Open files from the command line
+
+After installing the packaged app, the binary takes one or more `.md`
+paths and opens each as a tab:
+
+```bash
+mdviewer notes.md                  # one tab
+mdviewer ~/docs/a.md ~/docs/b.md   # two tabs
+```
+
+If MDViewer is already running, the second invocation is forwarded to the
+existing window — you don't get duplicate processes. On macOS, `.md` is
+also registered as a Launch Services owner so double-clicking a file in
+Finder, "Open With → MDViewer", and dragging a file onto the Dock icon
+all route to the same code path.
+
 `npm run tauri dev` does three things in sequence:
 
 1. `npm run gen:types` — exports IPC types from Rust (`ts-rs`) into `src/types-generated.ts`. Frontend reads only from this generated file, so the IPC contract stays bit-exact.

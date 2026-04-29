@@ -37,6 +37,15 @@
     ],
     "category": "Productivity",
     "shortDescription": "Markdown viewer with collaborative comments",
-    "longDescription": "Open markdown files, add threaded comments anchored to selected text, and exchange document plus comments via files alone — no server, no account."
+    "longDescription": "Open markdown files, add threaded comments anchored to selected text, and exchange document plus comments via files alone — no server, no account.",
+    "fileAssociations": [
+      {
+        "ext": ["md", "markdown"],
+        "name": "Markdown",
+        "description": "Markdown document",
+        "role": "Viewer",
+        "mimeType": "text/markdown"
+      }
+    ]
   }
 }

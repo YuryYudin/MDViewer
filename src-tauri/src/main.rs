@@ -44,7 +44,7 @@ use mdviewer_lib::{
     document::{self, RenderOptions, RenderResult},
     settings::Settings,
     watcher::{ExternalChangeEvent, Watcher},
-    menu,
+    cli, menu,
     workspace::{ExportResult, OpenOpts, OpenOutcome, TabSummary, Workspace},
     BuildInfo,
 };
@@ -509,6 +509,41 @@ fn main() {
         .init();
 
     let builder = tauri::Builder::default()
+        // Single-instance plugin must be registered FIRST so its second-
+        // invocation handler runs before the rest of the app initializes.
+        // The callback receives `(app, argv, _cwd)` from the second
+        // invocation, parses the argv via `cli::parse_positional_args`
+        // (the same code path Phase 1 uses at boot), opens each path on
+        // the running Workspace, and re-focuses the main window.
+        // Without this, `mdviewer foo.md` while the app is already
+        // running spawns a duplicate window on Win/Linux and bounces
+        // the Dock icon on macOS without doing anything useful.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            let paths = cli::parse_positional_args(&argv);
+            if !paths.is_empty() {
+                let ws_state = app.state::<Mutex<Workspace>>();
+                if let Ok(mut ws) = ws_state.lock() {
+                    for path in &paths {
+                        match ws.open_document(path, OpenOpts::default()) {
+                            Ok(_) => tracing::info!(
+                                "opened from second invocation: {}",
+                                path.display()
+                            ),
+                            Err(e) => tracing::warn!(
+                                "second-instance open failed for {}: {e:?}",
+                                path.display()
+                            ),
+                        }
+                    }
+                }
+                let _ = app.emit("workspace-changed", ());
+            }
+            // Bring the main window forward so the user sees the new tab
+            // even if the existing window was hidden behind another app.
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init());
 
@@ -545,7 +580,20 @@ fn main() {
             let data_dir = app.path().app_config_dir()?;
             let env_override = std::env::var("MDVIEWER_DATA_DIR").ok();
             let dir = env_override.map(PathBuf::from).unwrap_or(data_dir);
-            let ws = Workspace::new(&dir)?;
+            let mut ws = Workspace::new(&dir)?;
+
+            // CLI positional args → tabs at boot. `cli::parse_positional_args`
+            // strips argv[0], the migrate-sidecars subcommand (already
+            // dispatched above), and `-`-leading flags. A path that fails
+            // to open (typo, missing file) is logged and skipped — we don't
+            // want one bad path on the command line to take down the
+            // whole launch.
+            for path in cli::parse_positional_args(&std::env::args().collect::<Vec<_>>()) {
+                match ws.open_document(&path, OpenOpts::default()) {
+                    Ok(_) => tracing::info!("opened from CLI: {}", path.display()),
+                    Err(e) => tracing::warn!("CLI arg open failed for {}: {e:?}", path.display()),
+                }
+            }
             // Snapshot the initial external-change behavior and grab a
             // settings change subscription before we move the workspace
             // into managed state. The watcher applies the snapshot at
@@ -624,6 +672,43 @@ fn main() {
             reload_document,
             import_comments,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // macOS-only: Launch Services delivers paths via RunEvent::Opened
+            // when the user (a) drags a .md onto the Dock icon, (b) double-
+            // clicks one in Finder while the app is already running, or
+            // (c) picks "Open With → MDViewer" from a Finder context menu.
+            // Without this hook the URLs would fall on the floor.
+            //
+            // Cold-start file-association launches still go through the
+            // CLI argv path (Phase 1) — Launch Services puts the paths
+            // there for the first invocation.
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            if let tauri::RunEvent::Opened { urls } = event {
+                let paths = cli::urls_to_paths(&urls);
+                if paths.is_empty() {
+                    return;
+                }
+                let ws_state = app.state::<Mutex<Workspace>>();
+                if let Ok(mut ws) = ws_state.lock() {
+                    for path in &paths {
+                        match ws.open_document(path, OpenOpts::default()) {
+                            Ok(_) => tracing::info!("opened from RunEvent::Opened: {}", path.display()),
+                            Err(e) => tracing::warn!(
+                                "RunEvent::Opened failed for {}: {e:?}",
+                                path.display()
+                            ),
+                        }
+                    }
+                }
+                // Tell the WebView to re-fetch the open-doc list and re-paint
+                // its tab strip. main.ts listens for this event and calls
+                // workspace.refresh().
+                let _ = app.emit("workspace-changed", ());
+            }
+            // Suppress the "unused" warnings on non-macOS platforms.
+            #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+            { let _ = (app, event); }
+        });
 }
