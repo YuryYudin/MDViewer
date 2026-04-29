@@ -220,7 +220,11 @@ fn external_write_after_save_still_triggers() {
 
     // External write — different content, distinct hash, must not be suppressed.
     fs::write(&md, "external write").unwrap();
-    // 5s upper bound — see `waitfor` for the rationale.
-    let ev = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    // 10s upper bound: this test does back-to-back writes (save_document
+    // immediately followed by fs::write); inotify on Ubuntu CI runners
+    // coalesces them into a single event after a debounce window that
+    // can extend past 5s under load. Laptops and macOS fsevent fire in
+    // milliseconds — the upper bound matters only on slow CI Linux.
+    let ev = rx.recv_timeout(Duration::from_secs(10)).unwrap();
     assert_eq!(ev.action, ExternalChange::Reload);
 }
