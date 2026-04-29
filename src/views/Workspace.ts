@@ -155,7 +155,13 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
     }
 
     if (state.tabs.length === 0) {
-      await mountStartPage(body, ipc);
+      await mountStartPage(body, ipc, async (outcome) => {
+        // Cache the open-document payload and re-mount so the document
+        // (or conflict view) replaces the StartPage. Without this the
+        // dialog/recents/file-input flows would silently no-op.
+        setActive(outcome);
+        await refresh();
+      });
       return;
     }
 

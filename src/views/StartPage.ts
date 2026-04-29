@@ -1,4 +1,4 @@
-import type { Ipc } from '../ipc';
+import type { Ipc, OpenOutcome } from '../ipc';
 
 /**
  * Detects whether we're running under WebdriverIO + tauri-driver. In that
@@ -32,7 +32,19 @@ function isE2eMode(): boolean {
  * cannot be driven, so we also expose a hidden `<input type="file">` and gate
  * the click-redirect on `import.meta.env.MDVIEWER_E2E === '1'`.
  */
-export async function mountStartPage(root: HTMLElement, ipc: Ipc): Promise<void> {
+/**
+ * `onOpened` is invoked with the OpenOutcome after every successful
+ * `ipc.openDocument` call (button, file input, or recents). Workspace
+ * passes a callback that caches the outcome via setActive() and re-runs
+ * its refresh — without this hook the StartPage's three open-paths
+ * silently discarded the result and the WebView stayed on the start
+ * screen even after the dialog returned a path.
+ */
+export async function mountStartPage(
+  root: HTMLElement,
+  ipc: Ipc,
+  onOpened?: (outcome: OpenOutcome) => void | Promise<void>,
+): Promise<void> {
   root.replaceChildren();
   const view = document.createElement('section');
   view.setAttribute('data-view', 'start');
@@ -62,8 +74,9 @@ export async function mountStartPage(root: HTMLElement, ipc: Ipc): Promise<void>
     // reading it back yields that absolute path. In a regular browser the
     // value would be a basename only, but in production we never reach this
     // handler because the click handler below takes the dialog path.
-    const path = fileInput.value || (f as unknown as { path?: string }).path || f.name;
-    await ipc.openDocument(path);
+    const p = fileInput.value || (f as unknown as { path?: string }).path || f.name;
+    const outcome = await ipc.openDocument(p);
+    if (onOpened) await onOpened(outcome);
   });
 
   const open = document.createElement('button');
@@ -83,7 +96,8 @@ export async function mountStartPage(root: HTMLElement, ipc: Ipc): Promise<void>
       multiple: false,
     });
     if (typeof picked === 'string') {
-      await ipc.openDocument(picked);
+      const outcome = await ipc.openDocument(picked);
+      if (onOpened) await onOpened(outcome);
     }
   });
   view.appendChild(open);
@@ -107,7 +121,10 @@ export async function mountStartPage(root: HTMLElement, ipc: Ipc): Promise<void>
     // textContent prevents path-based markup injection.
     li.textContent = path;
     li.addEventListener('click', () => {
-      void ipc.openDocument(path);
+      void (async () => {
+        const outcome = await ipc.openDocument(path);
+        if (onOpened) await onOpened(outcome);
+      })();
     });
     list.appendChild(li);
   }
