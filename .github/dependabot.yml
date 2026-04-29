@@ -1,0 +1,70 @@
+# Dependabot keeps three ecosystems current:
+#   - github-actions: pin updates for actions/* and third-party actions
+#     used in our workflows (tauri-action, Swatinem/rust-cache, dtolnay/
+#     rust-toolchain, etc.).
+#   - npm: TypeScript / Vite / Vitest / WebdriverIO toolchain.
+#   - cargo: Tauri 2 + plugins, plus the supporting crates in src-tauri.
+#
+# Weekly cadence — daily would generate too much PR noise for a small
+# project; monthly lets vulnerabilities sit too long. Each ecosystem caps
+# open PRs at 5 so the queue can't drown the rest of the work.
+#
+# Major bumps for Tauri itself (`tauri`, `tauri-build`, `tauri-plugin-*`)
+# are ignored — those land via curated upgrade PRs (Tauri 2 → 3 etc. has
+# config and API churn). Minor / patch bumps still flow through.
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels: [dependencies, ci]
+    commit-message:
+      prefix: ci
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels: [dependencies, frontend]
+    commit-message:
+      prefix: deps
+      prefix-development: deps-dev
+    groups:
+      # Group the WebdriverIO toolchain so a single PR covers all the
+      # @wdio/* + webdriverio bumps that move in lockstep.
+      wdio:
+        patterns:
+          - "@wdio/*"
+          - webdriverio
+          - expect-webdriverio
+      # Tauri JS bindings move together too.
+      tauri-js:
+        patterns:
+          - "@tauri-apps/*"
+
+  - package-ecosystem: cargo
+    directory: /src-tauri
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels: [dependencies, rust]
+    commit-message:
+      prefix: deps
+    ignore:
+      # Major bumps for the Tauri crate family are gated through curated
+      # upgrade PRs. Patch / minor bumps still come through.
+      - dependency-name: tauri
+        update-types: [version-update:semver-major]
+      - dependency-name: tauri-build
+        update-types: [version-update:semver-major]
+      - dependency-name: tauri-plugin-dialog
+        update-types: [version-update:semver-major]
+      - dependency-name: tauri-plugin-fs
+        update-types: [version-update:semver-major]
