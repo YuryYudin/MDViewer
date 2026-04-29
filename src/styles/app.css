@@ -33,8 +33,16 @@ body {
   /* Three rows: tabbar / body / status. The OS supplies the title bar.
    * To add a custom in-app titlebar later (e.g. for a frameless window
    * mode), append a row in front and a matching <div data-region="titlebar">
-   * in Workspace.ts. */
-  grid-template-rows: 36px 1fr 22px;
+   * in Workspace.ts.
+   *
+   * `minmax(0, 1fr)` (not the default `1fr` = `minmax(auto, 1fr)`) is
+   * load-bearing: without it, when the body's children have a min-content
+   * height taller than the viewport (long markdown documents, code
+   * blocks, etc.) the body row expands past its share of the grid and
+   * shoves the 22px status row off-screen entirely. The middle track
+   * must be allowed to shrink below child min-content; the children
+   * themselves handle their own scrollbars. */
+  grid-template-rows: 36px minmax(0, 1fr) 22px;
   height: 100%;
 }
 
@@ -82,18 +90,31 @@ body {
 /* When the body holds a Document + sidebar, lay them out side-by-side.
  * Document.ts mounts its tree first, then a sibling div with
  * data-region="sidebar" is appended. The 1fr / 320px split matches
- * wireframe-05. */
+ * wireframe-05.
+ *
+ * `minmax(0, 1fr)` for the doc column (not bare `1fr`) so the document's
+ * intrinsic min-content height/width can't push the body region past the
+ * workspace's middle row. `overflow: hidden` on the body itself enforces
+ * the containment — children must scroll, not the region. */
 .workspace > [data-region='body']:has([data-view='document']) {
   display: grid;
-  grid-template-columns: 1fr 320px;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  overflow: hidden;
+  height: 100%;
+}
+.workspace > [data-region='body']:has([data-view='document']) > * {
+  /* Pin every direct child to the body's full row height so the
+   * scrollbars live on the children (Document's render region, sidebar
+   * threads list) instead of the body itself. */
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
 }
 .workspace > [data-region='body']:has([data-view='document']) > [data-region='sidebar'] {
   border-left: 1px solid var(--border);
   background: var(--surface-2);
   display: flex;
   flex-direction: column;
-  min-height: 0;
-  overflow: hidden;
 }
 
 /* =====================================================================

@@ -105,5 +105,26 @@ describe('StartPage → click a recent → document mounts', () => {
 
     const doc = browser.$('[data-view="document"]');
     expect(await doc.$('h1').getText()).toBe('Sample Document');
+
+    // Status bar must STAY at the bottom after the document mounts. A
+    // tall markdown body with a lot of intrinsic min-content can shove
+    // the body row past its grid track and push the 22px status row off
+    // the viewport — this assertion would have caught that regression
+    // (Screenshot.png: status bar disappeared once a doc was opened).
+    const docLayout = await browser.execute(() => {
+      const ws = document.querySelector('[data-view="workspace"]') as HTMLElement;
+      const status = document.querySelector('[data-region="status"]') as HTMLElement;
+      const wsRect = ws.getBoundingClientRect();
+      const statusRect = status.getBoundingClientRect();
+      return {
+        statusBottom: statusRect.bottom,
+        wsBottom: wsRect.bottom,
+        statusHeight: statusRect.height,
+        statusVisible: statusRect.bottom <= window.innerHeight + 1,
+      };
+    });
+    expect(docLayout.statusVisible).toBe(true);
+    expect(Math.abs(docLayout.statusBottom - docLayout.wsBottom)).toBeLessThan(2);
+    expect(Math.abs(docLayout.statusHeight - 22)).toBeLessThanOrEqual(1);
   });
 });
