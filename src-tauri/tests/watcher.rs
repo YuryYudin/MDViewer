@@ -162,6 +162,9 @@ fn quick_hash_is_deterministic() {
 /// exact ordering B3's IPC handler uses) must NOT surface as an
 /// `ExternalChange::Reload` event. This is the contract that prevents the
 /// editor from echoing every save back to itself as a reload prompt.
+/// The save_document priming closure must record the self-write BEFORE the
+/// rename, eliminating the race against notify's worker thread. The watcher
+/// is wrapped in a Mutex so the closure can borrow it inside save_document.
 #[test]
 fn save_document_does_not_trigger_reload() {
     let tmp = TempDir::new().unwrap();
@@ -169,14 +172,22 @@ fn save_document_does_not_trigger_reload() {
     fs::write(&md, "v1").unwrap();
 
     let (tx, rx) = std::sync::mpsc::channel();
-    let mut w = Watcher::new(tx).unwrap();
-    w.set_external_change_behavior(ExternalChangeBehavior::Reload);
-    w.watch_md(&md).unwrap();
+    let w = std::sync::Arc::new(std::sync::Mutex::new(Watcher::new(tx).unwrap()));
+    {
+        let mut guard = w.lock().unwrap();
+        guard.set_external_change_behavior(ExternalChangeBehavior::Reload);
+        guard.watch_md(&md).unwrap();
+    }
 
-    let r = save_document(&md, b"v2").unwrap();
-    w.record_self_write(&md, r.content_hash);
+    let w_for_prime = std::sync::Arc::clone(&w);
+    let _r = save_document(&md, b"v2", move |p, hash| {
+        w_for_prime.lock().unwrap().record_self_write(p, hash);
+    })
+    .unwrap();
 
-    // No event should reach us within the suppression window.
+    // No event should reach us within the suppression window. Because the
+    // self-write was registered BEFORE the rename, this property holds even
+    // if notify fires the moment rename returns.
     assert!(rx.recv_timeout(Duration::from_millis(500)).is_err());
 }
 
@@ -191,12 +202,18 @@ fn external_write_after_save_still_triggers() {
     fs::write(&md, "v1").unwrap();
 
     let (tx, rx) = std::sync::mpsc::channel();
-    let mut w = Watcher::new(tx).unwrap();
-    w.set_external_change_behavior(ExternalChangeBehavior::Reload);
-    w.watch_md(&md).unwrap();
+    let w = std::sync::Arc::new(std::sync::Mutex::new(Watcher::new(tx).unwrap()));
+    {
+        let mut guard = w.lock().unwrap();
+        guard.set_external_change_behavior(ExternalChangeBehavior::Reload);
+        guard.watch_md(&md).unwrap();
+    }
 
-    let r = save_document(&md, b"v2").unwrap();
-    w.record_self_write(&md, r.content_hash);
+    let w_for_prime = std::sync::Arc::clone(&w);
+    let _r = save_document(&md, b"v2", move |p, hash| {
+        w_for_prime.lock().unwrap().record_self_write(p, hash);
+    })
+    .unwrap();
 
     // External write — different content, distinct hash, must not be suppressed.
     fs::write(&md, "external write").unwrap();

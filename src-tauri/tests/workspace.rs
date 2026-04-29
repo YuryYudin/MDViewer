@@ -245,7 +245,7 @@ fn refresh_tab_reloads_source_render_and_snapshot_after_save() {
     let opened = open_doc(&mut ws, &md);
     assert!(opened.html.contains("Old heading"));
 
-    save_document(&md, b"# Brand new heading").unwrap();
+    save_document(&md, b"# Brand new heading", |_, _| {}).unwrap();
     ws.refresh_tab(&md).unwrap();
 
     // The cached render must reflect the new bytes.

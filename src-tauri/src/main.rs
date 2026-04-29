@@ -206,16 +206,22 @@ fn save_document(
     path: PathBuf,
     contents: String,
 ) -> Result<(), String> {
-    // Write atomically and grab the content hash. Self-write recording must
-    // happen BEFORE the workspace refresh re-reads the file — notify's
-    // worker thread can fire between the rename and our suppression entry,
-    // so we need the entry primed as soon as the bytes hit disk.
-    let r = mdviewer_lib::document::save_document(&path, contents.as_bytes())
-        .map_err(|e| e.to_string())?;
-    watcher
-        .lock()
-        .map_err(|e| e.to_string())?
-        .record_self_write(&path, r.content_hash);
+    // save_document calls back into the watcher AFTER the temp file is
+    // fsynced and BEFORE the rename. That closes the race against notify's
+    // worker thread unconditionally — even if notify fires the moment the
+    // rename completes, the suppression list is already primed.
+    let _r = mdviewer_lib::document::save_document(
+        &path,
+        contents.as_bytes(),
+        |p, hash| {
+            // record_self_write takes &self; the lock is held only long enough
+            // to push into the suppression list, which is non-blocking.
+            if let Ok(w) = watcher.lock() {
+                w.record_self_write(p, hash);
+            }
+        },
+    )
+    .map_err(|e| e.to_string())?;
     state
         .lock()
         .map_err(|e| e.to_string())?

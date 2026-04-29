@@ -48,14 +48,21 @@ pub struct SaveResult {
 /// file intact; a crash between `rename` and the next operation has already
 /// committed the new bytes.
 ///
-/// Callers (specifically B3's `save_document` IPC handler) must call
-/// [`crate::watcher::Watcher::record_self_write`] with the returned
-/// `content_hash` BEFORE this function is invoked again — the suppression
-/// list needs to be primed before notify's worker thread observes the
-/// rename. In practice the IPC handler records the hash immediately after
-/// this returns; notify's event delivery is fast but not faster than a
-/// mutex acquisition on the same thread.
-pub fn save_document(path: &Path, contents: &[u8]) -> std::io::Result<SaveResult> {
+/// Self-write priming: the spec's Avoid clause requires that the watcher's
+/// suppression list be primed BEFORE the rename so notify's worker thread
+/// can never deliver an unsuppressed event. Pass a closure that records the
+/// hash with [`crate::watcher::Watcher::record_self_write`]; the closure
+/// fires after the temp file is fsynced and BEFORE the rename, closing the
+/// race window unconditionally rather than relying on notify being slower
+/// than a Mutex acquisition.
+pub fn save_document<F>(
+    path: &Path,
+    contents: &[u8],
+    prime_self_write: F,
+) -> std::io::Result<SaveResult>
+where
+    F: FnOnce(&Path, u64),
+{
     use std::io::Write;
     // Build a sibling `<path>.tmp` (or `<path>.<ext>.tmp` when the original
     // has an extension). `with_extension` would *replace* the extension, so
@@ -72,10 +79,29 @@ pub fn save_document(path: &Path, contents: &[u8]) -> std::io::Result<SaveResult
         f.write_all(contents)?;
         f.sync_all()?;
     }
+    // Hash the bytes once. Pass to the priming closure BEFORE rename so the
+    // watcher's self-write list can suppress the resulting notify event.
+    let content_hash = quick_hash(contents);
+    prime_self_write(path, content_hash);
+
     std::fs::rename(&tmp, path)?;
+
+    // Defensive: fsync the parent directory so the rename itself is durable
+    // (the file content is already fsynced above). On filesystems where
+    // metadata journaling is not data-ordered, a power loss between rename
+    // and the next directory flush can otherwise lose the rename.
+    if let Some(parent) = path.parent() {
+        if let Ok(dir) = std::fs::File::open(parent) {
+            // Best-effort — sync_all on a directory handle isn't supported
+            // on every platform (e.g. Windows). Ignore Err here; the worst
+            // case is the same fragility the previous version had.
+            let _ = dir.sync_all();
+        }
+    }
+
     Ok(SaveResult {
         bytes_written: contents.len(),
-        content_hash: quick_hash(contents),
+        content_hash,
     })
 }
 
