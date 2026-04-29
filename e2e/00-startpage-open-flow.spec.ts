@@ -143,38 +143,38 @@ describe('StartPage → click a recent → document mounts', () => {
     expect(scroll.clientHeight).toBeGreaterThan(0);
     expect(scroll.scrollHeight).toBeGreaterThanOrEqual(scroll.clientHeight);
 
-    // Body content must fill the body region. A regression where the
-    // doc/sidebar collapsed to half-height (because percentage heights
-    // didn't propagate through the grid+:has chain) showed as wide
-    // empty space below the document. Assert the rendered document
-    // and sidebar occupy ≥ 95 % of the body region's height.
-    const fill = await browser.execute(() => {
-      const ws = document.querySelector('[data-view="workspace"]') as HTMLElement;
-      const tabbar = document.querySelector('[data-region="tabbar"]') as HTMLElement;
-      const status = document.querySelector('[data-region="status"]') as HTMLElement;
-      const body = document.querySelector('[data-region="body"]') as HTMLElement;
-      const doc = document.querySelector('[data-view="document"]') as HTMLElement;
-      const sidebar = document.querySelector(
-        '[data-region="body"] > [data-region="sidebar"]',
-      ) as HTMLElement;
+    // Layout fidelity end-to-end. Walk every region in the height
+    // chain and assert each one fills its share. The bug spotted by
+    // the user was: body / doc / sidebar all reported the right
+    // height, but the *render region inside the document* was half
+    // because a hidden Edit region was still claiming flex space.
+    // Pure body/doc checks would pass while the user sees half. So
+    // this test asserts the FULL chain.
+    const layoutChain = await browser.execute(() => {
+      const get = (sel: string) => {
+        const el = document.querySelector(sel) as HTMLElement | null;
+        return el ? el.getBoundingClientRect().height : -1;
+      };
       return {
-        wsHeight: ws.getBoundingClientRect().height,
-        tabbarHeight: tabbar.getBoundingClientRect().height,
-        statusHeight: status.getBoundingClientRect().height,
-        bodyHeight: body.getBoundingClientRect().height,
-        docHeight: doc.getBoundingClientRect().height,
-        sidebarHeight: sidebar.getBoundingClientRect().height,
+        ws: get('[data-view="workspace"]'),
+        tabbar: get('[data-region="tabbar"]'),
+        status: get('[data-region="status"]'),
+        body: get('[data-region="body"]'),
+        doc: get('[data-view="document"]'),
+        toolbar: get('[data-region="doc-toolbar"]'),
+        render: get('[data-region="render"]'),
+        sidebar: get('[data-region="body"] > [data-region="sidebar"]'),
       };
     });
-    // (a) Body fills its workspace track. The previous flavour of this
-    //     test only checked doc/body, so a regression where the body
-    //     itself collapsed to ½ the workspace would still pass (because
-    //     doc filled 100% of the half-body). Catch that directly.
-    const expectedBodyHeight =
-      fill.wsHeight - fill.tabbarHeight - fill.statusHeight;
-    expect(fill.bodyHeight / expectedBodyHeight).toBeGreaterThanOrEqual(0.95);
+    // (a) Body fills its workspace track.
+    const expectedBody = layoutChain.ws - layoutChain.tabbar - layoutChain.status;
+    expect(layoutChain.body / expectedBody).toBeGreaterThanOrEqual(0.95);
     // (b) Doc and sidebar fill the body's full height.
-    expect(fill.docHeight / fill.bodyHeight).toBeGreaterThanOrEqual(0.95);
-    expect(fill.sidebarHeight / fill.bodyHeight).toBeGreaterThanOrEqual(0.95);
+    expect(layoutChain.doc / layoutChain.body).toBeGreaterThanOrEqual(0.95);
+    expect(layoutChain.sidebar / layoutChain.body).toBeGreaterThanOrEqual(0.95);
+    // (c) Render fills the doc minus the toolbar — catches the
+    //     "hidden edit region steals flex space" regression directly.
+    const expectedRender = layoutChain.doc - layoutChain.toolbar;
+    expect(layoutChain.render / expectedRender).toBeGreaterThanOrEqual(0.95);
   });
 });

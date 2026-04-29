@@ -360,7 +360,12 @@ body {
   background: var(--surface);
   padding: 32px 56px 80px;
 }
-[data-view='document'] [data-region='edit'] {
+/* Edit region: only visible when in Edit mode. The `hidden` HTML
+ * attribute on the element (set by Document.ts) flips display to none
+ * — but a previous `display: flex` rule overrode that and the edit
+ * region kept claiming `flex: 1` of vertical space, halving the
+ * render region. Scope the flex behaviour to the visible state. */
+[data-view='document'] [data-region='edit']:not([hidden]) {
   flex: 1;
   min-height: 0;
   display: flex;
