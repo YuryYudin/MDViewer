@@ -28,43 +28,43 @@
     "scenarios": [
       {
         "name": "Open a .md and view it rendered",
-        "wireframe": "wireframes/03-document-view.html"
+        "wireframe": "docs/wireframes/03-document-view.html"
       },
       {
         "name": "Set up profile on first launch",
-        "wireframe": "wireframes/02-profile-setup.html"
+        "wireframe": "docs/wireframes/02-profile-setup.html"
       },
       {
         "name": "Add a comment to a selection",
-        "wireframe": "wireframes/04-selection-popover.html"
+        "wireframe": "docs/wireframes/04-selection-popover.html"
       },
       {
         "name": "Reply and resolve a thread",
-        "wireframe": "wireframes/06-thread-detail.html"
+        "wireframe": "docs/wireframes/06-thread-detail.html"
       },
       {
         "name": "Edit the underlying .md and reattach anchors",
-        "wireframe": "wireframes/07-edit-mode.html"
+        "wireframe": "docs/wireframes/07-edit-mode.html"
       },
       {
         "name": "Auto-merge incoming comment sidecar",
-        "wireframe": "wireframes/05-document-with-comments.html"
+        "wireframe": "docs/wireframes/05-document-with-comments.html"
       },
       {
         "name": "Resolve a text conflict on the .md",
-        "wireframe": "wireframes/08-conflict-diff.html"
+        "wireframe": "docs/wireframes/08-conflict-diff.html"
       },
       {
         "name": "Share a document and its sidecar",
-        "wireframe": "wireframes/10-share-dialog.html"
+        "wireframe": "docs/wireframes/10-share-dialog.html"
       },
       {
         "name": "Change settings and see them take effect",
-        "wireframe": "wireframes/11-settings.html"
+        "wireframe": "docs/wireframes/11-settings.html"
       },
       {
         "name": "Switch theme without restart",
-        "wireframe": "wireframes/12-dark-mode.html"
+        "wireframe": "docs/wireframes/12-dark-mode.html"
       }
     ]
   },

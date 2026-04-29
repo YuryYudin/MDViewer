@@ -1,0 +1,613 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>MDViewer — icon options</title>
+<style>
+  :root {
+    --bg: #f7f7f5;
+    --surface: #ffffff;
+    --border: #d8d8d4;
+    --text: #1c1c1a;
+    --text-dim: #6a6a64;
+    --accent: #335cff;
+    --accent-dark: #1f3fbe;
+    --highlight: #ffe680;
+    --warm: #ff8a3c;
+    --resolved: #d8eccd;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    padding: 32px 40px 80px;
+  }
+  header { max-width: 1100px; margin: 0 auto 28px; }
+  header h1 { margin: 0 0 4px; font-size: 22px; }
+  header p { margin: 0; color: var(--text-dim); font-size: 14px; }
+  .grid {
+    max-width: 1100px;
+    margin: 0 auto;
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 18px;
+  }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px;
+    display: grid;
+    grid-template-columns: 256px 1fr;
+    gap: 18px;
+    align-items: center;
+  }
+  .card .preview {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    align-items: flex-start;
+  }
+  .preview .row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .swatch-light, .swatch-dark {
+    border-radius: 14px;
+    padding: 6px;
+    display: inline-flex;
+  }
+  .swatch-light { background: #ececea; }
+  .swatch-dark { background: #1c1c1a; }
+  .meta h2 {
+    margin: 0 0 4px;
+    font-size: 15px;
+    font-weight: 600;
+  }
+  .meta p {
+    margin: 0;
+    color: var(--text-dim);
+    font-size: 13px;
+    line-height: 1.45;
+  }
+  .meta code {
+    font-family: var(--mono);
+    background: #f0f0ec;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 12px;
+    color: var(--text);
+  }
+  .sizes { display: flex; gap: 6px; align-items: flex-end; }
+  .sizes .lg { width: 256px; height: 256px; }
+  .sizes .md { width: 64px; height: 64px; }
+  .sizes .sm { width: 32px; height: 32px; }
+  .sizes .xs { width: 16px; height: 16px; }
+  .label {
+    font-size: 11px;
+    color: var(--text-dim);
+    text-align: center;
+    width: 100%;
+  }
+  .pair { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+  /* Render the icons crisp at any size */
+  svg { display: block; }
+  /* Section divider */
+  .footer {
+    max-width: 1100px;
+    margin: 32px auto 0;
+    color: var(--text-dim);
+    font-size: 12.5px;
+    line-height: 1.5;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>MDViewer — app icon options</h1>
+  <p>Each option is a single scalable SVG. Pick one to commit to and I'll
+     generate the full PNG / ICNS / ICO matrix from a 1024×1024 master.
+     Icons are shown at 256, 64, 32 and 16 px against light and dark surfaces
+     so you can judge legibility at the sizes the OS actually renders them.</p>
+</header>
+
+<div class="grid">
+
+<!-- ================================================================
+     OPTION 1 — md monogram (solid accent square + lowercase wordmark)
+================================================================= -->
+<div class="card">
+  <div class="preview">
+    <div class="row">
+      <div class="swatch-light"><div class="pair">
+        <svg class="lg" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+          <rect width="1024" height="1024" rx="225" fill="#335cff"/>
+          <text x="512" y="710" font-family="-apple-system, system-ui, sans-serif"
+                font-size="640" font-weight="800" text-anchor="middle" fill="white"
+                letter-spacing="-32">md</text>
+        </svg>
+        <span class="label">256 · light</span>
+      </div></div>
+    </div>
+    <div class="row">
+      <div class="swatch-light"><div class="pair">
+        <svg class="md" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="#335cff"/><text x="512" y="710" font-family="-apple-system, system-ui, sans-serif" font-size="640" font-weight="800" text-anchor="middle" fill="white" letter-spacing="-32">md</text></svg>
+        <span class="label">64</span>
+      </div></div>
+      <div class="swatch-light"><div class="pair">
+        <svg class="sm" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="#335cff"/><text x="512" y="710" font-family="-apple-system, system-ui, sans-serif" font-size="640" font-weight="800" text-anchor="middle" fill="white" letter-spacing="-32">md</text></svg>
+        <span class="label">32</span>
+      </div></div>
+      <div class="swatch-light"><div class="pair">
+        <svg class="xs" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="#335cff"/><text x="512" y="710" font-family="-apple-system, system-ui, sans-serif" font-size="640" font-weight="800" text-anchor="middle" fill="white" letter-spacing="-32">md</text></svg>
+        <span class="label">16</span>
+      </div></div>
+      <div class="swatch-dark"><div class="pair">
+        <svg class="md" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="#335cff"/><text x="512" y="710" font-family="-apple-system, system-ui, sans-serif" font-size="640" font-weight="800" text-anchor="middle" fill="white" letter-spacing="-32">md</text></svg>
+        <span class="label" style="color:#aaa">64</span>
+      </div></div>
+    </div>
+  </div>
+  <div class="meta">
+    <h2>1 · Monogram <code>md</code></h2>
+    <p>Solid accent square with a tight lowercase wordmark. Reads instantly
+       at any size, no detail to lose. Cheap to brand a launcher row by
+       color. Most "boring", but boring is good for a daily-driver app.</p>
+  </div>
+</div>
+
+<!-- ================================================================
+     OPTION 2 — MDV three-letter wordmark
+================================================================= -->
+<div class="card">
+  <div class="preview">
+    <div class="row">
+      <div class="swatch-light"><div class="pair">
+        <svg class="lg" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+          <rect width="1024" height="1024" rx="225" fill="white" stroke="#dcdcd6" stroke-width="2"/>
+          <text x="512" y="640" font-family="-apple-system, system-ui, sans-serif"
+                font-size="380" font-weight="800" text-anchor="middle" fill="#335cff"
+                letter-spacing="-12">MDV</text>
+          <rect x="232" y="700" width="560" height="36" rx="18" fill="#ffe680"/>
+        </svg>
+        <span class="label">256 · light</span>
+      </div></div>
+    </div>
+    <div class="row">
+      <div class="swatch-light"><div class="pair">
+        <svg class="md" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="white" stroke="#dcdcd6" stroke-width="2"/><text x="512" y="640" font-family="-apple-system, system-ui, sans-serif" font-size="380" font-weight="800" text-anchor="middle" fill="#335cff" letter-spacing="-12">MDV</text><rect x="232" y="700" width="560" height="36" rx="18" fill="#ffe680"/></svg>
+        <span class="label">64</span>
+      </div></div>
+      <div class="swatch-light"><div class="pair">
+        <svg class="sm" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="white" stroke="#dcdcd6" stroke-width="2"/><text x="512" y="640" font-family="-apple-system, system-ui, sans-serif" font-size="380" font-weight="800" text-anchor="middle" fill="#335cff" letter-spacing="-12">MDV</text><rect x="232" y="700" width="560" height="36" rx="18" fill="#ffe680"/></svg>
+        <span class="label">32</span>
+      </div></div>
+      <div class="swatch-light"><div class="pair">
+        <svg class="xs" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="white" stroke="#dcdcd6" stroke-width="2"/><text x="512" y="640" font-family="-apple-system, system-ui, sans-serif" font-size="380" font-weight="800" text-anchor="middle" fill="#335cff" letter-spacing="-12">MDV</text><rect x="232" y="700" width="560" height="36" rx="18" fill="#ffe680"/></svg>
+        <span class="label">16</span>
+      </div></div>
+      <div class="swatch-dark"><div class="pair">
+        <svg class="md" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="white" stroke="#dcdcd6" stroke-width="2"/><text x="512" y="640" font-family="-apple-system, system-ui, sans-serif" font-size="380" font-weight="800" text-anchor="middle" fill="#335cff" letter-spacing="-12">MDV</text><rect x="232" y="700" width="560" height="36" rx="18" fill="#ffe680"/></svg>
+        <span class="label" style="color:#aaa">64</span>
+      </div></div>
+    </div>
+  </div>
+  <div class="meta">
+    <h2>2 · MDV wordmark with highlight</h2>
+    <p>Three-letter wordmark on a white tile with the app's signature
+       yellow highlight bar underneath — direct nod to the comments
+       feature. Reads well at 32 px; the highlight bar disappears at 16
+       and the letters carry the icon alone.</p>
+  </div>
+</div>
+
+<!-- ================================================================
+     OPTION 3 — # mark (markdown heading sigil)
+================================================================= -->
+<div class="card">
+  <div class="preview">
+    <div class="row">
+      <div class="swatch-light"><div class="pair">
+        <svg class="lg" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+          <rect width="1024" height="1024" rx="225" fill="#335cff"/>
+          <text x="512" y="730" font-family="-apple-system, system-ui, sans-serif"
+                font-size="800" font-weight="900" text-anchor="middle" fill="white">#</text>
+        </svg>
+        <span class="label">256 · light</span>
+      </div></div>
+    </div>
+    <div class="row">
+      <div class="swatch-light"><div class="pair">
+        <svg class="md" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="#335cff"/><text x="512" y="730" font-family="-apple-system, system-ui, sans-serif" font-size="800" font-weight="900" text-anchor="middle" fill="white">#</text></svg>
+        <span class="label">64</span>
+      </div></div>
+      <div class="swatch-light"><div class="pair">
+        <svg class="sm" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="#335cff"/><text x="512" y="730" font-family="-apple-system, system-ui, sans-serif" font-size="800" font-weight="900" text-anchor="middle" fill="white">#</text></svg>
+        <span class="label">32</span>
+      </div></div>
+      <div class="swatch-light"><div class="pair">
+        <svg class="xs" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="#335cff"/><text x="512" y="730" font-family="-apple-system, system-ui, sans-serif" font-size="800" font-weight="900" text-anchor="middle" fill="white">#</text></svg>
+        <span class="label">16</span>
+      </div></div>
+      <div class="swatch-dark"><div class="pair">
+        <svg class="md" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="#335cff"/><text x="512" y="730" font-family="-apple-system, system-ui, sans-serif" font-size="800" font-weight="900" text-anchor="middle" fill="white">#</text></svg>
+        <span class="label" style="color:#aaa">64</span>
+      </div></div>
+    </div>
+  </div>
+  <div class="meta">
+    <h2>3 · Hash sigil</h2>
+    <p>Just the heading mark. Strongest "this is a markdown thing" signal
+       of any option. Risk: it could be confused with a hashtag or chat
+       channel app. Survives 16 px.</p>
+  </div>
+</div>
+
+<!-- ================================================================
+     OPTION 4 — page + comment bubble
+================================================================= -->
+<div class="card">
+  <div class="preview">
+    <div class="row">
+      <div class="swatch-light"><div class="pair">
+        <svg class="lg" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+          <rect width="1024" height="1024" rx="225" fill="#335cff"/>
+          <!-- page with folded corner -->
+          <path d="M260 200 H660 L820 360 V820 a40 40 0 0 1 -40 40 H260 a40 40 0 0 1 -40 -40 V240 a40 40 0 0 1 40 -40 z" fill="white"/>
+          <path d="M660 200 V360 H820 z" fill="#dfe5ff"/>
+          <!-- markdown lines -->
+          <rect x="320" y="420" width="320" height="28" rx="8" fill="#cdd5ee"/>
+          <rect x="320" y="480" width="380" height="20" rx="6" fill="#cdd5ee"/>
+          <rect x="320" y="520" width="280" height="20" rx="6" fill="#cdd5ee"/>
+          <rect x="320" y="560" width="340" height="20" rx="6" fill="#cdd5ee"/>
+          <!-- comment bubble -->
+          <circle cx="780" cy="800" r="140" fill="#ff8a3c"/>
+          <path d="M700 880 L700 940 L770 900 z" fill="#ff8a3c"/>
+          <circle cx="740" cy="800" r="16" fill="white"/>
+          <circle cx="780" cy="800" r="16" fill="white"/>
+          <circle cx="820" cy="800" r="16" fill="white"/>
+        </svg>
+        <span class="label">256 · light</span>
+      </div></div>
+    </div>
+    <div class="row">
+      <div class="swatch-light"><div class="pair">
+        <svg class="md" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="#335cff"/><path d="M260 200 H660 L820 360 V820 a40 40 0 0 1 -40 40 H260 a40 40 0 0 1 -40 -40 V240 a40 40 0 0 1 40 -40 z" fill="white"/><path d="M660 200 V360 H820 z" fill="#dfe5ff"/><rect x="320" y="420" width="320" height="28" rx="8" fill="#cdd5ee"/><rect x="320" y="480" width="380" height="20" rx="6" fill="#cdd5ee"/><rect x="320" y="520" width="280" height="20" rx="6" fill="#cdd5ee"/><rect x="320" y="560" width="340" height="20" rx="6" fill="#cdd5ee"/><circle cx="780" cy="800" r="140" fill="#ff8a3c"/><path d="M700 880 L700 940 L770 900 z" fill="#ff8a3c"/><circle cx="740" cy="800" r="16" fill="white"/><circle cx="780" cy="800" r="16" fill="white"/><circle cx="820" cy="800" r="16" fill="white"/></svg>
+        <span class="label">64</span>
+      </div></div>
+      <div class="swatch-light"><div class="pair">
+        <svg class="sm" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="#335cff"/><path d="M260 200 H660 L820 360 V820 a40 40 0 0 1 -40 40 H260 a40 40 0 0 1 -40 -40 V240 a40 40 0 0 1 40 -40 z" fill="white"/><path d="M660 200 V360 H820 z" fill="#dfe5ff"/><rect x="320" y="420" width="320" height="28" rx="8" fill="#cdd5ee"/><rect x="320" y="480" width="380" height="20" rx="6" fill="#cdd5ee"/><rect x="320" y="520" width="280" height="20" rx="6" fill="#cdd5ee"/><rect x="320" y="560" width="340" height="20" rx="6" fill="#cdd5ee"/><circle cx="780" cy="800" r="140" fill="#ff8a3c"/><path d="M700 880 L700 940 L770 900 z" fill="#ff8a3c"/><circle cx="740" cy="800" r="16" fill="white"/><circle cx="780" cy="800" r="16" fill="white"/><circle cx="820" cy="800" r="16" fill="white"/></svg>
+        <span class="label">32</span>
+      </div></div>
+      <div class="swatch-light"><div class="pair">
+        <svg class="xs" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="#335cff"/><path d="M260 200 H660 L820 360 V820 a40 40 0 0 1 -40 40 H260 a40 40 0 0 1 -40 -40 V240 a40 40 0 0 1 40 -40 z" fill="white"/><path d="M660 200 V360 H820 z" fill="#dfe5ff"/><rect x="320" y="420" width="320" height="28" rx="8" fill="#cdd5ee"/><rect x="320" y="480" width="380" height="20" rx="6" fill="#cdd5ee"/><rect x="320" y="520" width="280" height="20" rx="6" fill="#cdd5ee"/><rect x="320" y="560" width="340" height="20" rx="6" fill="#cdd5ee"/><circle cx="780" cy="800" r="140" fill="#ff8a3c"/><path d="M700 880 L700 940 L770 900 z" fill="#ff8a3c"/><circle cx="740" cy="800" r="16" fill="white"/><circle cx="780" cy="800" r="16" fill="white"/><circle cx="820" cy="800" r="16" fill="white"/></svg>
+        <span class="label">16</span>
+      </div></div>
+      <div class="swatch-dark"><div class="pair">
+        <svg class="md" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="#335cff"/><path d="M260 200 H660 L820 360 V820 a40 40 0 0 1 -40 40 H260 a40 40 0 0 1 -40 -40 V240 a40 40 0 0 1 40 -40 z" fill="white"/><path d="M660 200 V360 H820 z" fill="#dfe5ff"/><rect x="320" y="420" width="320" height="28" rx="8" fill="#cdd5ee"/><rect x="320" y="480" width="380" height="20" rx="6" fill="#cdd5ee"/><rect x="320" y="520" width="280" height="20" rx="6" fill="#cdd5ee"/><rect x="320" y="560" width="340" height="20" rx="6" fill="#cdd5ee"/><circle cx="780" cy="800" r="140" fill="#ff8a3c"/><path d="M700 880 L700 940 L770 900 z" fill="#ff8a3c"/><circle cx="740" cy="800" r="16" fill="white"/><circle cx="780" cy="800" r="16" fill="white"/><circle cx="820" cy="800" r="16" fill="white"/></svg>
+        <span class="label" style="color:#aaa">64</span>
+      </div></div>
+    </div>
+  </div>
+  <div class="meta">
+    <h2>4 · Page with comment bubble</h2>
+    <p>Document with a chat bubble in the corner — most literal "markdown
+       file with comments" rendering. The detail (lines + bubble) muddies
+       below 32 px; the bubble dot turns into a smudge at 16. Best when
+       OS shows the icon at ≥48 px (Dock, Launcher).</p>
+  </div>
+</div>
+
+<!-- ================================================================
+     OPTION 5 — anchor + page (the design's own metaphor)
+================================================================= -->
+<div class="card">
+  <div class="preview">
+    <div class="row">
+      <div class="swatch-light"><div class="pair">
+        <svg class="lg" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+          <rect width="1024" height="1024" rx="225" fill="white" stroke="#dcdcd6" stroke-width="2"/>
+          <!-- page outline -->
+          <rect x="220" y="180" width="500" height="660" rx="36" fill="none" stroke="#335cff" stroke-width="38"/>
+          <!-- highlight band -->
+          <rect x="280" y="380" width="380" height="40" rx="20" fill="#ffe680"/>
+          <rect x="280" y="460" width="320" height="20" rx="6" fill="#cfd5e6"/>
+          <rect x="280" y="500" width="360" height="20" rx="6" fill="#cfd5e6"/>
+          <!-- pin -->
+          <circle cx="730" cy="380" r="80" fill="#ff8a3c"/>
+          <circle cx="730" cy="380" r="32" fill="white"/>
+          <path d="M720 460 L740 460 L730 720 z" fill="#ff8a3c"/>
+        </svg>
+        <span class="label">256 · light</span>
+      </div></div>
+    </div>
+    <div class="row">
+      <div class="swatch-light"><div class="pair">
+        <svg class="md" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="white" stroke="#dcdcd6" stroke-width="2"/><rect x="220" y="180" width="500" height="660" rx="36" fill="none" stroke="#335cff" stroke-width="38"/><rect x="280" y="380" width="380" height="40" rx="20" fill="#ffe680"/><rect x="280" y="460" width="320" height="20" rx="6" fill="#cfd5e6"/><rect x="280" y="500" width="360" height="20" rx="6" fill="#cfd5e6"/><circle cx="730" cy="380" r="80" fill="#ff8a3c"/><circle cx="730" cy="380" r="32" fill="white"/><path d="M720 460 L740 460 L730 720 z" fill="#ff8a3c"/></svg>
+        <span class="label">64</span>
+      </div></div>
+      <div class="swatch-light"><div class="pair">
+        <svg class="sm" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="white" stroke="#dcdcd6" stroke-width="2"/><rect x="220" y="180" width="500" height="660" rx="36" fill="none" stroke="#335cff" stroke-width="38"/><rect x="280" y="380" width="380" height="40" rx="20" fill="#ffe680"/><rect x="280" y="460" width="320" height="20" rx="6" fill="#cfd5e6"/><rect x="280" y="500" width="360" height="20" rx="6" fill="#cfd5e6"/><circle cx="730" cy="380" r="80" fill="#ff8a3c"/><circle cx="730" cy="380" r="32" fill="white"/><path d="M720 460 L740 460 L730 720 z" fill="#ff8a3c"/></svg>
+        <span class="label">32</span>
+      </div></div>
+      <div class="swatch-light"><div class="pair">
+        <svg class="xs" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="white" stroke="#dcdcd6" stroke-width="2"/><rect x="220" y="180" width="500" height="660" rx="36" fill="none" stroke="#335cff" stroke-width="38"/><rect x="280" y="380" width="380" height="40" rx="20" fill="#ffe680"/><rect x="280" y="460" width="320" height="20" rx="6" fill="#cfd5e6"/><rect x="280" y="500" width="360" height="20" rx="6" fill="#cfd5e6"/><circle cx="730" cy="380" r="80" fill="#ff8a3c"/><circle cx="730" cy="380" r="32" fill="white"/><path d="M720 460 L740 460 L730 720 z" fill="#ff8a3c"/></svg>
+        <span class="label">16</span>
+      </div></div>
+      <div class="swatch-dark"><div class="pair">
+        <svg class="md" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="white" stroke="#dcdcd6" stroke-width="2"/><rect x="220" y="180" width="500" height="660" rx="36" fill="none" stroke="#335cff" stroke-width="38"/><rect x="280" y="380" width="380" height="40" rx="20" fill="#ffe680"/><rect x="280" y="460" width="320" height="20" rx="6" fill="#cfd5e6"/><rect x="280" y="500" width="360" height="20" rx="6" fill="#cfd5e6"/><circle cx="730" cy="380" r="80" fill="#ff8a3c"/><circle cx="730" cy="380" r="32" fill="white"/><path d="M720 460 L740 460 L730 720 z" fill="#ff8a3c"/></svg>
+        <span class="label" style="color:#aaa">64</span>
+      </div></div>
+    </div>
+  </div>
+  <div class="meta">
+    <h2>5 · Anchored highlight</h2>
+    <p>The product's own metaphor: a phrase highlighted on a page with a
+       pin attached to it. Closest to what the app actually does. Heavy
+       on detail — the pin and highlight blur into a single shape under
+       24 px.</p>
+  </div>
+</div>
+
+<!-- ================================================================
+     OPTION 6 — stacked pages with a comment dot
+================================================================= -->
+<div class="card">
+  <div class="preview">
+    <div class="row">
+      <div class="swatch-light"><div class="pair">
+        <svg class="lg" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+          <rect width="1024" height="1024" rx="225" fill="white" stroke="#dcdcd6" stroke-width="2"/>
+          <g transform="translate(180 180)">
+            <rect x="60" y="80" width="540" height="660" rx="32" fill="#dfe5ff" transform="rotate(-7 330 410)"/>
+            <rect x="120" y="40" width="540" height="660" rx="32" fill="#9bb0ff" transform="rotate(4 390 370)"/>
+            <rect x="80" y="0" width="540" height="660" rx="32" fill="#335cff"/>
+          </g>
+          <circle cx="640" cy="320" r="68" fill="#ff8a3c"/>
+        </svg>
+        <span class="label">256 · light</span>
+      </div></div>
+    </div>
+    <div class="row">
+      <div class="swatch-light"><div class="pair">
+        <svg class="md" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="white" stroke="#dcdcd6" stroke-width="2"/><g transform="translate(180 180)"><rect x="60" y="80" width="540" height="660" rx="32" fill="#dfe5ff" transform="rotate(-7 330 410)"/><rect x="120" y="40" width="540" height="660" rx="32" fill="#9bb0ff" transform="rotate(4 390 370)"/><rect x="80" y="0" width="540" height="660" rx="32" fill="#335cff"/></g><circle cx="640" cy="320" r="68" fill="#ff8a3c"/></svg>
+        <span class="label">64</span>
+      </div></div>
+      <div class="swatch-light"><div class="pair">
+        <svg class="sm" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="white" stroke="#dcdcd6" stroke-width="2"/><g transform="translate(180 180)"><rect x="60" y="80" width="540" height="660" rx="32" fill="#dfe5ff" transform="rotate(-7 330 410)"/><rect x="120" y="40" width="540" height="660" rx="32" fill="#9bb0ff" transform="rotate(4 390 370)"/><rect x="80" y="0" width="540" height="660" rx="32" fill="#335cff"/></g><circle cx="640" cy="320" r="68" fill="#ff8a3c"/></svg>
+        <span class="label">32</span>
+      </div></div>
+      <div class="swatch-light"><div class="pair">
+        <svg class="xs" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="white" stroke="#dcdcd6" stroke-width="2"/><g transform="translate(180 180)"><rect x="60" y="80" width="540" height="660" rx="32" fill="#dfe5ff" transform="rotate(-7 330 410)"/><rect x="120" y="40" width="540" height="660" rx="32" fill="#9bb0ff" transform="rotate(4 390 370)"/><rect x="80" y="0" width="540" height="660" rx="32" fill="#335cff"/></g><circle cx="640" cy="320" r="68" fill="#ff8a3c"/></svg>
+        <span class="label">16</span>
+      </div></div>
+      <div class="swatch-dark"><div class="pair">
+        <svg class="md" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="white" stroke="#dcdcd6" stroke-width="2"/><g transform="translate(180 180)"><rect x="60" y="80" width="540" height="660" rx="32" fill="#dfe5ff" transform="rotate(-7 330 410)"/><rect x="120" y="40" width="540" height="660" rx="32" fill="#9bb0ff" transform="rotate(4 390 370)"/><rect x="80" y="0" width="540" height="660" rx="32" fill="#335cff"/></g><circle cx="640" cy="320" r="68" fill="#ff8a3c"/></svg>
+        <span class="label" style="color:#aaa">64</span>
+      </div></div>
+    </div>
+  </div>
+  <div class="meta">
+    <h2>6 · Stacked revisions</h2>
+    <p>Three layered pages with a single comment dot on top — evokes
+       version stacking and review. Friendly, more "app-like" than the
+       monograms. The slight rotation gives depth at large sizes; below
+       32 px it reads as one rounded blob with a dot.</p>
+  </div>
+</div>
+
+<!-- ================================================================
+     OPTION 7 — m↓ (markdown sigil)
+================================================================= -->
+<div class="card">
+  <div class="preview">
+    <div class="row">
+      <div class="swatch-light"><div class="pair">
+        <svg class="lg" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+          <rect width="1024" height="1024" rx="225" fill="white" stroke="#335cff" stroke-width="40"/>
+          <!-- Stylised "M" with descender arrow on the right leg, mimicking github's md mark -->
+          <path d="M250 740 V300 H340 L460 480 L580 300 H670 V740 H580 V470 L490 600 H430 L340 470 V740 z" fill="#335cff"/>
+          <!-- arrow pointing down -->
+          <path d="M740 300 V620 M660 540 L740 620 L820 540" fill="none" stroke="#335cff" stroke-width="80" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="label">256 · light</span>
+      </div></div>
+    </div>
+    <div class="row">
+      <div class="swatch-light"><div class="pair">
+        <svg class="md" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="white" stroke="#335cff" stroke-width="40"/><path d="M250 740 V300 H340 L460 480 L580 300 H670 V740 H580 V470 L490 600 H430 L340 470 V740 z" fill="#335cff"/><path d="M740 300 V620 M660 540 L740 620 L820 540" fill="none" stroke="#335cff" stroke-width="80" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span class="label">64</span>
+      </div></div>
+      <div class="swatch-light"><div class="pair">
+        <svg class="sm" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="white" stroke="#335cff" stroke-width="40"/><path d="M250 740 V300 H340 L460 480 L580 300 H670 V740 H580 V470 L490 600 H430 L340 470 V740 z" fill="#335cff"/><path d="M740 300 V620 M660 540 L740 620 L820 540" fill="none" stroke="#335cff" stroke-width="80" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span class="label">32</span>
+      </div></div>
+      <div class="swatch-light"><div class="pair">
+        <svg class="xs" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="white" stroke="#335cff" stroke-width="40"/><path d="M250 740 V300 H340 L460 480 L580 300 H670 V740 H580 V470 L490 600 H430 L340 470 V740 z" fill="#335cff"/><path d="M740 300 V620 M660 540 L740 620 L820 540" fill="none" stroke="#335cff" stroke-width="80" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span class="label">16</span>
+      </div></div>
+      <div class="swatch-dark"><div class="pair">
+        <svg class="md" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="white" stroke="#335cff" stroke-width="40"/><path d="M250 740 V300 H340 L460 480 L580 300 H670 V740 H580 V470 L490 600 H430 L340 470 V740 z" fill="#335cff"/><path d="M740 300 V620 M660 540 L740 620 L820 540" fill="none" stroke="#335cff" stroke-width="80" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span class="label" style="color:#aaa">64</span>
+      </div></div>
+    </div>
+  </div>
+  <div class="meta">
+    <h2>7 · M↓ markdown sigil</h2>
+    <p>Riff on the official markdown logo (CommonMark mark): a thick "M"
+       with a downward arrow next to it. Strongest format-recognition
+       signal of any option for users who already know markdown. Hollow
+       outlined frame leaves room for the dock background to show through.</p>
+  </div>
+</div>
+
+<!-- ================================================================
+     OPTION 8 — speech-from-page
+================================================================= -->
+<div class="card">
+  <div class="preview">
+    <div class="row">
+      <div class="swatch-light"><div class="pair">
+        <svg class="lg" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+          <rect width="1024" height="1024" rx="225" fill="#1c1c1a"/>
+          <!-- speech bubble that doubles as a page silhouette -->
+          <path d="M200 240 a40 40 0 0 1 40 -40 H720 a40 40 0 0 1 40 40 V680 a40 40 0 0 1 -40 40 H520 L380 860 V720 H240 a40 40 0 0 1 -40 -40 z" fill="#335cff"/>
+          <!-- the "MD" embedded -->
+          <text x="480" y="540" font-family="-apple-system, system-ui, sans-serif"
+                font-size="280" font-weight="800" text-anchor="middle" fill="white">md</text>
+        </svg>
+        <span class="label">256 · light</span>
+      </div></div>
+    </div>
+    <div class="row">
+      <div class="swatch-light"><div class="pair">
+        <svg class="md" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="#1c1c1a"/><path d="M200 240 a40 40 0 0 1 40 -40 H720 a40 40 0 0 1 40 40 V680 a40 40 0 0 1 -40 40 H520 L380 860 V720 H240 a40 40 0 0 1 -40 -40 z" fill="#335cff"/><text x="480" y="540" font-family="-apple-system, system-ui, sans-serif" font-size="280" font-weight="800" text-anchor="middle" fill="white">md</text></svg>
+        <span class="label">64</span>
+      </div></div>
+      <div class="swatch-light"><div class="pair">
+        <svg class="sm" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="#1c1c1a"/><path d="M200 240 a40 40 0 0 1 40 -40 H720 a40 40 0 0 1 40 40 V680 a40 40 0 0 1 -40 40 H520 L380 860 V720 H240 a40 40 0 0 1 -40 -40 z" fill="#335cff"/><text x="480" y="540" font-family="-apple-system, system-ui, sans-serif" font-size="280" font-weight="800" text-anchor="middle" fill="white">md</text></svg>
+        <span class="label">32</span>
+      </div></div>
+      <div class="swatch-light"><div class="pair">
+        <svg class="xs" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="#1c1c1a"/><path d="M200 240 a40 40 0 0 1 40 -40 H720 a40 40 0 0 1 40 40 V680 a40 40 0 0 1 -40 40 H520 L380 860 V720 H240 a40 40 0 0 1 -40 -40 z" fill="#335cff"/><text x="480" y="540" font-family="-apple-system, system-ui, sans-serif" font-size="280" font-weight="800" text-anchor="middle" fill="white">md</text></svg>
+        <span class="label">16</span>
+      </div></div>
+      <div class="swatch-dark"><div class="pair">
+        <svg class="md" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="#1c1c1a"/><path d="M200 240 a40 40 0 0 1 40 -40 H720 a40 40 0 0 1 40 40 V680 a40 40 0 0 1 -40 40 H520 L380 860 V720 H240 a40 40 0 0 1 -40 -40 z" fill="#335cff"/><text x="480" y="540" font-family="-apple-system, system-ui, sans-serif" font-size="280" font-weight="800" text-anchor="middle" fill="white">md</text></svg>
+        <span class="label" style="color:#aaa">64</span>
+      </div></div>
+    </div>
+  </div>
+  <div class="meta">
+    <h2>8 · md inside a speech bubble</h2>
+    <p>Combines the wordmark with the comment metaphor. Dark background
+       lets the accent-blue bubble pop. Reads at any size because the
+       bubble is the dominant shape and "md" sits inside it.</p>
+  </div>
+</div>
+
+<!-- ================================================================
+     OPTION 9 — open book + comment pin
+================================================================= -->
+<div class="card">
+  <div class="preview">
+    <div class="row">
+      <div class="swatch-light"><div class="pair">
+        <svg class="lg" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+          <rect width="1024" height="1024" rx="225" fill="#fafaf6"/>
+          <!-- open book — two pages -->
+          <path d="M150 280 Q150 240 190 240 H490 V820 H190 Q150 820 150 780 z" fill="white" stroke="#335cff" stroke-width="32" stroke-linejoin="round"/>
+          <path d="M874 280 Q874 240 834 240 H534 V820 H834 Q874 820 874 780 z" fill="white" stroke="#335cff" stroke-width="32" stroke-linejoin="round"/>
+          <!-- spine shadow -->
+          <path d="M512 250 Q500 280 500 320 V760 Q500 800 512 820 Q524 800 524 760 V320 Q524 280 512 250 z" fill="#cfd5e6"/>
+          <!-- short heading lines -->
+          <rect x="220" y="320" width="180" height="22" rx="6" fill="#335cff"/>
+          <rect x="220" y="370" width="240" height="14" rx="4" fill="#cfd5e6"/>
+          <rect x="220" y="400" width="220" height="14" rx="4" fill="#cfd5e6"/>
+          <rect x="564" y="320" width="180" height="22" rx="6" fill="#335cff"/>
+          <rect x="564" y="370" width="240" height="14" rx="4" fill="#cfd5e6"/>
+          <!-- comment pin -->
+          <circle cx="780" cy="430" r="58" fill="#ff8a3c"/>
+          <circle cx="780" cy="430" r="22" fill="white"/>
+        </svg>
+        <span class="label">256 · light</span>
+      </div></div>
+    </div>
+    <div class="row">
+      <div class="swatch-light"><div class="pair">
+        <svg class="md" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="#fafaf6"/><path d="M150 280 Q150 240 190 240 H490 V820 H190 Q150 820 150 780 z" fill="white" stroke="#335cff" stroke-width="32" stroke-linejoin="round"/><path d="M874 280 Q874 240 834 240 H534 V820 H834 Q874 820 874 780 z" fill="white" stroke="#335cff" stroke-width="32" stroke-linejoin="round"/><path d="M512 250 Q500 280 500 320 V760 Q500 800 512 820 Q524 800 524 760 V320 Q524 280 512 250 z" fill="#cfd5e6"/><rect x="220" y="320" width="180" height="22" rx="6" fill="#335cff"/><rect x="220" y="370" width="240" height="14" rx="4" fill="#cfd5e6"/><rect x="220" y="400" width="220" height="14" rx="4" fill="#cfd5e6"/><rect x="564" y="320" width="180" height="22" rx="6" fill="#335cff"/><rect x="564" y="370" width="240" height="14" rx="4" fill="#cfd5e6"/><circle cx="780" cy="430" r="58" fill="#ff8a3c"/><circle cx="780" cy="430" r="22" fill="white"/></svg>
+        <span class="label">64</span>
+      </div></div>
+      <div class="swatch-light"><div class="pair">
+        <svg class="sm" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="#fafaf6"/><path d="M150 280 Q150 240 190 240 H490 V820 H190 Q150 820 150 780 z" fill="white" stroke="#335cff" stroke-width="32" stroke-linejoin="round"/><path d="M874 280 Q874 240 834 240 H534 V820 H834 Q874 820 874 780 z" fill="white" stroke="#335cff" stroke-width="32" stroke-linejoin="round"/><path d="M512 250 Q500 280 500 320 V760 Q500 800 512 820 Q524 800 524 760 V320 Q524 280 512 250 z" fill="#cfd5e6"/><rect x="220" y="320" width="180" height="22" rx="6" fill="#335cff"/><rect x="220" y="370" width="240" height="14" rx="4" fill="#cfd5e6"/><rect x="220" y="400" width="220" height="14" rx="4" fill="#cfd5e6"/><rect x="564" y="320" width="180" height="22" rx="6" fill="#335cff"/><rect x="564" y="370" width="240" height="14" rx="4" fill="#cfd5e6"/><circle cx="780" cy="430" r="58" fill="#ff8a3c"/><circle cx="780" cy="430" r="22" fill="white"/></svg>
+        <span class="label">32</span>
+      </div></div>
+      <div class="swatch-light"><div class="pair">
+        <svg class="xs" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="#fafaf6"/><path d="M150 280 Q150 240 190 240 H490 V820 H190 Q150 820 150 780 z" fill="white" stroke="#335cff" stroke-width="32" stroke-linejoin="round"/><path d="M874 280 Q874 240 834 240 H534 V820 H834 Q874 820 874 780 z" fill="white" stroke="#335cff" stroke-width="32" stroke-linejoin="round"/><path d="M512 250 Q500 280 500 320 V760 Q500 800 512 820 Q524 800 524 760 V320 Q524 280 512 250 z" fill="#cfd5e6"/><rect x="220" y="320" width="180" height="22" rx="6" fill="#335cff"/><rect x="220" y="370" width="240" height="14" rx="4" fill="#cfd5e6"/><rect x="220" y="400" width="220" height="14" rx="4" fill="#cfd5e6"/><rect x="564" y="320" width="180" height="22" rx="6" fill="#335cff"/><rect x="564" y="370" width="240" height="14" rx="4" fill="#cfd5e6"/><circle cx="780" cy="430" r="58" fill="#ff8a3c"/><circle cx="780" cy="430" r="22" fill="white"/></svg>
+        <span class="label">16</span>
+      </div></div>
+      <div class="swatch-dark"><div class="pair">
+        <svg class="md" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="#fafaf6"/><path d="M150 280 Q150 240 190 240 H490 V820 H190 Q150 820 150 780 z" fill="white" stroke="#335cff" stroke-width="32" stroke-linejoin="round"/><path d="M874 280 Q874 240 834 240 H534 V820 H834 Q874 820 874 780 z" fill="white" stroke="#335cff" stroke-width="32" stroke-linejoin="round"/><path d="M512 250 Q500 280 500 320 V760 Q500 800 512 820 Q524 800 524 760 V320 Q524 280 512 250 z" fill="#cfd5e6"/><rect x="220" y="320" width="180" height="22" rx="6" fill="#335cff"/><rect x="220" y="370" width="240" height="14" rx="4" fill="#cfd5e6"/><rect x="220" y="400" width="220" height="14" rx="4" fill="#cfd5e6"/><rect x="564" y="320" width="180" height="22" rx="6" fill="#335cff"/><rect x="564" y="370" width="240" height="14" rx="4" fill="#cfd5e6"/><circle cx="780" cy="430" r="58" fill="#ff8a3c"/><circle cx="780" cy="430" r="22" fill="white"/></svg>
+        <span class="label" style="color:#aaa">64</span>
+      </div></div>
+    </div>
+  </div>
+  <div class="meta">
+    <h2>9 · Open book + pin</h2>
+    <p>Readerly framing — book, not editor. Comment pin sits on the right
+       page like a sticky note. Warmest of the options. Highest detail
+       count, so legibility falls off fastest below 32 px (the spine and
+       lines collapse into a smudge).</p>
+  </div>
+</div>
+
+<!-- ================================================================
+     OPTION 10 — viewer lens over markdown
+================================================================= -->
+<div class="card">
+  <div class="preview">
+    <div class="row">
+      <div class="swatch-light"><div class="pair">
+        <svg class="lg" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+          <rect width="1024" height="1024" rx="225" fill="white" stroke="#dcdcd6" stroke-width="2"/>
+          <!-- markdown content faintly behind -->
+          <text x="180" y="380" font-family="ui-monospace, Menlo, monospace" font-size="170" font-weight="700" fill="#cfd5e6"># Hello</text>
+          <rect x="180" y="430" width="640" height="22" rx="6" fill="#cfd5e6"/>
+          <rect x="180" y="480" width="540" height="22" rx="6" fill="#cfd5e6"/>
+          <rect x="180" y="530" width="600" height="22" rx="6" fill="#cfd5e6"/>
+          <!-- magnifying glass: lens + handle -->
+          <circle cx="600" cy="600" r="220" fill="rgba(51,92,255,0.10)" stroke="#335cff" stroke-width="44"/>
+          <line x1="760" y1="760" x2="900" y2="900" stroke="#335cff" stroke-width="64" stroke-linecap="round"/>
+          <!-- inside the lens: a sharp # -->
+          <text x="600" y="700" font-family="-apple-system, system-ui, sans-serif" font-size="280" font-weight="900" text-anchor="middle" fill="#335cff">#</text>
+        </svg>
+        <span class="label">256 · light</span>
+      </div></div>
+    </div>
+    <div class="row">
+      <div class="swatch-light"><div class="pair">
+        <svg class="md" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="white" stroke="#dcdcd6" stroke-width="2"/><text x="180" y="380" font-family="ui-monospace, Menlo, monospace" font-size="170" font-weight="700" fill="#cfd5e6"># Hello</text><rect x="180" y="430" width="640" height="22" rx="6" fill="#cfd5e6"/><rect x="180" y="480" width="540" height="22" rx="6" fill="#cfd5e6"/><rect x="180" y="530" width="600" height="22" rx="6" fill="#cfd5e6"/><circle cx="600" cy="600" r="220" fill="rgba(51,92,255,0.10)" stroke="#335cff" stroke-width="44"/><line x1="760" y1="760" x2="900" y2="900" stroke="#335cff" stroke-width="64" stroke-linecap="round"/><text x="600" y="700" font-family="-apple-system, system-ui, sans-serif" font-size="280" font-weight="900" text-anchor="middle" fill="#335cff">#</text></svg>
+        <span class="label">64</span>
+      </div></div>
+      <div class="swatch-light"><div class="pair">
+        <svg class="sm" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="white" stroke="#dcdcd6" stroke-width="2"/><text x="180" y="380" font-family="ui-monospace, Menlo, monospace" font-size="170" font-weight="700" fill="#cfd5e6"># Hello</text><rect x="180" y="430" width="640" height="22" rx="6" fill="#cfd5e6"/><rect x="180" y="480" width="540" height="22" rx="6" fill="#cfd5e6"/><rect x="180" y="530" width="600" height="22" rx="6" fill="#cfd5e6"/><circle cx="600" cy="600" r="220" fill="rgba(51,92,255,0.10)" stroke="#335cff" stroke-width="44"/><line x1="760" y1="760" x2="900" y2="900" stroke="#335cff" stroke-width="64" stroke-linecap="round"/><text x="600" y="700" font-family="-apple-system, system-ui, sans-serif" font-size="280" font-weight="900" text-anchor="middle" fill="#335cff">#</text></svg>
+        <span class="label">32</span>
+      </div></div>
+      <div class="swatch-light"><div class="pair">
+        <svg class="xs" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="white" stroke="#dcdcd6" stroke-width="2"/><text x="180" y="380" font-family="ui-monospace, Menlo, monospace" font-size="170" font-weight="700" fill="#cfd5e6"># Hello</text><rect x="180" y="430" width="640" height="22" rx="6" fill="#cfd5e6"/><rect x="180" y="480" width="540" height="22" rx="6" fill="#cfd5e6"/><rect x="180" y="530" width="600" height="22" rx="6" fill="#cfd5e6"/><circle cx="600" cy="600" r="220" fill="rgba(51,92,255,0.10)" stroke="#335cff" stroke-width="44"/><line x1="760" y1="760" x2="900" y2="900" stroke="#335cff" stroke-width="64" stroke-linecap="round"/><text x="600" y="700" font-family="-apple-system, system-ui, sans-serif" font-size="280" font-weight="900" text-anchor="middle" fill="#335cff">#</text></svg>
+        <span class="label">16</span>
+      </div></div>
+      <div class="swatch-dark"><div class="pair">
+        <svg class="md" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><rect width="1024" height="1024" rx="225" fill="white" stroke="#dcdcd6" stroke-width="2"/><text x="180" y="380" font-family="ui-monospace, Menlo, monospace" font-size="170" font-weight="700" fill="#cfd5e6"># Hello</text><rect x="180" y="430" width="640" height="22" rx="6" fill="#cfd5e6"/><rect x="180" y="480" width="540" height="22" rx="6" fill="#cfd5e6"/><rect x="180" y="530" width="600" height="22" rx="6" fill="#cfd5e6"/><circle cx="600" cy="600" r="220" fill="rgba(51,92,255,0.10)" stroke="#335cff" stroke-width="44"/><line x1="760" y1="760" x2="900" y2="900" stroke="#335cff" stroke-width="64" stroke-linecap="round"/><text x="600" y="700" font-family="-apple-system, system-ui, sans-serif" font-size="280" font-weight="900" text-anchor="middle" fill="#335cff">#</text></svg>
+        <span class="label" style="color:#aaa">64</span>
+      </div></div>
+    </div>
+  </div>
+  <div class="meta">
+    <h2>10 · Viewer lens</h2>
+    <p>Most literal "viewer" of the set: a magnifying glass over a
+       markdown page, with a "#" sharpened inside the lens. Reads as a
+       reading/inspection tool — the noun "viewer" carried by image, not
+       a wordmark. Loses the underlying text below 32 px and reads as
+       just a magnifier.</p>
+  </div>
+</div>
+
+</div>
+
+<div class="footer">
+  <strong>Pick one and reply with the number.</strong> I'll then take the
+  master 1024×1024 SVG, generate the PNG matrix (16/32/64/128/128@2x/256/
+  512/1024), produce <code>icon.icns</code> via <code>iconutil</code> and
+  <code>icon.ico</code> via ImageMagick, drop them into
+  <code>src-tauri/icons/</code>, and verify with
+  <code>./scripts/build.sh --debug</code> that the new icon shows up on
+  the .dmg, .app, and the running window.
+</div>
+</body>
+</html>

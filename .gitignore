@@ -26,3 +26,4 @@ Thumbs.db
 
 # Worktrees / tcoder transient state (kept locally per-author)
 .claude/worktrees/
+Screenshot*.png
