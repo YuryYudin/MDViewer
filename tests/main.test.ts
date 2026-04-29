@@ -31,13 +31,20 @@ Object.defineProperty(globalThis, 'localStorage', {
 });
 
 const fakeIpc = {
-  appInfo: vi.fn(),
+  appInfo: vi.fn().mockResolvedValue({ version: '0.0.0', commit_hash: 'unit' }),
   openDocument: vi.fn().mockResolvedValue({ kind: 'document' }),
   closeTab: vi.fn().mockResolvedValue(undefined),
   activateTab: vi.fn().mockResolvedValue(undefined),
   listOpenDocuments: vi.fn().mockResolvedValue([]),
   listRecents: vi.fn().mockResolvedValue([]),
-  getSettings: vi.fn(),
+  // `getSettings` is called both by main() and by mountStartPage now;
+  // give it a default resolved value so a single mockResolvedValueOnce
+  // (which only seeds the first call) doesn't leave the second call
+  // returning undefined and tripping `.catch` on a non-promise.
+  getSettings: vi.fn().mockResolvedValue({
+    profile: { user_id: 'u', display_name: '', color: '#888' },
+    appearance: { theme: 'light' },
+  }),
   setSettings: vi.fn().mockResolvedValue(undefined),
   listThreads: vi.fn().mockResolvedValue([]),
   createThread: vi.fn(),

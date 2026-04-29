@@ -20,6 +20,21 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// One entry in the most-recently-used list, augmented with the file's
+/// last-modified mtime (Unix seconds) so the StartPage can render
+/// wireframe-01's "when" column ("2 hours ago", "Yesterday", "Mar 14")
+/// without a follow-up IPC per row.
+///
+/// `mtime` is `None` when the file was unreadable at list time (deleted,
+/// permission denied) — the frontend renders `—` in that case.
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
+pub struct RecentEntry {
+    pub path: PathBuf,
+    pub mtime: Option<i64>,
+}
 
 const MAX_ENTRIES: usize = 10;
 
@@ -91,8 +106,29 @@ impl RecentsStore {
         Ok(())
     }
 
-    /// Return a clone of the current most-recent-first list.
+    /// Return a clone of the current most-recent-first list of paths.
+    /// Kept for backwards compatibility with callers that don't need
+    /// mtime; new code should use [`list_with_mtime`].
     pub fn list(&self) -> Vec<PathBuf> {
         self.inner.read().unwrap().clone()
+    }
+
+    /// Most-recent-first list with each path's filesystem mtime (or
+    /// `None` if the file is unreadable). Drives the StartPage's
+    /// "when" column.
+    pub fn list_with_mtime(&self) -> Vec<RecentEntry> {
+        self.inner
+            .read()
+            .unwrap()
+            .iter()
+            .map(|p| {
+                let mtime = std::fs::metadata(p)
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as i64);
+                RecentEntry { path: p.clone(), mtime }
+            })
+            .collect()
     }
 }

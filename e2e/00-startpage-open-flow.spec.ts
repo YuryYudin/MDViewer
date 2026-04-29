@@ -42,11 +42,29 @@ describe('StartPage → click a recent → document mounts', () => {
   it('clicking a recent path opens the document and renders it', async () => {
     expect(await browser.$('[data-view="start"]').isExisting()).toBe(true);
 
-    // Recent items are <li>s with [data-test='recent-item'] containing
-    // the textContent path. Click the first one (we pre-seeded exactly
-    // one).
+    // Wireframe-01 fidelity: the StartPage greets by display_name, the
+    // action row holds Open · New · Settings in that order, and each
+    // recent shows filename + ~tilde-path + relative when.
+    const heading = await browser.$('[data-test="welcome-heading"]').getText();
+    expect(heading).toMatch(/Welcome (back, .+|to MDViewer)/);
+
+    const actionAttrs = await browser.execute(() =>
+      Array.from(
+        document.querySelectorAll<HTMLButtonElement>(
+          '[data-test="startpage-actions"] > button',
+        ),
+      ).map((b) => b.getAttribute('data-action')),
+    );
+    expect(actionAttrs).toEqual(['open-file', 'new-document', 'open-settings']);
+
     const recent = browser.$('[data-test="recent-item"]');
     expect(await recent.isExisting()).toBe(true);
+    expect(await recent.$('[data-test="recent-name"]').getText()).toBe('sample.md');
+    // mtime may be very recent (we just wrote the file) so accept any
+    // of the relative-time forms; just verify the column rendered.
+    const when = await recent.$('[data-test="recent-when"]').getText();
+    expect(when).not.toBe('');
+
     await recent.click();
 
     // After the click, Workspace's onOpened callback runs setActive +

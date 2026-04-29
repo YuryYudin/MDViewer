@@ -26,6 +26,7 @@ export type {
   Hunk,
   HunkKind,
   ExportResult,
+  RecentEntry,
 } from './types-generated';
 
 import type {
@@ -39,6 +40,7 @@ import type {
   RenderResult,
   Hunk,
   ExportResult,
+  RecentEntry,
 } from './types-generated';
 
 // `Anchor` is the canonical name across the wire. Older planning notes used
@@ -51,7 +53,7 @@ export interface Ipc {
   closeTab(id: string): Promise<void>;
   activateTab(id: string): Promise<void>;
   listOpenDocuments(): Promise<string[]>;
-  listRecents(): Promise<string[]>;
+  listRecents(): Promise<RecentEntry[]>;
   getSettings(): Promise<Settings>;
   setSettings(s: Settings): Promise<void>;
   listThreads(tabId: string): Promise<Thread[]>;

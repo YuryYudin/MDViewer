@@ -20,7 +20,10 @@ beforeEach(() => {
 });
 
 function makeIpc(openIds: string[] = []): Ipc {
-  const recents = ['/docs/r1.md', '/docs/r2.md'];
+  const recents = [
+    { path: '/docs/r1.md', mtime: null },
+    { path: '/docs/r2.md', mtime: null },
+  ];
   return {
     listOpenDocuments: vi.fn().mockResolvedValue(openIds),
     listRecents: vi.fn().mockResolvedValue(recents),
@@ -38,7 +41,7 @@ function makeIpc(openIds: string[] = []): Ipc {
     createThread: vi.fn(),
     postReply: vi.fn(),
     resolveThread: vi.fn(),
-    appInfo: vi.fn(),
+    appInfo: vi.fn().mockResolvedValue({ version: '0.0.0', commit_hash: 'unit' }),
     renderMarkdown: vi.fn(),
     resolveAnchor: vi.fn().mockResolvedValue({ kind: 'orphan' }),
     saveDocument: vi.fn().mockResolvedValue(undefined),

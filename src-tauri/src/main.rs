@@ -134,8 +134,8 @@ fn list_open_documents(state: State<'_, Ws>) -> Vec<String> {
 }
 
 #[tauri::command]
-fn list_recents(state: State<'_, Ws>) -> Vec<PathBuf> {
-    state.lock().unwrap().recents_store().list()
+fn list_recents(state: State<'_, Ws>) -> Vec<mdviewer_lib::recents::RecentEntry> {
+    state.lock().unwrap().recents_store().list_with_mtime()
 }
 
 #[tauri::command]

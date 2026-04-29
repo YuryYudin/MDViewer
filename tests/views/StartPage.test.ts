@@ -2,22 +2,27 @@ import { describe, it, expect, vi } from 'vitest';
 import { mountStartPage } from '../../src/views/StartPage';
 import type { Ipc } from '../../src/ipc';
 
-function fakeIpc(recents: string[] = ['/docs/a.md', '/docs/b.md']): Ipc {
+function fakeIpc(recentPaths: string[] = ['/docs/a.md', '/docs/b.md']): Ipc {
+  // listRecents now returns RecentEntry[] with optional mtime; tests
+  // exercising path rendering supply just the path component.
+  const recents = recentPaths.map((p) => ({ path: p, mtime: null }));
   return {
     listRecents: vi.fn().mockResolvedValue(recents),
     openDocument: vi
       .fn()
       .mockResolvedValue({ kind: 'document', tab_id: 't1', path: '/docs/a.md', html: '<h1/>', threads: [] }),
-    getSettings: vi.fn(),
-    setSettings: vi.fn(),
-    listThreads: vi.fn(),
+    getSettings: vi.fn().mockResolvedValue({
+      profile: { user_id: 'u', display_name: '', color: '#888' },
+    }),
+    setSettings: vi.fn().mockResolvedValue(undefined),
+    listThreads: vi.fn().mockResolvedValue([]),
     createThread: vi.fn(),
     postReply: vi.fn(),
     resolveThread: vi.fn(),
     closeTab: vi.fn(),
     activateTab: vi.fn(),
-    listOpenDocuments: vi.fn(),
-    appInfo: vi.fn(),
+    listOpenDocuments: vi.fn().mockResolvedValue([]),
+    appInfo: vi.fn().mockResolvedValue({ version: '0.0.0', commit_hash: 'unit' }),
     renderMarkdown: vi.fn(),
     resolveAnchor: vi.fn(),
   } as unknown as Ipc;
@@ -36,12 +41,17 @@ describe('StartPage', () => {
   });
 
   it('uses textContent for recent paths so markup cannot be injected', async () => {
+    // The XSS guarantee comes from textContent, not from path parsing.
+    // basename() and withTilde() may legitimately reshape the displayed
+    // text (basename strips the / inside `</script>`, for example), so
+    // the assertion is "no actual <script> element exists in the DOM",
+    // not "the displayed text equals the input verbatim".
     const root = document.createElement('div');
     const ipc = fakeIpc(['<script>alert(1)</script>.md']);
     await mountStartPage(root, ipc);
     const item = root.querySelector('[data-test="recent-item"]')!;
-    expect(item.textContent).toBe('<script>alert(1)</script>.md');
     expect(item.querySelector('script')).toBeNull();
+    expect(item.innerHTML).not.toContain('<script>');
   });
 
   it('opens recent document on click', async () => {

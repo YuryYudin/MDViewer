@@ -45,22 +45,82 @@ export async function mountStartPage(
   ipc: Ipc,
   onOpened?: (outcome: OpenOutcome) => void | Promise<void>,
 ): Promise<void> {
+  // Read settings + recents up-front so the layout is one-shot — no
+  // mid-render IPC churn.
+  const [settings, recents] = await Promise.all([
+    ipc.getSettings().catch(() => undefined),
+    ipc.listRecents().catch(() => [] as Awaited<ReturnType<Ipc['listRecents']>>),
+  ]);
+
   root.replaceChildren();
   const view = document.createElement('section');
   view.setAttribute('data-view', 'start');
 
+  // Centered "stack" (matches wireframe-01's `.stack`): heading,
+  // subtitle, recents list, then a row of three action buttons.
+  const stack = document.createElement('div');
+  stack.className = 'stack';
+  view.appendChild(stack);
+
+  // Personalized welcome — the wireframe reads "Welcome back, Mira".
+  // Falls back to the generic copy when the user hasn't set a name yet
+  // (first-launch ProfileSetup is responsible for filling that in).
   const heading = document.createElement('h2');
-  heading.textContent = 'Welcome to MDViewer';
-  view.appendChild(heading);
+  heading.setAttribute('data-test', 'welcome-heading');
+  const displayName = settings?.profile?.display_name?.trim() ?? '';
+  heading.textContent = displayName
+    ? `Welcome back, ${displayName}`
+    : 'Welcome to MDViewer';
+  stack.appendChild(heading);
 
   const sub = document.createElement('p');
   sub.className = 'sub';
   sub.textContent =
     'Open a markdown file to start reading or commenting. MDViewer keeps comments in a sidecar file next to the document, so the .md itself stays untouched.';
-  view.appendChild(sub);
+  stack.appendChild(sub);
 
-  // Hidden file input — declared first so the click handler below can refer
-  // to it even though it appears later in the DOM order.
+  // Recents list — wireframe-01 row shape: filename (bold), tilde-path
+  // (mono dim), "when" relative time. Hidden entirely when there's no
+  // recents to suppress an empty-bordered card.
+  if (recents.length > 0) {
+    const list = document.createElement('div');
+    list.setAttribute('data-test', 'recents');
+    list.className = 'recent-list';
+    for (const entry of recents) {
+      const item = document.createElement('div');
+      item.setAttribute('data-test', 'recent-item');
+      item.dataset.path = entry.path;
+      item.className = 'recent-item';
+
+      const left = document.createElement('div');
+      const name = document.createElement('div');
+      name.className = 'name';
+      name.setAttribute('data-test', 'recent-name');
+      name.textContent = basename(entry.path);
+      const path = document.createElement('div');
+      path.className = 'path';
+      path.setAttribute('data-test', 'recent-path');
+      path.textContent = withTilde(entry.path);
+      left.append(name, path);
+
+      const when = document.createElement('div');
+      when.className = 'when';
+      when.setAttribute('data-test', 'recent-when');
+      when.textContent = entry.mtime != null ? relativeTime(Number(entry.mtime)) : '—';
+
+      item.append(left, when);
+      item.addEventListener('click', () => {
+        void (async () => {
+          const outcome = await ipc.openDocument(entry.path);
+          if (onOpened) await onOpened(outcome);
+        })();
+      });
+      list.appendChild(item);
+    }
+    stack.appendChild(list);
+  }
+
+  // Hidden file input — only used by e2e where the OS dialog is undriveable.
   const fileInput = document.createElement('input');
   fileInput.type = 'file';
   fileInput.accept = '.md,.markdown,text/markdown';
@@ -69,24 +129,22 @@ export async function mountStartPage(
   fileInput.addEventListener('change', async () => {
     const f = fileInput.files?.[0];
     if (!f) return;
-    // Under WebdriverIO + tauri-driver, browser.uploadFile(...) returns an
-    // absolute path that the runner places into the input's value field;
-    // reading it back yields that absolute path. In a regular browser the
-    // value would be a basename only, but in production we never reach this
-    // handler because the click handler below takes the dialog path.
     const p = fileInput.value || (f as unknown as { path?: string }).path || f.name;
     const outcome = await ipc.openDocument(p);
     if (onOpened) await onOpened(outcome);
   });
 
+  // Action row: Open · New document · Settings (wireframe order).
+  const actions = document.createElement('div');
+  actions.className = 'actions';
+  actions.setAttribute('data-test', 'startpage-actions');
+
   const open = document.createElement('button');
   open.setAttribute('data-action', 'open-file');
   open.className = 'primary';
-  open.textContent = 'Open…';
+  open.textContent = 'Open file…';
   open.addEventListener('click', async () => {
     if (isE2eMode()) {
-      // E2E path: tests trigger the hidden input directly; clicking the
-      // visible button still opens the input so keyboard-only flows work.
       fileInput.click();
       return;
     }
@@ -100,35 +158,65 @@ export async function mountStartPage(
       if (onOpened) await onOpened(outcome);
     }
   });
-  view.appendChild(open);
 
-  const settings = document.createElement('button');
-  settings.setAttribute('data-action', 'open-settings');
-  settings.textContent = 'Settings';
-  settings.addEventListener('click', () => {
+  const newDoc = document.createElement('button');
+  newDoc.setAttribute('data-action', 'new-document');
+  newDoc.textContent = 'New document';
+  newDoc.addEventListener('click', () => {
+    document.dispatchEvent(new CustomEvent('mdviewer:new-document'));
+  });
+
+  const settingsBtn = document.createElement('button');
+  settingsBtn.setAttribute('data-action', 'open-settings');
+  settingsBtn.textContent = 'Settings…';
+  settingsBtn.addEventListener('click', () => {
     document.dispatchEvent(new CustomEvent('mdviewer:open-settings'));
   });
-  view.appendChild(settings);
 
+  actions.append(open, newDoc, settingsBtn);
+  stack.appendChild(actions);
   view.appendChild(fileInput);
 
-  const recents = await ipc.listRecents();
-  const list = document.createElement('ul');
-  list.setAttribute('data-test', 'recents');
-  for (const path of recents) {
-    const li = document.createElement('li');
-    li.setAttribute('data-test', 'recent-item');
-    // textContent prevents path-based markup injection.
-    li.textContent = path;
-    li.addEventListener('click', () => {
-      void (async () => {
-        const outcome = await ipc.openDocument(path);
-        if (onOpened) await onOpened(outcome);
-      })();
-    });
-    list.appendChild(li);
-  }
-  view.appendChild(list);
-
   root.appendChild(view);
+}
+
+// ---------------------------------------------------------------------------
+// Path/time helpers — kept colocated with the only consumer rather than a
+// shared utils file. They're small, single-purpose, and have no other caller.
+// ---------------------------------------------------------------------------
+
+function basename(p: string): string {
+  const idx = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
+  return idx >= 0 ? p.slice(idx + 1) : p;
+}
+
+function withTilde(p: string): string {
+  // Replace the user's HOME prefix with ~ so paths read as wireframe
+  // examples ("~/Documents/...") on macOS / Linux. Detection is best-
+  // effort: we look for the conventional `/Users/<name>/` and `/home/<name>/`
+  // prefixes since the WebView has no access to process.env.HOME.
+  const m = p.match(/^(\/Users\/[^/]+|\/home\/[^/]+)(\/.*)?$/);
+  return m ? `~${m[2] ?? ''}` : p;
+}
+
+function relativeTime(unixSeconds: number): string {
+  const now = Math.floor(Date.now() / 1000);
+  const diff = Math.max(0, now - unixSeconds);
+  if (diff < 60) return 'just now';
+  if (diff < 3600) {
+    const m = Math.floor(diff / 60);
+    return `${m} minute${m === 1 ? '' : 's'} ago`;
+  }
+  if (diff < 86_400) {
+    const h = Math.floor(diff / 3600);
+    return `${h} hour${h === 1 ? '' : 's'} ago`;
+  }
+  if (diff < 86_400 * 2) return 'Yesterday';
+  if (diff < 86_400 * 7) {
+    const d = Math.floor(diff / 86_400);
+    return `${d} days ago`;
+  }
+  // Older than a week → absolute date "Mar 14".
+  const d = new Date(unixSeconds * 1000);
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }

@@ -55,17 +55,29 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
   titleText.textContent = 'MDViewer';
   titlebar.appendChild(titleText);
 
+  // Status bar (wireframe-01/03/05): profile chip on the left, a flexible
+  // spacer, and "Tauri 2 · vX.Y.Z" version label on the right. The
+  // generic "Ready" the previous implementation showed has no precedent
+  // in any wireframe.
   const status = shell.querySelector<HTMLElement>('[data-region="status"]')!;
-  const statusText = document.createElement('span');
-  statusText.textContent = 'Ready';
-  status.appendChild(statusText);
-  // Display the user's profile chip in the status bar (wireframe 03/05).
-  // Settings are loaded inside refresh() but we need a placeholder element
-  // present immediately so spec assertions on shape (not value) don't race.
   const userName = document.createElement('span');
   userName.setAttribute('data-test', 'user-name');
   userName.className = 'profile-chip';
   status.appendChild(userName);
+  const grow = document.createElement('span');
+  grow.className = 'grow';
+  status.appendChild(grow);
+  const versionText = document.createElement('span');
+  versionText.setAttribute('data-test', 'version-label');
+  versionText.className = 'version-label';
+  status.appendChild(versionText);
+  // Populate the version chip from app_info; the chip stays empty if
+  // the IPC fails (defensive — unit tests stub it out).
+  void ipc.appInfo()
+    .then((info) => {
+      versionText.textContent = `Tauri 2 · v${info.version}`;
+    })
+    .catch(() => {});
 
   const state: WorkspaceState = { tabs: [], activeId: null };
   const tabbar = shell.querySelector<HTMLElement>('[data-region="tabbar"]')!;
