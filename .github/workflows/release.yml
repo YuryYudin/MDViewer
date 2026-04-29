@@ -1,0 +1,73 @@
+name: Release
+
+# Triggered on tag push (v*) so a typo'd commit on `main` cannot publish.
+# `workflow_dispatch` lets a release manager run the pipeline manually for a
+# pre-release smoke check.
+#
+# All `${{ ... }}` interpolations in this file pull from the matrix block
+# below — config values committed to the repo, never untrusted user input
+# (issue titles, PR bodies, etc.). The matrix.target string is also passed
+# to npm via shell argument; it is composed of allow-listed bundle names
+# (`dmg`, `msi`, `appimage`, `deb`).
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: dmg
+          - os: windows-latest
+            target: msi
+          - os: ubuntu-latest
+            target: appimage,deb
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux deps
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            librsvg2-dev \
+            libayatana-appindicator3-dev
+
+      - run: npm ci
+
+      - name: Build bundles
+        env:
+          BUNDLE_TARGET: ${{ matrix.target }}
+        run: npm run tauri -- build --bundles "$BUNDLE_TARGET"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mdviewer-${{ matrix.os }}
+          path: src-tauri/target/release/bundle/**
+
+  # Follow-up TODOs intentionally left here so reviewers see them in PRs:
+  # - macOS notarization: APPLE_CERTIFICATE / APPLE_ID secrets + tauri-action's
+  #   built-in signing flow. Deferred per Phase-3 success criterion 10
+  #   (code signing not required for v1).
+  # - Windows EV cert: SignTool integration with a Comodo or Sectigo cert.
+  #   Deferred per the same criterion. Without it users will see a SmartScreen
+  #   warning on first run.
+  # - Auto-publish: wire `softprops/action-gh-release` to attach the bundles
+  #   to the triggering tag once we have a release manager workflow.
