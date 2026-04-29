@@ -23,7 +23,37 @@ function ipc(): Ipc {
       resolved: false,
     }),
     listThreads: vi.fn().mockResolvedValue([]),
+    saveDocument: vi.fn().mockResolvedValue(undefined),
+    renderMarkdown: vi.fn().mockResolvedValue({
+      html: '<p><span data-src-offset="0" data-src-end="5">Hello</span></p>',
+      text_spans: [],
+    }),
   } as unknown as Ipc;
+}
+
+function settings(): import('../../src/ipc').Settings {
+  return {
+    profile: { user_id: 'u', display_name: 'U', color: '#000' },
+    appearance: { theme: 'light', font_size_px: 14, line_height: 1.5, density: 'comfortable' },
+    editor: {
+      default_open_mode: 'view',
+      auto_save: true,
+      auto_save_debounce_ms: 100,
+      external_change_behavior: 'ask',
+      syntax_highlighting: true,
+      mermaid_enabled: true,
+      show_whitespace: false,
+      word_wrap: true,
+    },
+    comments: {
+      auto_merge: 'ask',
+      reattachment_confidence: 0.7,
+      sidecar_pattern: '{name}.comments.json',
+      show_resolved: true,
+    },
+    advanced: { sync_provider: null, verbose_logs: false },
+    shortcuts: {},
+  };
 }
 
 function makeRoot(): HTMLElement {
@@ -226,6 +256,145 @@ describe('Document', () => {
       ] as unknown as never,
     });
     expect(root.querySelector('[data-anchor="t-out"]')).toBeNull();
+  });
+
+  describe('mode toggle', () => {
+    it('hides the toggle button when source/path are not provided', async () => {
+      const root = makeRoot();
+      await mountDocument(root, ipc(), { tabId: 't', html, threads: [] });
+      const btn = root.querySelector<HTMLButtonElement>('[data-action="toggle-edit"]')!;
+      expect(btn.hidden).toBe(true);
+    });
+
+    it('shows the toggle button and switches to Edit mode on click', async () => {
+      const root = makeRoot();
+      const view = await mountDocument(root, ipc(), {
+        tabId: 't',
+        path: '/tmp/a.md',
+        source: 'Hello',
+        settings: settings(),
+        html,
+        threads: [],
+      });
+      const btn = root.querySelector<HTMLButtonElement>('[data-action="toggle-edit"]')!;
+      expect(btn.hidden).toBe(false);
+      btn.click();
+      // Microtask drain so the async enterEdit completes.
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(view.mode()).toBe('edit');
+      expect(root.querySelector<HTMLTextAreaElement>('[data-test="editor"]')).toBeTruthy();
+      const render = root.querySelector<HTMLElement>('[data-region="render"]')!;
+      expect(render.hidden).toBe(true);
+    });
+
+    it('returns to View, calls renderMarkdown, and re-resolves anchors', async () => {
+      const root = makeRoot();
+      const ipcStub = ipc();
+      const view = await mountDocument(root, ipcStub, {
+        tabId: 't',
+        path: '/tmp/a.md',
+        source: 'Hello',
+        settings: settings(),
+        html,
+        threads: [],
+      });
+      await view.setMode('edit');
+      // User edits the textarea.
+      const ta = root.querySelector<HTMLTextAreaElement>('[data-test="editor"]')!;
+      ta.value = 'Hello world!';
+      await view.setMode('view');
+      expect(view.mode()).toBe('view');
+      expect(ipcStub.saveDocument).toHaveBeenCalledWith('/tmp/a.md', 'Hello world!');
+      expect(ipcStub.renderMarkdown).toHaveBeenCalledWith('Hello world!');
+    });
+
+    it('routes orphan threads into orphanThreads() and onOrphansChanged', async () => {
+      const root = makeRoot();
+      const ipcStub = ipc();
+      (ipcStub.resolveAnchor as ReturnType<typeof vi.fn>).mockResolvedValue({
+        kind: 'orphan',
+      });
+      const onOrphansChanged = vi.fn();
+      const orphanThread = {
+        id: 't-orph',
+        anchor: { start: 0, end: 5, exact: 'gone', prefix: '', suffix: '' },
+        comments: [],
+        resolved: false,
+      } as unknown as never;
+      const view = await mountDocument(root, ipcStub, {
+        tabId: 't',
+        html,
+        threads: [orphanThread],
+        onOrphansChanged,
+      });
+      expect(view.orphanThreads().map((t) => t.id)).toEqual(['t-orph']);
+      expect(onOrphansChanged).toHaveBeenCalledTimes(1);
+      expect(onOrphansChanged.mock.calls[0][0].map((t: { id: string }) => t.id)).toEqual([
+        't-orph',
+      ]);
+    });
+
+    it('setMode is a no-op when called with the current mode', async () => {
+      const root = makeRoot();
+      const ipcStub = ipc();
+      const view = await mountDocument(root, ipcStub, {
+        tabId: 't',
+        path: '/tmp/a.md',
+        source: 'Hello',
+        settings: settings(),
+        html,
+        threads: [],
+      });
+      // Already in view; calling setMode('view') again should not trigger
+      // renderMarkdown/saveDocument.
+      const renderCallsBefore = (ipcStub.renderMarkdown as ReturnType<typeof vi.fn>).mock.calls
+        .length;
+      await view.setMode('view');
+      expect(
+        (ipcStub.renderMarkdown as ReturnType<typeof vi.fn>).mock.calls.length,
+      ).toBe(renderCallsBefore);
+    });
+
+    it('button click toggles back to View when currently in Edit', async () => {
+      const root = makeRoot();
+      const view = await mountDocument(root, ipc(), {
+        tabId: 't',
+        path: '/tmp/a.md',
+        source: 'Hello',
+        settings: settings(),
+        html,
+        threads: [],
+      });
+      const btn = root.querySelector<HTMLButtonElement>('[data-action="toggle-edit"]')!;
+      // First click → edit.
+      btn.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(view.mode()).toBe('edit');
+      // Second click → view.
+      btn.click();
+      // Several microtask drains for the chained awaits inside enterView.
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(view.mode()).toBe('view');
+    });
+
+    it('refuses Edit when path/source/settings are missing (defensive)', async () => {
+      const root = makeRoot();
+      const view = await mountDocument(root, ipc(), { tabId: 't', html, threads: [] });
+      await view.setMode('edit');
+      expect(view.mode()).toBe('view');
+      expect(root.querySelector('[data-test="editor"]')).toBeNull();
+    });
+
+    it('refreshHighlights() resolves without throwing on the new return type', async () => {
+      const root = makeRoot();
+      const view = await mountDocument(root, ipc(), { tabId: 't', html, threads: [] });
+      await expect(view.refreshHighlights()).resolves.toBeUndefined();
+    });
   });
 
   it('uses textContent length when the selection container is an element (not a text node)', async () => {

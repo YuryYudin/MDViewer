@@ -134,4 +134,83 @@ describe('CommentsSidebar', () => {
     expect(root.querySelectorAll('[data-test="thread"]').length).toBe(0);
     expect(root.querySelector('[data-empty="true"]')).toBeTruthy();
   });
+
+  describe('orphan section', () => {
+    it('mounts the orphan region above the thread list when orphans is non-empty', () => {
+      const root = document.createElement('div');
+      mountCommentsSidebar(
+        root,
+        ipcStub(),
+        [thread({ id: 't-1' })],
+        { showResolved: false, orphans: [thread({ id: 't-orph' })] },
+      );
+      const orphans = root.querySelector('[data-region="orphans"]');
+      expect(orphans).toBeTruthy();
+      expect(orphans!.querySelector('[data-orphan-id="t-orph"]')).toBeTruthy();
+      // Orphan region must precede the regular thread items in DOM order.
+      const orphanIdx = Array.from(root.children).indexOf(orphans as Element);
+      const firstThread = root.querySelector('[data-test="thread"]') as Element;
+      const threadIdx = Array.from(root.children).indexOf(firstThread);
+      expect(orphanIdx).toBeLessThan(threadIdx);
+    });
+
+    it('does not mount the orphan region when orphans is empty or undefined', () => {
+      const root = document.createElement('div');
+      mountCommentsSidebar(root, ipcStub(), [thread({ id: 't-1' })], {
+        showResolved: false,
+        orphans: [],
+      });
+      expect(root.querySelector('[data-region="orphans"]')).toBeNull();
+    });
+
+    it('Relocate click on an orphan dispatches mdviewer:relocate-orphan and calls onRelocateOrphan', () => {
+      const root = document.createElement('div');
+      const onRelocateOrphan = vi.fn();
+      const handler = vi.fn();
+      root.addEventListener('mdviewer:relocate-orphan', handler as EventListener);
+      mountCommentsSidebar(root, ipcStub(), [], {
+        showResolved: false,
+        orphans: [thread({ id: 't-r' })],
+        onRelocateOrphan,
+      });
+      (root.querySelector('[data-action="relocate"]') as HTMLButtonElement).click();
+      expect(onRelocateOrphan).toHaveBeenCalledWith('t-r');
+      expect(handler).toHaveBeenCalledTimes(1);
+      const evt = handler.mock.calls[0][0] as CustomEvent<{ id: string }>;
+      expect(evt.detail.id).toBe('t-r');
+    });
+
+    it('Delete click on an orphan dispatches mdviewer:delete-thread when confirmed', () => {
+      const root = document.createElement('div');
+      const originalConfirm = window.confirm;
+      window.confirm = (() => true) as typeof window.confirm;
+      try {
+        const onDeleteOrphan = vi.fn();
+        const handler = vi.fn();
+        root.addEventListener('mdviewer:delete-thread', handler as EventListener);
+        mountCommentsSidebar(root, ipcStub(), [], {
+          showResolved: false,
+          orphans: [thread({ id: 't-d' })],
+          onDeleteOrphan,
+        });
+        (root.querySelector('[data-action="delete"]') as HTMLButtonElement).click();
+        expect(onDeleteOrphan).toHaveBeenCalledWith('t-d');
+        expect(handler).toHaveBeenCalledTimes(1);
+      } finally {
+        window.confirm = originalConfirm;
+      }
+    });
+
+    it('Keep click on an orphan calls onKeepOrphan', () => {
+      const root = document.createElement('div');
+      const onKeepOrphan = vi.fn();
+      mountCommentsSidebar(root, ipcStub(), [], {
+        showResolved: false,
+        orphans: [thread({ id: 't-k' })],
+        onKeepOrphan,
+      });
+      (root.querySelector('[data-action="keep"]') as HTMLButtonElement).click();
+      expect(onKeepOrphan).toHaveBeenCalledWith('t-k');
+    });
+  });
 });
