@@ -44,6 +44,7 @@ use mdviewer_lib::{
     document::{self, RenderOptions, RenderResult},
     settings::Settings,
     watcher::{ExternalChangeEvent, Watcher},
+    menu,
     workspace::{ExportResult, OpenOpts, OpenOutcome, TabSummary, Workspace},
     BuildInfo,
 };
@@ -518,7 +519,29 @@ fn main() {
     let builder = builder.plugin(tauri_plugin_webdriver_automation::init());
 
     builder
+        .on_menu_event(|app, event| {
+            // Native menu clicks → tauri event the WebView listener
+            // translates into the existing mdviewer:* CustomEvents. The
+            // pure id↔action mapping lives in `mdviewer_lib::menu` so it
+            // can be unit-tested without an AppHandle.
+            if let Some(action) = menu::menu_id_to_action(event.id().as_ref()) {
+                let _ = app.emit(menu::MENU_EVENT, action);
+            }
+        })
         .setup(|app| {
+            // Build and attach the native menu before the workspace setup
+            // — `set_menu` is cheap and does not depend on workspace state.
+            // Failure to build the menu shouldn't take down the app, so we
+            // log and continue with the platform default.
+            match menu::build(app.handle()) {
+                Ok(m) => {
+                    if let Err(e) = app.set_menu(m) {
+                        tracing::warn!("set_menu failed: {e:?}");
+                    }
+                }
+                Err(e) => tracing::warn!("menu::build failed: {e:?}"),
+            }
+
             let data_dir = app.path().app_config_dir()?;
             let env_override = std::env::var("MDVIEWER_DATA_DIR").ok();
             let dir = env_override.map(PathBuf::from).unwrap_or(data_dir);

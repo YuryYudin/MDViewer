@@ -31,6 +31,7 @@ pub mod anchor;
 pub mod comments;
 pub mod conflict;
 pub mod document;
+pub mod menu;
 pub mod recents;
 pub mod settings;
 pub mod sidecar;

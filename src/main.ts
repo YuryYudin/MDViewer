@@ -2,6 +2,7 @@ import { tauriIpc, type Settings } from './ipc';
 import { mountWorkspace } from './views/Workspace';
 import { mountProfileSetup } from './views/ProfileSetup';
 import { installKeymap, type Action } from './keymap';
+import { installMenuBridge } from './menuBridge';
 import './styles/theme.css';
 import './styles/app.css';
 
@@ -150,6 +151,15 @@ export async function main(): Promise<void> {
           .querySelector('[data-region="sidebar"]')
           ?.dispatchEvent(new CustomEvent('thread-replied', { bubbles: true }));
       },
+      async emitMenuAction(action: string): Promise<void> {
+        // The OS menu can't be driven by tauri-webdriver-automation, so
+        // tests fire the bus event directly. The bundled event module
+        // resolves via Vite's specifier handling; an inline `import()`
+        // from the WebDriver execute_async sandbox would NOT resolve
+        // because that script isn't part of the bundle.
+        const { emit } = await import('@tauri-apps/api/event');
+        await emit('menu-action', action);
+      },
     };
   }
 
@@ -188,6 +198,12 @@ export async function main(): Promise<void> {
     }
   };
   installKeymap(settings, dispatchAction);
+
+  // Native menu bridge — fires the same mdviewer:* CustomEvents the keymap
+  // does, so File → Open / Settings… reach the existing handlers without
+  // any per-view wiring. Fire and forget; the bridge resolves to a no-op
+  // when no Tauri runtime is present (unit tests, dev preview).
+  void installMenuBridge();
 }
 
 // Auto-run only when loaded as the production entry point. Tests import
