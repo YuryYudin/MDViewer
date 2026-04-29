@@ -23,6 +23,8 @@ export type {
   NewThread,
   OpenResult,
   OpenOutcome,
+  Hunk,
+  HunkKind,
 } from './types-generated';
 
 import type {
@@ -33,6 +35,7 @@ import type {
   Thread,
   OpenOutcome,
   RenderResult,
+  Hunk,
 } from './types-generated';
 
 // `Anchor` is the canonical name across the wire. Older planning notes used
@@ -69,6 +72,13 @@ export interface Ipc {
    * after `forceSave` succeeds.
    */
   setDirty(path: string, dirty: boolean): Promise<void>;
+  /**
+   * C2: line-anchored diff between `local` (last-saved bytes) and
+   * `incoming` (current disk bytes). Returns a list of hunks for
+   * Conflict.ts to render Accept Left / Accept Right / Hand-edit per
+   * hunk, then `saveDocument` the resolved bytes on Finish merge.
+   */
+  diffMd(local: string, incoming: string): Promise<Hunk[]>;
 }
 
 export const tauriIpc: Ipc = {
@@ -91,4 +101,5 @@ export const tauriIpc: Ipc = {
   resolveAnchor: (tabId, anchor) => invoke('resolve_anchor', { tabId, anchor }),
   saveDocument: (path, contents) => invoke<void>('save_document', { path, contents }),
   setDirty: (path, dirty) => invoke<void>('set_dirty', { path, dirty }),
+  diffMd: (local, incoming) => invoke<Hunk[]>('diff_md', { local, incoming }),
 };

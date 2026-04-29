@@ -1,8 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 //! Tauri binary entry: registers all Phase-1 IPC commands (`app_info` plus
-//! 13 workspace/comments/render commands) and the Phase-2 `save_document`
-//! command added in B3 — 15 total at this point.
+//! 13 workspace/comments/render commands) plus the Phase-2 `save_document`
+//! and `set_dirty` (B3) and the Phase-3 `diff_md` (C2) — 17 total at this point.
 //!
 //! Each handler is a thin shim that locks the `Workspace` mutex and delegates
 //! to a method on `Workspace` (or one of its sub-stores). No business logic
@@ -24,14 +24,16 @@ use std::sync::Mutex;
 use tauri::{Emitter, Manager, State};
 
 use mdviewer_lib::{
-    // Parent-module imports (`self`) on document/anchor avoid the E0252
-    // collision that would arise if `anchor::resolve_anchor` /
-    // `document::render_markdown` were brought in by name alongside the
-    // `#[tauri::command] fn`s of the same name. Anchor and ResolveOutcome
-    // are also imported by name for ergonomic use in command signatures.
+    // Parent-module imports (`self`) on document/anchor/conflict avoid the
+    // E0252 collision that would arise if `anchor::resolve_anchor` /
+    // `document::render_markdown` / `conflict::diff_md` were brought in by
+    // name alongside the `#[tauri::command] fn`s of the same name. Anchor
+    // and ResolveOutcome are imported by name for ergonomic use in command
+    // signatures; Hunk likewise.
     anchor::{Anchor, ResolveOutcome},
     build_info,
     comments::{NewComment, NewThread, Thread},
+    conflict::{self, Hunk},
     document::{self, RenderOptions, RenderResult},
     settings::Settings,
     watcher::{ExternalChangeEvent, Watcher},
@@ -237,17 +239,27 @@ fn save_document(
         },
     )
     .map_err(|e| e.to_string())?;
-    state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .refresh_tab(&path)
-        .map_err(|e| e.to_string())?;
+    {
+        let mut ws = state.lock().map_err(|e| e.to_string())?;
+        ws.refresh_tab(&path).map_err(|e| e.to_string())?;
+        // C2: keep both the open-tab snapshot and the closed_snapshots
+        // entry in sync with the bytes we just wrote so a subsequent
+        // close+reopen (or external rewrite) can detect divergence.
+        ws.prime_saved_snapshot(&path, contents);
+    }
     // Successful save clears the dirty bit. The watcher's external-change
     // override (which forces Ask while edits are pending) deactivates here.
     if let Ok(w) = watcher.lock() {
         w.mark_unsaved(&path, false);
     }
     Ok(())
+}
+
+/// C2: line-anchored diff between two markdown buffers. Pure function;
+/// the IPC handler doesn't need a Workspace lock.
+#[tauri::command]
+fn diff_md(local: String, incoming: String) -> Vec<Hunk> {
+    conflict::diff_md(&local, &incoming)
 }
 
 /// Frontend-driven dirty-bit setter. `Edit.ts` calls `set_dirty(path, true)`
@@ -366,6 +378,7 @@ fn main() {
             resolve_anchor,
             save_document,
             set_dirty,
+            diff_md,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

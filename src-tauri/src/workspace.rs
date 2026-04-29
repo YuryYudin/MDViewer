@@ -70,6 +70,11 @@ pub struct Workspace {
     tabs: HashMap<String, Tab>,
     order: Vec<String>,
     active: Option<String>,
+    /// C2: persists each path's last-saved bytes across `close_tab` so a
+    /// subsequent open of the same path can detect external divergence.
+    /// Without this, closing a tab would erase the snapshot needed for the
+    /// reopen-time conflict check.
+    closed_snapshots: HashMap<PathBuf, String>,
 }
 
 impl Workspace {
@@ -80,6 +85,7 @@ impl Workspace {
             tabs: HashMap::new(),
             order: Vec::new(),
             active: None,
+            closed_snapshots: HashMap::new(),
         })
     }
 
@@ -96,9 +102,25 @@ impl Workspace {
                 tab.path.clone(),
                 tab.render.html.clone(),
                 tab.comments.list_threads().to_vec(),
+                tab.last_saved_snapshot.clone(),
             )
         });
-        if let Some((id, p, html, threads)) = existing {
+        if let Some((id, p, html, threads, snapshot)) = existing {
+            // C2: re-opening an already-open tab still has to surface
+            // divergence. If disk bytes differ from the in-memory snapshot,
+            // emit Conflict instead of silently activating the stale tab.
+            if let Some(snap) = snapshot {
+                if let Ok(disk) = std::fs::read_to_string(&canonical) {
+                    if disk != snap {
+                        return Ok(OpenOutcome::Conflict {
+                            tab_id: id,
+                            path: canonical,
+                            local: snap,
+                            incoming: disk,
+                        });
+                    }
+                }
+            }
             self.active = Some(id.clone());
             return Ok(OpenOutcome::Document(OpenResult {
                 tab_id: id,
@@ -110,6 +132,29 @@ impl Workspace {
 
         let source = std::fs::read_to_string(&canonical)
             .with_context(|| format!("read {:?}", canonical))?;
+
+        // C2: a closed-and-reopened path with a divergent on-disk copy
+        // returns Conflict before the new tab is even constructed. The
+        // snapshot is consumed (removed) — the user resolves via the
+        // Conflict view, which calls save_document and re-primes it.
+        if let Some(prior) = self.closed_snapshots.get(&canonical).cloned() {
+            if prior != source {
+                let id = format!(
+                    "tab-{:x}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos()
+                );
+                return Ok(OpenOutcome::Conflict {
+                    tab_id: id,
+                    path: canonical,
+                    local: prior,
+                    incoming: source,
+                });
+            }
+        }
+
         let s = self.settings.get();
         let opts = RenderOptions {
             syntax_highlighting: s.editor.syntax_highlighting,
@@ -128,8 +173,6 @@ impl Workspace {
                 .as_nanos()
         );
 
-        // Phase-1 always opens as Document. Phase-3's C2 widens this to also
-        // detect divergence vs `last_saved_snapshot` and return Conflict.
         let result = OpenResult {
             tab_id: id.clone(),
             path: canonical.clone(),
@@ -185,12 +228,32 @@ impl Workspace {
     }
 
     pub fn close_tab(&mut self, id: &str) -> Result<()> {
-        self.tabs.remove(id);
+        // C2: stash the last-saved bytes keyed by path so the next open of
+        // this path can detect divergence from disk. Tabs without a snapshot
+        // (theoretically impossible — every open path primes one — but
+        // defensive) just don't seed the map.
+        if let Some(tab) = self.tabs.remove(id) {
+            if let Some(snap) = tab.last_saved_snapshot {
+                self.closed_snapshots.insert(tab.path, snap);
+            }
+        }
         self.order.retain(|x| x != id);
         if self.active.as_deref() == Some(id) {
             self.active = self.order.last().cloned();
         }
         Ok(())
+    }
+
+    /// C2: clears the closed-tab snapshot for `path` after the user resolves
+    /// a conflict (Finish merge in Conflict.ts → save_document → here). The
+    /// IPC handler also calls this whenever save_document succeeds for an
+    /// already-open tab so the snapshot stays in sync with the new bytes.
+    pub fn prime_saved_snapshot(&mut self, path: &Path, contents: String) {
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        if let Some(tab) = self.tabs.values_mut().find(|t| t.path == canonical) {
+            tab.last_saved_snapshot = Some(contents.clone());
+        }
+        self.closed_snapshots.insert(canonical, contents);
     }
 
     pub fn activate_tab(&mut self, id: &str) -> Result<()> {

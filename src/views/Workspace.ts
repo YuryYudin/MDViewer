@@ -3,6 +3,7 @@ import { mountStartPage } from './StartPage';
 import { mountTabBar } from './TabBar';
 import { mountDocument } from './Document';
 import { mountCommentsSidebar } from './CommentsSidebar';
+import { mountConflict } from './Conflict';
 
 export interface WorkspaceState {
   tabs: { id: string; path: string; source?: string; threads?: Thread[]; html?: string }[];
@@ -11,6 +12,10 @@ export interface WorkspaceState {
 
 export interface WorkspaceHandle {
   refresh(): Promise<void>;
+  /** C2: route an OpenOutcome from the calling layer through to either
+   *  Document or Conflict view. StartPage's openDocument flow funnels here
+   *  via __mdv_setActive then triggers a refresh. */
+  setActive(outcome: OpenOutcome): void;
 }
 
 /**
@@ -55,6 +60,10 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
   // Cache the active tab's data the most recent open_document call gave us
   // so refresh() doesn't have to re-open just to re-render.
   const activeTab: { tabId?: string; path?: string; source?: string; threads?: Thread[]; html?: string } = {};
+  // C2: when the most recent OpenOutcome was a Conflict, refresh() routes
+  // to Conflict.ts instead of Document.ts. Cleared when a Document outcome
+  // arrives or when the user finishes the merge.
+  let pendingConflict: { tabId: string; path: string; local: string; incoming: string } | null = null;
   let settings: Settings | null = null;
 
   // Subscribe to the watcher's external-change event from B2. tauri's
@@ -99,6 +108,30 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
     state.tabs = ids.map((id) => ({ id, path: id }));
     state.activeId = state.tabs.length > 0 ? (state.activeId ?? state.tabs[0].id) : null;
     mountTabBar(tabbar, ipc, state);
+
+    // C2: a pending Conflict outcome wins over both StartPage and Document
+    // — the user must resolve it before doing anything else. Conflicts
+    // can fire even when no tab is registered (the Workspace returns
+    // Conflict from open_document before the new tab is constructed),
+    // hence this branch sits before the empty-tabs check.
+    if (pendingConflict) {
+      body.replaceChildren();
+      const conflictArgs = pendingConflict;
+      const handle = await mountConflict(body, ipc, conflictArgs);
+      void handle;
+      // Clear the pending state when the user finishes the merge so a
+      // subsequent refresh routes to Document.
+      body.addEventListener(
+        'conflict-resolved',
+        () => {
+          pendingConflict = null;
+          void refresh();
+        },
+        { once: true },
+      );
+      return;
+    }
+
     if (state.tabs.length === 0) {
       await mountStartPage(body, ipc);
       return;
@@ -107,8 +140,7 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
     // Mount a real Document with the cached open-document payload from the
     // most recent openDocument call. If we don't have one (active tab
     // changed without a re-open), the placeholder is acceptable until the
-    // user re-opens — Phase C2 introduces a getOpenDocument IPC that
-    // closes this gap.
+    // user re-opens.
     body.replaceChildren();
     const docRoot = document.createElement('div');
     body.appendChild(docRoot);
@@ -150,8 +182,9 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
   }
 
   /**
-   * Public hook used by the StartPage when openDocument resolves so the
-   * Workspace can cache the freshly-loaded payload and refresh.
+   * Public hook used by the StartPage (and the show-conflict event) when
+   * openDocument resolves so the Workspace can cache the freshly-loaded
+   * payload (Document) or queue the divergence handoff (Conflict).
    */
   function setActive(outcome: OpenOutcome): void {
     if (outcome.kind === 'document') {
@@ -159,6 +192,14 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
       activeTab.path = outcome.path;
       activeTab.html = outcome.html;
       activeTab.threads = outcome.threads;
+      pendingConflict = null;
+    } else if (outcome.kind === 'conflict') {
+      pendingConflict = {
+        tabId: outcome.tab_id,
+        path: outcome.path,
+        local: outcome.local,
+        incoming: outcome.incoming,
+      };
     }
   }
 
@@ -168,6 +209,24 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
   // through ipc.openDocument and a refresh.
   (root as unknown as { __mdv_setActive?: typeof setActive }).__mdv_setActive = setActive;
 
+  // C2: subscribe to the show-conflict event the IPC layer emits when
+  // open_document detects divergence. This catches the case where the
+  // watcher (B2) fires "external-change" while a tab is already open and
+  // the IPC handler re-runs open_document under the covers.
+  try {
+    const tauriEvent = await import('@tauri-apps/api/event');
+    await tauriEvent.listen<{ tab_id: string; path: string; local: string; incoming: string }>(
+      'show-conflict',
+      (ev) => {
+        setActive({ kind: 'conflict', ...ev.payload });
+        void refresh();
+      },
+    );
+  } catch {
+    // No Tauri runtime in jsdom — same fallback as the external-change
+    // listener above. The setActive hook is still callable from tests.
+  }
+
   await refresh();
-  return { refresh };
+  return { refresh, setActive };
 }

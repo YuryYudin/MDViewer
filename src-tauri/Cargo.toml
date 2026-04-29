@@ -42,6 +42,7 @@ diff-match-patch-rs = "0.4"
 notify = "6"
 automerge = "0.5"
 base64 = "0.22"
+similar = "2.5"
 
 [dev-dependencies]
 tempfile = "3"

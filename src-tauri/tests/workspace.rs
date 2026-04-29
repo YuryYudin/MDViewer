@@ -316,3 +316,71 @@ fn opening_md_with_existing_sidecar_loads_all_threads_anchored() {
         );
     }
 }
+
+#[test]
+fn reopen_after_external_rewrite_returns_conflict() {
+    // C2: open → close → external rewrite → reopen must surface
+    // OpenOutcome::Conflict so the IPC layer can route to Conflict.ts
+    // instead of silently mounting Document.ts on top of stale bytes.
+    let (mut ws, tmp) = fresh();
+    let md = tmp.path().join("doc.md");
+    fs::write(&md, "original\n").unwrap();
+    let opened = open_doc(&mut ws, &md);
+    let id = opened.tab_id.clone();
+    ws.close_tab(&id).unwrap();
+
+    fs::write(&md, "rewritten by another tool\n").unwrap();
+
+    let outcome = ws.open_document(&md, OpenOpts::default()).unwrap();
+    match outcome {
+        OpenOutcome::Conflict { local, incoming, .. } => {
+            assert_eq!(local, "original\n");
+            assert_eq!(incoming, "rewritten by another tool\n");
+        }
+        OpenOutcome::Document(_) => panic!("expected Conflict, got Document"),
+    }
+}
+
+#[test]
+fn reopen_already_open_tab_with_diverged_disk_returns_conflict() {
+    // C2: even without a close in between, re-invoking open_document on a
+    // path whose disk bytes diverge from the in-memory snapshot must
+    // surface Conflict — otherwise the active-tab early-return masks
+    // external edits made while the tab was open but inactive.
+    let (mut ws, tmp) = fresh();
+    let md = tmp.path().join("doc.md");
+    fs::write(&md, "v1\n").unwrap();
+    let _ = open_doc(&mut ws, &md);
+
+    fs::write(&md, "v2\n").unwrap();
+
+    match ws.open_document(&md, OpenOpts::default()).unwrap() {
+        OpenOutcome::Conflict { local, incoming, .. } => {
+            assert_eq!(local, "v1\n");
+            assert_eq!(incoming, "v2\n");
+        }
+        OpenOutcome::Document(_) => panic!("expected Conflict, got Document"),
+    }
+}
+
+#[test]
+fn prime_saved_snapshot_clears_divergence() {
+    // After a save (which the IPC handler bridges via prime_saved_snapshot),
+    // the saved bytes become the new reference — a subsequent reopen of the
+    // same path with matching disk bytes is no longer a conflict.
+    let (mut ws, tmp) = fresh();
+    let md = tmp.path().join("doc.md");
+    fs::write(&md, "v1\n").unwrap();
+    let opened = open_doc(&mut ws, &md);
+    let id = opened.tab_id.clone();
+
+    fs::write(&md, "v2\n").unwrap();
+    ws.prime_saved_snapshot(&md, "v2\n".to_string());
+
+    // The active-tab early-return path: snapshot was just primed to match
+    // disk, so opening again is a Document outcome.
+    match ws.open_document(&md, OpenOpts::default()).unwrap() {
+        OpenOutcome::Document(r) => assert_eq!(r.tab_id, id),
+        OpenOutcome::Conflict { .. } => panic!("snapshot was primed to match disk"),
+    }
+}

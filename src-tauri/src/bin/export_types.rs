@@ -61,10 +61,17 @@ fn export_all() -> Result<String, Box<dyn std::error::Error>> {
     buf.push_str(&mdviewer_lib::workspace::OpenOutcome::export_to_string().unwrap());
     buf.push_str("\n");
 
+    // C2: conflict-diff hunk types consumed by Conflict.ts.
+    buf.push_str(&mdviewer_lib::conflict::HunkKind::export_to_string().unwrap());
+    buf.push_str("\n");
+    buf.push_str(&mdviewer_lib::conflict::Hunk::export_to_string().unwrap());
+    buf.push_str("\n");
+
     // A5 appends `RenderResult`, `RenderOptions`.
     // A6 appends `Anchor`, `ResolveOutcome`.
     // A7 appends `Thread`, `Comment`, `NewThread`, `NewComment`.
     // A8a appends `OpenResult`, `OpenOutcome`.
+    // C2 appends `Hunk`, `HunkKind`.
 
     Ok(buf)
 }
