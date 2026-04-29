@@ -221,4 +221,18 @@ describe('dark-mode visibility audit', () => {
     expect(probes.length).toBe(2);
     assertVisible(probes, 'Status bar');
   });
+
+  it('color-scheme is `dark` so native scrollbars / form chrome render dark', async () => {
+    // WKWebView (and every other engine) draws scrollbars, autofill
+    // chips, and default form widgets according to the document's
+    // `color-scheme` — NOT its background variables. The scrollbar
+    // gutter that showed white against our dark surface in
+    // Screenshot.png was the symptom of color-scheme defaulting to
+    // light. body.theme-dark and the prefers-color-scheme media query
+    // both flip color-scheme to dark; assert the result.
+    const colorScheme = await browser.execute(
+      () => getComputedStyle(document.body).colorScheme,
+    );
+    expect(colorScheme).toBe('dark');
+  });
 });

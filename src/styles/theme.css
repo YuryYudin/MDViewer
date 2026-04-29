@@ -7,6 +7,12 @@
  */
 
 :root {
+  /* Tells the WebView the document is in light mode by default — native
+   * UI (scrollbars, default form controls, autofill chips) adapts to
+   * match. body.theme-dark below flips this to dark, otherwise WKWebView
+   * leaves the scrollbar gutter system-default white against our dark
+   * surfaces. */
+  color-scheme: light;
   /* Surfaces */
   --bg: #f7f7f5;
   --surface: #ffffff;
@@ -48,6 +54,8 @@
 }
 
 body.theme-dark {
+  /* Native UI flips to dark — load-bearing for the scrollbar color. */
+  color-scheme: dark;
   --bg: #161614;
   --surface: #1f1f1d;
   --surface-2: #252522;
@@ -74,6 +82,7 @@ body.theme-dark {
 
 @media (prefers-color-scheme: dark) {
   body.theme-follow-system:not(.theme-light) {
+    color-scheme: dark;
     --bg: #161614;
     --surface: #1f1f1d;
     --surface-2: #252522;
