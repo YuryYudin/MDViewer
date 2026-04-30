@@ -22,11 +22,17 @@
 use mdviewer_lib::document::save_document;
 use mdviewer_lib::settings::ExternalChangeBehavior;
 use mdviewer_lib::watcher::{
-    quick_hash, ExternalChange, ExternalChangeEvent, Watcher, WatchedKind,
+    quick_hash, CompareForSave, ExternalChange, ExternalChangeEvent, Watcher, WatchedKind,
 };
 use std::fs;
+use std::io::Write;
 use std::time::Duration;
 use tempfile::TempDir;
+
+fn write_file(p: &std::path::Path, body: &str) {
+    let mut f = std::fs::File::create(p).unwrap();
+    f.write_all(body.as_bytes()).unwrap();
+}
 
 fn waitfor(rx: &std::sync::mpsc::Receiver<ExternalChangeEvent>) -> ExternalChangeEvent {
     // 5s upper bound: laptops fire in <100ms but Ubuntu CI runners with
@@ -262,4 +268,57 @@ fn external_write_after_save_still_triggers() {
     // load can take seconds. The upper bound only matters on slow CI Linux.
     let ev = rx.recv_timeout(Duration::from_secs(10)).unwrap();
     assert_eq!(ev.action, ExternalChange::Reload);
+}
+
+// B4: compare_for_save() — mtime+hash snapshot at open vs current state.
+// These don't depend on notify event timing, so they run on Linux too.
+
+#[test]
+fn compare_for_save_unchanged_when_neither_mtime_nor_hash_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("notes.md");
+    write_file(&p, "# hello\n");
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut w = Watcher::new(tx).unwrap();
+    w.note_open(&p).unwrap();
+    let r = w.compare_for_save(&p).unwrap();
+    assert!(matches!(r, CompareForSave::Unchanged));
+}
+
+#[test]
+fn compare_for_save_changed_when_content_differs() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("notes.md");
+    write_file(&p, "# v1\n");
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut w = Watcher::new(tx).unwrap();
+    w.note_open(&p).unwrap();
+    // Force mtime advance by sleeping so coarse-grained FS clocks (HFS+,
+    // some Linux filesystems) record a distinct timestamp; the content
+    // change alone would suffice for the hash check, but the test also
+    // verifies the Changed variant carries both mtimes.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    write_file(&p, "# v2 — outside change\n");
+    let r = w.compare_for_save(&p).unwrap();
+    assert!(matches!(r, CompareForSave::Changed { .. }));
+}
+
+#[test]
+fn compare_for_save_returns_unchanged_when_only_mtime_advances_with_same_content() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("notes.md");
+    write_file(&p, "# same\n");
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut w = Watcher::new(tx).unwrap();
+    w.note_open(&p).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    // Re-write identical content — mtime advances but hash matches. Some
+    // sync clients (Drive Desktop, Dropbox) touch mtime without changing
+    // bytes; treating that as Changed would surface false conflicts.
+    write_file(&p, "# same\n");
+    let r = w.compare_for_save(&p).unwrap();
+    assert!(
+        matches!(r, CompareForSave::Unchanged),
+        "mtime-only change with identical content must be Unchanged"
+    );
 }
