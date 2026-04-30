@@ -38,6 +38,7 @@ function makeIpc(openIds: string[] = []): Ipc {
     closeTab: vi.fn().mockResolvedValue(undefined),
     activateTab: vi.fn().mockResolvedValue(undefined),
     getSettings: vi.fn().mockResolvedValue({
+      appearance: { theme: 'light', font_size_px: 14, line_height: 1.5, density: 'comfortable' },
       comments: { show_resolved: false, sidecar_pattern: '{name}.md.comments.json', reattachment_confidence: 75, auto_merge: 'manual' },
       editor: {},
     }),
@@ -55,6 +56,9 @@ function makeIpc(openIds: string[] = []): Ipc {
       { kind: 'conflicting', local_text: 'l', incoming_text: 'r', local_range: [0, 1], incoming_range: [0, 1] },
     ]),
     exportDocument: vi.fn(),
+    getDocPref: vi.fn().mockResolvedValue(null),
+    setDocPref: vi.fn().mockResolvedValue(undefined),
+    deleteDocPref: vi.fn().mockResolvedValue(undefined),
   } as unknown as Ipc;
 }
 
@@ -351,5 +355,247 @@ describe('Workspace', () => {
     const banner = root.querySelector<HTMLElement>('[data-view="external-change"]');
     expect(banner).toBeTruthy();
     expect(banner!.textContent).toContain('/docs/x.md');
+  });
+});
+
+describe('Workspace — font-size feature (A9)', () => {
+  // Tests below use real (fake-)timers for the 150ms debounce and rely on
+  // `:root.style.--doc-font-size` mutations. Each test cleans up the
+  // inline property at the end so cross-test pollution can't hide a bug.
+  beforeEach(() => {
+    document.documentElement.style.removeProperty('--doc-font-size');
+  });
+
+  async function mountWith(
+    ipc: Ipc,
+    activeId = 't-1',
+    path = '/docs/x.md',
+  ): Promise<{ root: HTMLElement; handle: any }> {
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    let ids: string[] = [activeId];
+    (ipc.listOpenDocuments as any).mockImplementation(() =>
+      Promise.resolve(ids.map((id) => ({ id, path }))),
+    );
+    const handle = await mountWorkspace(root, ipc);
+    handle.setActive({
+      kind: 'document',
+      tab_id: activeId,
+      path,
+      html: '<p>hi</p>',
+      threads: [],
+    });
+    await handle.refresh();
+    return { root, handle };
+  }
+
+  it('registers listeners for the three font CustomEvents on document', async () => {
+    const ipc = makeIpc();
+    await mountWith(ipc);
+    // After mount, the listeners exist — firing each fires the helper which
+    // ultimately mutates `:root.style.--doc-font-size`. Just verify the
+    // increment path mutates the inline CSS property.
+    document.dispatchEvent(new CustomEvent('mdviewer:font-increase'));
+    expect(document.documentElement.style.getPropertyValue('--doc-font-size')).toBe('15px');
+
+    document.dispatchEvent(new CustomEvent('mdviewer:font-decrease'));
+    expect(document.documentElement.style.getPropertyValue('--doc-font-size')).toBe('14px');
+
+    document.dispatchEvent(new CustomEvent('mdviewer:font-reset'));
+    expect(document.documentElement.style.getPropertyValue('--doc-font-size')).toBe('');
+  });
+
+  it('clamps to [10, 24]: at 10 px, decrease is a no-op (no IPC, value stays 10)', async () => {
+    vi.useFakeTimers();
+    const ipc = makeIpc();
+    (ipc.getDocPref as any).mockResolvedValue({ font_size_px: 10 });
+    const { root } = await mountWith(ipc);
+    expect(document.documentElement.style.getPropertyValue('--doc-font-size')).toBe('10px');
+
+    document.dispatchEvent(new CustomEvent('mdviewer:font-decrease'));
+    expect(document.documentElement.style.getPropertyValue('--doc-font-size')).toBe('10px');
+    vi.advanceTimersByTime(200);
+    expect(ipc.setDocPref).not.toHaveBeenCalled();
+
+    const readout = root.querySelector<HTMLButtonElement>('[data-test="font-readout"]')!;
+    expect(readout.textContent).toBe('10');
+    const dec = root.querySelector<HTMLButtonElement>('[data-action="font-decrease"]')!;
+    expect(dec.disabled).toBe(true);
+    vi.useRealTimers();
+  });
+
+  it('clamps to [10, 24]: at 24 px, increase is a no-op (no IPC, value stays 24)', async () => {
+    vi.useFakeTimers();
+    const ipc = makeIpc();
+    (ipc.getDocPref as any).mockResolvedValue({ font_size_px: 24 });
+    const { root } = await mountWith(ipc);
+    expect(document.documentElement.style.getPropertyValue('--doc-font-size')).toBe('24px');
+
+    document.dispatchEvent(new CustomEvent('mdviewer:font-increase'));
+    expect(document.documentElement.style.getPropertyValue('--doc-font-size')).toBe('24px');
+    vi.advanceTimersByTime(200);
+    expect(ipc.setDocPref).not.toHaveBeenCalled();
+
+    const readout = root.querySelector<HTMLButtonElement>('[data-test="font-readout"]')!;
+    expect(readout.textContent).toBe('24');
+    const inc = root.querySelector<HTMLButtonElement>('[data-action="font-increase"]')!;
+    expect(inc.disabled).toBe(true);
+    vi.useRealTimers();
+  });
+
+  it('debounce: rapid-fire 5 increases coalesce to one setDocPref call after 150 ms with the final value', async () => {
+    vi.useFakeTimers();
+    const ipc = makeIpc();
+    const { root } = await mountWith(ipc); // starts at 14
+    for (let i = 0; i < 5; i++) {
+      document.dispatchEvent(new CustomEvent('mdviewer:font-increase'));
+    }
+    // Before the timer fires, setDocPref must not have been called yet.
+    expect(ipc.setDocPref).not.toHaveBeenCalled();
+    expect(document.documentElement.style.getPropertyValue('--doc-font-size')).toBe('19px');
+
+    vi.advanceTimersByTime(150);
+    // Exactly one IPC call with the final value.
+    expect(ipc.setDocPref).toHaveBeenCalledTimes(1);
+    expect(ipc.setDocPref).toHaveBeenCalledWith('/docs/x.md', { font_size_px: 19 });
+    const readout = root.querySelector<HTMLButtonElement>('[data-test="font-readout"]')!;
+    expect(readout.textContent).toBe('19');
+    vi.useRealTimers();
+  });
+
+  it('reset: removes the inline property AND calls deleteDocPref after 150 ms', async () => {
+    vi.useFakeTimers();
+    const ipc = makeIpc();
+    (ipc.getDocPref as any).mockResolvedValue({ font_size_px: 18 });
+    const { root } = await mountWith(ipc);
+    expect(document.documentElement.style.getPropertyValue('--doc-font-size')).toBe('18px');
+
+    document.dispatchEvent(new CustomEvent('mdviewer:font-reset'));
+    // Inline property cleared synchronously so the cascade re-applies.
+    expect(document.documentElement.style.getPropertyValue('--doc-font-size')).toBe('');
+    // Readout falls back to global default (14) immediately.
+    const readout = root.querySelector<HTMLButtonElement>('[data-test="font-readout"]')!;
+    expect(readout.textContent).toBe('14');
+
+    expect(ipc.deleteDocPref).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(150);
+    expect(ipc.deleteDocPref).toHaveBeenCalledTimes(1);
+    expect(ipc.deleteDocPref).toHaveBeenCalledWith('/docs/x.md');
+    vi.useRealTimers();
+  });
+
+  it('tab activation: getDocPref returns {font_size_px: 18} → sets :root --doc-font-size to 18px', async () => {
+    const ipc = makeIpc();
+    (ipc.getDocPref as any).mockResolvedValue({ font_size_px: 18 });
+    const { root } = await mountWith(ipc);
+    expect(ipc.getDocPref).toHaveBeenCalledWith('/docs/x.md');
+    expect(document.documentElement.style.getPropertyValue('--doc-font-size')).toBe('18px');
+    const readout = root.querySelector<HTMLButtonElement>('[data-test="font-readout"]')!;
+    expect(readout.textContent).toBe('18');
+  });
+
+  it('tab activation: getDocPref returns null → REMOVES the inline --doc-font-size property', async () => {
+    const ipc = makeIpc();
+    // Pre-pollute the inline property to ensure activation actually removes it.
+    document.documentElement.style.setProperty('--doc-font-size', '20px');
+    (ipc.getDocPref as any).mockResolvedValue(null);
+    const { root } = await mountWith(ipc);
+    expect(document.documentElement.style.getPropertyValue('--doc-font-size')).toBe('');
+    const readout = root.querySelector<HTMLButtonElement>('[data-test="font-readout"]')!;
+    expect(readout.textContent).toBe('14');
+  });
+
+  it('mdviewer:settings-changed: re-renders readout when active tab has NO override', async () => {
+    const ipc = makeIpc();
+    (ipc.getDocPref as any).mockResolvedValue(null);
+    const { root } = await mountWith(ipc);
+    let readout = root.querySelector<HTMLButtonElement>('[data-test="font-readout"]')!;
+    expect(readout.textContent).toBe('14');
+
+    document.dispatchEvent(
+      new CustomEvent('mdviewer:settings-changed', {
+        detail: {
+          appearance: { theme: 'light', font_size_px: 17, line_height: 1.5, density: 'comfortable' },
+          comments: { show_resolved: false, sidecar_pattern: '{name}.md.comments.json', reattachment_confidence: 75, auto_merge: 'manual' },
+          editor: {},
+        },
+      }),
+    );
+
+    readout = root.querySelector<HTMLButtonElement>('[data-test="font-readout"]')!;
+    expect(readout.textContent).toBe('17');
+  });
+
+  it('mdviewer:settings-changed: does NOT touch the readout when active tab HAS an override', async () => {
+    const ipc = makeIpc();
+    (ipc.getDocPref as any).mockResolvedValue({ font_size_px: 18 });
+    const { root } = await mountWith(ipc);
+    let readout = root.querySelector<HTMLButtonElement>('[data-test="font-readout"]')!;
+    expect(readout.textContent).toBe('18');
+
+    document.dispatchEvent(
+      new CustomEvent('mdviewer:settings-changed', {
+        detail: {
+          appearance: { theme: 'light', font_size_px: 17, line_height: 1.5, density: 'comfortable' },
+          comments: { show_resolved: false, sidecar_pattern: '{name}.md.comments.json', reattachment_confidence: 75, auto_merge: 'manual' },
+          editor: {},
+        },
+      }),
+    );
+
+    readout = root.querySelector<HTMLButtonElement>('[data-test="font-readout"]')!;
+    // Readout stays at the override value because the active tab has one.
+    expect(readout.textContent).toBe('18');
+  });
+
+  it('untitled / scratch tabs (no path) skip the IPC persist path entirely', async () => {
+    vi.useFakeTimers();
+    const ipc = makeIpc();
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    (ipc.listOpenDocuments as any).mockResolvedValue([
+      { id: 't-untitled', path: '' },
+    ]);
+    const handle = await mountWorkspace(root, ipc);
+    // setActive without a path → activeTab.path is empty/undefined.
+    handle.setActive({
+      kind: 'document',
+      tab_id: 't-untitled',
+      path: '',
+      html: '<p>hi</p>',
+      threads: [],
+    });
+    await handle.refresh();
+
+    // getDocPref is skipped for empty path (no on-disk path = nothing to read).
+    expect(ipc.getDocPref).not.toHaveBeenCalled();
+
+    document.dispatchEvent(new CustomEvent('mdviewer:font-increase'));
+    expect(document.documentElement.style.getPropertyValue('--doc-font-size')).toBe('15px');
+    vi.advanceTimersByTime(200);
+    // No persist call for untitled tabs.
+    expect(ipc.setDocPref).not.toHaveBeenCalled();
+
+    document.dispatchEvent(new CustomEvent('mdviewer:font-reset'));
+    vi.advanceTimersByTime(200);
+    expect(ipc.deleteDocPref).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it('toolbar +/- bound state updates after applyFontDelta crosses a bound', async () => {
+    vi.useFakeTimers();
+    const ipc = makeIpc();
+    (ipc.getDocPref as any).mockResolvedValue({ font_size_px: 23 });
+    const { root } = await mountWith(ipc);
+    const inc = root.querySelector<HTMLButtonElement>('[data-action="font-increase"]')!;
+    const dec = root.querySelector<HTMLButtonElement>('[data-action="font-decrease"]')!;
+    expect(inc.disabled).toBe(false);
+
+    document.dispatchEvent(new CustomEvent('mdviewer:font-increase'));
+    // Now at 24 — increase becomes disabled with the bound title.
+    expect(inc.disabled).toBe(true);
+    expect(inc.getAttribute('title')).toBe('Already at maximum (24 px)');
+    expect(dec.disabled).toBe(false);
+    vi.useRealTimers();
   });
 });
