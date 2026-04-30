@@ -10,7 +10,10 @@ export type Action =
   | 'toggle_sidebar'
   | 'resolve_thread'
   | 'toggle_dark'
-  | 'open_settings';
+  | 'open_settings'
+  | 'font_increase'
+  | 'font_decrease'
+  | 'font_reset';
 
 export type ActionHandler = (a: Action) => void;
 
@@ -52,12 +55,62 @@ export function canonical(combo: string): string {
     .join('+');
 }
 
+/**
+ * Top-row shifted-symbol fold table.
+ *
+ * On a US Mac keyboard the user physically presses `Cmd+Shift+=` to send
+ * "+" — the raw KeyboardEvent is `{shiftKey: true, key: "+"}`. Without
+ * folding, that canonicalizes to `mod+shift++` and never matches the
+ * `Mod+=` binding the user typed in Settings. The fix: when `ev.key` is one
+ * of the shifted partners listed here, replace it with the unshifted
+ * partner AND drop the `shift` token. The user's `Mod+=` binding then
+ * matches both physical keypresses.
+ *
+ * Only the top-row symbol set is folded. Letter keys (`Mod+Shift+A`) and
+ * symbols not in this table (e.g. arrow keys) keep their `shift` token so
+ * users can still bind explicit `Mod+Shift+M` for actions like
+ * resolve_thread.
+ */
+const SHIFTED_SYMBOL_FOLD: Readonly<Record<string, string>> = Object.freeze({
+  '+': '=',
+  _: '-',
+  ')': '0',
+  '(': '9',
+  '*': '8',
+  '&': '7',
+  '^': '6',
+  '%': '5',
+  $: '4',
+  '#': '3',
+  '@': '2',
+  '!': '1',
+  '~': '`',
+  '}': ']',
+  '{': '[',
+  ':': ';',
+  '"': "'",
+  '<': ',',
+  '>': '.',
+  '?': '/',
+  '|': '\\',
+});
+
 export function canonicalFromEvent(ev: KeyboardEvent): string {
   const parts: string[] = [];
   if (ev.metaKey || ev.ctrlKey) parts.push('mod');
-  if (ev.shiftKey) parts.push('shift');
+  let shifted = ev.shiftKey;
+  let key = ev.key;
+  // Fold shifted top-row symbols back to their unshifted partners. The
+  // shift token is dropped so `Cmd+Shift+=` (key="+") and the rare
+  // `Cmd+=` (key="=", no shift) collapse onto the same canonical form.
+  const folded = SHIFTED_SYMBOL_FOLD[key];
+  if (folded !== undefined) {
+    key = folded;
+    shifted = false;
+  }
+  if (shifted) parts.push('shift');
   if (ev.altKey) parts.push('alt');
-  parts.push(ev.key.toLowerCase());
+  parts.push(key.toLowerCase());
   return parts.sort().join('+');
 }
 

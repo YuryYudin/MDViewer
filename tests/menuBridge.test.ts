@@ -35,6 +35,17 @@ describe('menuBridge', () => {
     expect(MENU_ACTION_TO_EVENT['save-file']).toBe('mdviewer:save-active');
   });
 
+  it('View → Zoom items map to the three font-zoom CustomEvents', () => {
+    // The native View menu uses kebab-case action ids (`zoom-in`, `zoom-out`,
+    // `zoom-reset`) per `menu_id_to_action`. The bridge translates them to
+    // the three distinct CustomEvent names the Workspace listens for —
+    // distinct events instead of one + delta payload because the bridge's
+    // contract is `{ actionString -> eventName }` with no detail payload.
+    expect(MENU_ACTION_TO_EVENT['zoom-in']).toBe('mdviewer:font-increase');
+    expect(MENU_ACTION_TO_EVENT['zoom-out']).toBe('mdviewer:font-decrease');
+    expect(MENU_ACTION_TO_EVENT['zoom-reset']).toBe('mdviewer:font-reset');
+  });
+
   it('dispatchMenuAction fires the matching CustomEvent and reports the name', () => {
     const handler = vi.fn();
     document.addEventListener('mdviewer:open-settings', handler, { once: true });

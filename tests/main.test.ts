@@ -229,6 +229,50 @@ describe('main()', () => {
     }
   });
 
+  it('font_increase keymap action dispatches mdviewer:font-increase', async () => {
+    fakeIpc.getSettings.mockResolvedValueOnce(
+      settingsWith({ shortcuts: { font_increase: 'Mod+=' } }),
+    );
+    const { main } = await import('../src/main');
+    await main();
+    const handler = vi.fn();
+    document.addEventListener('mdviewer:font-increase', handler, { once: true });
+    // Use the natural physical press: Cmd+Shift+= produces key="+". The
+    // shifted-symbol fold rewrites it to mod+= so it matches Mod+=.
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { metaKey: true, shiftKey: true, key: '+' }),
+    );
+    expect(handler).toHaveBeenCalled();
+  });
+
+  it('font_decrease keymap action dispatches mdviewer:font-decrease', async () => {
+    fakeIpc.getSettings.mockResolvedValueOnce(
+      settingsWith({ shortcuts: { font_decrease: 'Mod+-' } }),
+    );
+    const { main } = await import('../src/main');
+    await main();
+    const handler = vi.fn();
+    document.addEventListener('mdviewer:font-decrease', handler, { once: true });
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { metaKey: true, shiftKey: true, key: '_' }),
+    );
+    expect(handler).toHaveBeenCalled();
+  });
+
+  it('font_reset keymap action dispatches mdviewer:font-reset', async () => {
+    fakeIpc.getSettings.mockResolvedValueOnce(
+      settingsWith({ shortcuts: { font_reset: 'Mod+0' } }),
+    );
+    const { main } = await import('../src/main');
+    await main();
+    const handler = vi.fn();
+    document.addEventListener('mdviewer:font-reset', handler, { once: true });
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { metaKey: true, shiftKey: true, key: ')' }),
+    );
+    expect(handler).toHaveBeenCalled();
+  });
+
   it('open_file keymap action dispatches mdviewer:open-file', async () => {
     // Used to click `[data-test="file-input"]` directly. That input only
     // exists on StartPage, so the shortcut died once a doc was open. Now
