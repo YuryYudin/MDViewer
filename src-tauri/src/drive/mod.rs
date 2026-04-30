@@ -6,6 +6,8 @@
 
 pub mod api;
 pub mod auth;
+pub mod detect;
+pub mod file_id;
 pub mod keyring;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
