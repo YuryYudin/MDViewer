@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use std::time::SystemTime;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
 #[ts(export)]
 pub struct Comment {
     pub id: String,
@@ -43,6 +43,14 @@ pub struct Comment {
     /// RFC3339-ish timestamp; the exact format is opaque to consumers and only
     /// needs to be sortable lexicographically (which the `{secs}Z` form is).
     pub created_at: String,
+    /// Drive-side author email (None for local-only comments). Used by C1's
+    /// collaborator-avatar matching.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_email: Option<String>,
+    /// Drive-side comment id (None for offline-queued comments awaiting
+    /// replay). Used by B6's Pending pill.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drive_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
@@ -160,6 +168,7 @@ impl CommentsStore {
                 color: n.first_comment.color,
                 body: n.first_comment.body,
                 created_at: now_rfc3339(),
+                ..Default::default()
             }],
             resolved: false,
             resolved_at: None,
@@ -186,6 +195,7 @@ impl CommentsStore {
             color: n.color,
             body: n.body,
             created_at: now_rfc3339(),
+            ..Default::default()
         });
         self.emit(ChangeEvent::ReplyPosted);
         Ok(())
