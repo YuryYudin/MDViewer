@@ -16,6 +16,7 @@
 
 use crate::anchor::{self, Anchor, ResolveOutcome};
 use crate::comments::{CommentsStore, Thread};
+use crate::doc_prefs::DocPrefsStore;
 use crate::document::{render_markdown, RenderOptions, RenderResult};
 use crate::recents::RecentsStore;
 use crate::sidecar::{load_sidecar, sidecar_path};
@@ -98,6 +99,11 @@ pub struct ExportResult {
 pub struct Workspace {
     settings: SettingsStore,
     recents: RecentsStore,
+    /// A3 (font-size phase): per-document font-size overrides, keyed by
+    /// canonical path. Owned by Workspace so the IPC handlers borrow a
+    /// single shared store — multiple stores would race on the same JSON
+    /// file. See `src/doc_prefs.rs` for the on-disk schema.
+    doc_prefs: DocPrefsStore,
     tabs: HashMap<String, Tab>,
     order: Vec<String>,
     active: Option<String>,
@@ -113,6 +119,7 @@ impl Workspace {
         Ok(Self {
             settings: SettingsStore::open(data_dir)?,
             recents: RecentsStore::open(data_dir)?,
+            doc_prefs: DocPrefsStore::open(data_dir)?,
             tabs: HashMap::new(),
             order: Vec::new(),
             active: None,
@@ -322,6 +329,19 @@ impl Workspace {
     }
     pub fn recents_store(&self) -> &RecentsStore {
         &self.recents
+    }
+
+    /// A3: read-only accessor for the `get_doc_pref` IPC handler.
+    pub fn doc_prefs(&self) -> &DocPrefsStore {
+        &self.doc_prefs
+    }
+
+    /// A3: writable accessor for the `set_doc_pref` / `delete_doc_pref` IPC
+    /// handlers. The handlers must go through this single store rather than
+    /// constructing their own — otherwise concurrent saves would race on the
+    /// same `doc_prefs.json` file.
+    pub fn doc_prefs_mut(&mut self) -> &mut DocPrefsStore {
+        &mut self.doc_prefs
     }
 
     /// C3: read-only accessor for the export_document IPC handler. Pairs

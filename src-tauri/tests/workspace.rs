@@ -1,3 +1,4 @@
+use mdviewer_lib::doc_prefs::DocPref;
 use mdviewer_lib::workspace::{OpenOpts, OpenOutcome, Workspace};
 use std::fs;
 use tempfile::TempDir;
@@ -361,6 +362,51 @@ fn reopen_already_open_tab_with_diverged_disk_returns_conflict() {
         }
         OpenOutcome::Document(_) => panic!("expected Conflict, got Document"),
     }
+}
+
+#[test]
+fn workspace_owns_doc_prefs_store_round_trip() {
+    // A3: Workspace must construct and own a DocPrefsStore alongside the
+    // existing settings/recents stores. The IPC handlers access it through
+    // workspace.doc_prefs() / doc_prefs_mut(); make sure that round-trip
+    // behaves like calling DocPrefsStore directly.
+    let (mut ws, tmp) = fresh();
+    let doc = tmp.path().join("note.md");
+    fs::write(&doc, "# Hi").unwrap();
+
+    // Brand-new workspace has no override for any path.
+    assert_eq!(ws.doc_prefs().load(&doc), None);
+
+    // Save through the mutable accessor; read back via the immutable one.
+    ws.doc_prefs_mut()
+        .save(&doc, DocPref { font_size_px: 18 })
+        .unwrap();
+    assert_eq!(ws.doc_prefs().load(&doc), Some(DocPref { font_size_px: 18 }));
+
+    // Delete clears the entry.
+    ws.doc_prefs_mut().delete(&doc).unwrap();
+    assert_eq!(ws.doc_prefs().load(&doc), None);
+}
+
+#[test]
+fn workspace_doc_prefs_persists_across_reopens() {
+    // Workspace::new must pass its data_dir to DocPrefsStore::open so that a
+    // second Workspace constructed against the same data_dir sees the saved
+    // entries. Without this wiring the override would live only in the
+    // process that wrote it.
+    let tmp = TempDir::new().unwrap();
+    let doc = tmp.path().join("persist.md");
+    fs::write(&doc, "x").unwrap();
+
+    {
+        let mut ws = Workspace::new(tmp.path()).unwrap();
+        ws.doc_prefs_mut()
+            .save(&doc, DocPref { font_size_px: 20 })
+            .unwrap();
+    }
+
+    let ws2 = Workspace::new(tmp.path()).unwrap();
+    assert_eq!(ws2.doc_prefs().load(&doc), Some(DocPref { font_size_px: 20 }));
 }
 
 #[test]
