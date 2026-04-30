@@ -61,13 +61,22 @@ describe('Workspace shell — wireframe layout', () => {
     expect(root.querySelector('[data-region="titlebar"]')).toBeNull();
   });
 
-  it('status bar holds profile chip and version label, in that order', async () => {
+  it('status bar holds profile chip, drive status pill, and version label, in that order', async () => {
+    // A8 inserted the Drive status pill between the spacer and the version
+    // label so it sits on the right side of the bar, mirroring the
+    // wireframe-05 status row.
     const root = document.createElement('div');
     await mountWorkspace(root, ipc());
     const status = root.querySelector<HTMLElement>('[data-region="status"]')!;
     const order = Array.from(status.children)
       .map((c) => (c as HTMLElement).getAttribute('data-test') ?? c.className);
-    expect(order).toEqual(['user-name', 'link-preview', 'grow', 'version-label']);
+    expect(order).toEqual([
+      'user-name',
+      'link-preview',
+      'grow',
+      'drive-status-pill',
+      'version-label',
+    ]);
   });
 
   it('renders the product version via app_info into the status bar', async () => {

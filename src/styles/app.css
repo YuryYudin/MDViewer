@@ -105,6 +105,26 @@ body {
   color: var(--text-faint);
   font-size: 11.5px;
 }
+/* A8: Drive status pill — sits to the right of the spacer, before the
+ * version label. Background flips to the warn palette when offline so
+ * "queued / offline" states stand out without being alarming. The :empty
+ * selector hides the pill before the first DriveStatus has been received
+ * (avoids a stray separator on cold boot). */
+.workspace > [data-region='status'] .drive-status-pill {
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 10px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  margin-right: 8px;
+}
+.workspace > [data-region='status'] .drive-status-pill[data-online='false'] {
+  background: var(--warn-bg);
+  color: var(--warn-border);
+}
+.workspace > [data-region='status'] .drive-status-pill:empty {
+  display: none;
+}
 
 /* When the body holds a Document + sidebar, lay them out side-by-side
  * via flex. Document.ts mounts its tree first; a sibling

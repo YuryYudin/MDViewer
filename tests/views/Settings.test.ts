@@ -1,4 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+
+// Mock the Tauri core invoke so the Drive section's module-level wrappers
+// (driveConnect / driveDisconnect / driveStatus) round-trip against a stub
+// instead of throwing in jsdom. The mock is hoisted before the imports below
+// so `mountSettings → mountDriveSettings → driveConnect` resolves cleanly.
+const driveInvoke = vi.fn();
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: (...args: unknown[]) => driveInvoke(...args),
+}));
+
 import { mountSettings } from '../../src/views/Settings';
 import type { Settings } from '../../src/ipc';
 
@@ -24,7 +34,40 @@ function defaultSettings(): Settings {
     },
     advanced: { sync_provider: null, verbose_logs: false },
     shortcuts: { open_file: 'CmdOrCtrl+O', save_file: 'CmdOrCtrl+S' },
+    // A8 baseline: feature_enabled = false matches the production default
+    // (C5 flips it on). Tests that exercise the Drive section build the
+    // settings with feature_enabled = true explicitly.
+    cloud: {
+      drive: {
+        feature_enabled: false,
+        connected: false,
+        account_email: null,
+        backend_mode: 'auto',
+        poll_interval_active_secs: 5n,
+        poll_interval_unfocused_secs: 30n,
+        custom_oauth_client_id: null,
+        detect_toast_suppressed: false,
+      },
+    },
   };
+}
+
+function settingsWithDrive(overrides: Partial<Settings['cloud']['drive']> = {}): Settings {
+  const s = defaultSettings();
+  s.cloud = {
+    drive: {
+      feature_enabled: true,
+      connected: false,
+      account_email: null,
+      backend_mode: 'auto',
+      poll_interval_active_secs: 5n,
+      poll_interval_unfocused_secs: 30n,
+      custom_oauth_client_id: null,
+      detect_toast_suppressed: false,
+      ...overrides,
+    },
+  };
+  return s;
 }
 
 function makeIpc(overrides: Partial<Record<string, any>> = {}) {
@@ -431,5 +474,152 @@ describe('Settings', () => {
     await flush();
     expect(ipc.setSettings).toHaveBeenCalledTimes(1);
     expect(ipc.setSettings.mock.calls[0][0].profile.display_name).toBe('ABC');
+  });
+});
+
+describe('Drive section', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    driveInvoke.mockReset();
+    driveInvoke.mockResolvedValue({
+      connected: false,
+      account_email: null,
+      online: true,
+      pending_count: 0,
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('omits the Drive section entirely when feature_enabled=false', async () => {
+    const root = document.createElement('div');
+    // defaultSettings() seeds feature_enabled=false (production default).
+    await mountSettings(root, makeIpc() as any);
+    expect(root.querySelector('[data-section="drive"]')).toBeFalsy();
+    expect(root.querySelector('[data-testid="drive-section"]')).toBeFalsy();
+  });
+
+  it('renders the Drive section under feature_enabled=true', async () => {
+    const root = document.createElement('div');
+    const ipc = makeIpc({ getSettings: vi.fn().mockResolvedValue(settingsWithDrive()) });
+    await mountSettings(root, ipc as any);
+    const section = root.querySelector('[data-testid="drive-section"]');
+    expect(section).toBeTruthy();
+    expect(section!.textContent).toMatch(/Drive integration/i);
+  });
+
+  it('renders Connect button when not connected', async () => {
+    const root = document.createElement('div');
+    const ipc = makeIpc({
+      getSettings: vi.fn().mockResolvedValue(settingsWithDrive({ connected: false })),
+    });
+    await mountSettings(root, ipc as any);
+    expect(root.querySelector('[data-testid="drive-connect-btn"]')).toBeTruthy();
+    expect(root.querySelector('[data-testid="drive-disconnect-btn"]')).toBeFalsy();
+    // The wireframe-01 "Not connected" copy is part of the contract.
+    expect(root.querySelector('[data-testid="drive-section"]')!.textContent).toMatch(
+      /Not connected/i,
+    );
+  });
+
+  it('renders account chip and Disconnect when connected', async () => {
+    const root = document.createElement('div');
+    const ipc = makeIpc({
+      getSettings: vi.fn().mockResolvedValue(
+        settingsWithDrive({ connected: true, account_email: 'alice@example.com' }),
+      ),
+    });
+    await mountSettings(root, ipc as any);
+    const section = root.querySelector('[data-testid="drive-section"]')!;
+    expect(section.textContent).toContain('alice@example.com');
+    expect(root.querySelector('[data-testid="drive-disconnect-btn"]')).toBeTruthy();
+    expect(root.querySelector('[data-testid="drive-connect-btn"]')).toBeFalsy();
+  });
+
+  it('reveals the BYO client_id input under the Advanced toggle', async () => {
+    const root = document.createElement('div');
+    const ipc = makeIpc({ getSettings: vi.fn().mockResolvedValue(settingsWithDrive()) });
+    await mountSettings(root, ipc as any);
+    // The BYO field lives inside <details>; before opening, the field is in
+    // the DOM but not visible. The test asserts that the toggle exists and
+    // that opening it makes the field present.
+    const advanced = root.querySelector<HTMLDetailsElement>('[data-testid="drive-advanced-toggle"]')!;
+    expect(advanced).toBeTruthy();
+    expect(advanced.tagName.toLowerCase()).toBe('details');
+    expect(advanced.open).toBe(false);
+    advanced.open = true;
+    advanced.dispatchEvent(new Event('toggle'));
+    expect(root.querySelector('[data-testid="drive-byo-client-id"]')).toBeTruthy();
+  });
+
+  it('Connect button calls drive_connect via IPC', async () => {
+    const root = document.createElement('div');
+    const ipc = makeIpc({ getSettings: vi.fn().mockResolvedValue(settingsWithDrive()) });
+    await mountSettings(root, ipc as any);
+    const btn = root.querySelector<HTMLButtonElement>('[data-testid="drive-connect-btn"]')!;
+    btn.click();
+    // The driveConnect wrapper invokes 'drive_connect' with no args.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(driveInvoke).toHaveBeenCalledWith('drive_connect');
+  });
+
+  it('Disconnect button calls drive_disconnect via IPC', async () => {
+    const root = document.createElement('div');
+    const ipc = makeIpc({
+      getSettings: vi.fn().mockResolvedValue(
+        settingsWithDrive({ connected: true, account_email: 'alice@example.com' }),
+      ),
+    });
+    await mountSettings(root, ipc as any);
+    const btn = root.querySelector<HTMLButtonElement>('[data-testid="drive-disconnect-btn"]')!;
+    btn.click();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(driveInvoke).toHaveBeenCalledWith('drive_disconnect');
+  });
+
+  it('changing the BYO client_id input persists via setSettings', async () => {
+    const root = document.createElement('div');
+    const ipc = makeIpc({ getSettings: vi.fn().mockResolvedValue(settingsWithDrive()) });
+    await mountSettings(root, ipc as any);
+    const advanced = root.querySelector<HTMLDetailsElement>('[data-testid="drive-advanced-toggle"]')!;
+    advanced.open = true;
+    advanced.dispatchEvent(new Event('toggle'));
+    const cid = root.querySelector<HTMLInputElement>('[data-testid="drive-byo-client-id"]')!;
+    cid.value = '999.apps.googleusercontent.com';
+    cid.dispatchEvent(new Event('input'));
+    // Debounced — wait past the timer.
+    vi.advanceTimersByTime(260);
+    await Promise.resolve();
+    await Promise.resolve();
+    const calls = (ipc.setSettings as any).mock.calls;
+    const last = calls[calls.length - 1][0] as Settings;
+    expect(last.cloud.drive.custom_oauth_client_id).toBe('999.apps.googleusercontent.com');
+  });
+
+  it('clearing the BYO client_id input persists null (not an empty string)', async () => {
+    const root = document.createElement('div');
+    const ipc = makeIpc({
+      getSettings: vi
+        .fn()
+        .mockResolvedValue(settingsWithDrive({ custom_oauth_client_id: 'old.apps.googleusercontent.com' })),
+    });
+    await mountSettings(root, ipc as any);
+    const advanced = root.querySelector<HTMLDetailsElement>('[data-testid="drive-advanced-toggle"]')!;
+    advanced.open = true;
+    advanced.dispatchEvent(new Event('toggle'));
+    const cid = root.querySelector<HTMLInputElement>('[data-testid="drive-byo-client-id"]')!;
+    expect(cid.value).toBe('old.apps.googleusercontent.com');
+    cid.value = '';
+    cid.dispatchEvent(new Event('input'));
+    vi.advanceTimersByTime(260);
+    await Promise.resolve();
+    await Promise.resolve();
+    const calls = (ipc.setSettings as any).mock.calls;
+    const last = calls[calls.length - 1][0] as Settings;
+    expect(last.cloud.drive.custom_oauth_client_id).toBeNull();
   });
 });

@@ -5,6 +5,7 @@ import { mountDocument } from './Document';
 import { mountCommentsSidebar } from './CommentsSidebar';
 import { mountConflict } from './Conflict';
 import { mountShareDialog } from './ShareDialog';
+import { mountDriveStatus } from './DriveStatus';
 
 /**
  * Per-document font-size bounds. Match the Settings panel slider's range
@@ -103,6 +104,23 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
   const grow = document.createElement('span');
   grow.className = 'grow';
   status.appendChild(grow);
+  // A8: Drive status pill — sits between the spacer and the version label
+  // on the right side of the status bar. mountDriveStatus subscribes to
+  // `drive-status-changed` events from the Rust side; the host element
+  // owns its own data-connected/data-online attributes for theming.
+  const driveStatusHost = document.createElement('span');
+  status.appendChild(driveStatusHost);
+  const unmountDriveStatus = mountDriveStatus(driveStatusHost);
+  // Tie the unsubscribe to mountAbort so a re-mount (production no-op,
+  // common in jsdom) doesn't leak the listener. AbortController has no
+  // direct callback API; piggyback on the abort event.
+  mountAbort.signal.addEventListener('abort', () => {
+    try {
+      unmountDriveStatus();
+    } catch {
+      // best-effort cleanup; never let a stale unsub crash a re-mount.
+    }
+  });
   const versionText = document.createElement('span');
   versionText.setAttribute('data-test', 'version-label');
   versionText.className = 'version-label';

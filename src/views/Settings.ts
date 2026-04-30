@@ -1,4 +1,5 @@
 import type { Ipc, Settings, BuildInfo } from '../ipc';
+import { mountDriveSettings } from './DriveSettings';
 
 /**
  * Mount the full Settings view (wireframe 11). Renders 7 sections:
@@ -41,6 +42,17 @@ export async function mountSettings(root: HTMLElement, ipc: Ipc): Promise<void> 
   view.appendChild(buildComments(ipc, settings));
   view.appendChild(buildShortcuts(settings));
   view.appendChild(buildAdvanced(ipc, settings));
+  // A8: Drive sub-section is gated on the feature flag. The flag flips to
+  // `true` in Phase 3 (C5); until then the entire UI surface is hidden so
+  // users can't reach a half-built feature. Defensive optional access —
+  // older settings.toml files (written before A1 added the cloud branch)
+  // can deserialize without the cloud key when serde defaults are used,
+  // and the test fixtures sometimes omit it.
+  if (settings.cloud?.drive?.feature_enabled) {
+    mountDriveSettings(view, settings, {
+      saveSettings: (next) => ipc.setSettings(next),
+    });
+  }
   view.appendChild(buildAbout(info));
   root.appendChild(view);
 }

@@ -805,3 +805,87 @@ describe('Workspace — comments-sidebar toggle', () => {
     expect(body.getAttribute('data-sidebar')).toBe('hidden');
   });
 });
+
+describe('Workspace — Drive status pill (A8)', () => {
+  it('mounts the Drive status pill in the status bar', async () => {
+    const root = document.createElement('div');
+    await mountWorkspace(root, makeIpc());
+    const status = root.querySelector('[data-region="status"]')!;
+    const pill = status.querySelector('[data-test="drive-status-pill"]');
+    expect(pill).toBeTruthy();
+    // The pill carries .drive-status-pill so app.css can target it.
+    expect(pill!.classList.contains('drive-status-pill')).toBe(true);
+  });
+
+  it('subscribes to drive-status-changed events', async () => {
+    const root = document.createElement('div');
+    await mountWorkspace(root, makeIpc());
+    expect(tauriListeners['drive-status-changed']?.length ?? 0).toBeGreaterThan(0);
+  });
+
+  it('updates the pill text when a drive-status-changed event fires (synced)', async () => {
+    const root = document.createElement('div');
+    await mountWorkspace(root, makeIpc());
+    tauriListeners['drive-status-changed']![0]!({
+      payload: {
+        connected: true,
+        account_email: 'alice@example.com',
+        online: true,
+        pending_count: 0,
+      },
+    });
+    const pill = root.querySelector<HTMLElement>('[data-test="drive-status-pill"]')!;
+    expect(pill.textContent).toMatch(/synced/i);
+    expect(pill.dataset.connected).toBe('true');
+    expect(pill.dataset.online).toBe('true');
+  });
+
+  it('reflects offline state with pending count', async () => {
+    const root = document.createElement('div');
+    await mountWorkspace(root, makeIpc());
+    tauriListeners['drive-status-changed']![0]!({
+      payload: {
+        connected: true,
+        account_email: 'alice@example.com',
+        online: false,
+        pending_count: 3,
+      },
+    });
+    const pill = root.querySelector<HTMLElement>('[data-test="drive-status-pill"]')!;
+    expect(pill.textContent).toMatch(/offline/i);
+    expect(pill.textContent).toContain('3');
+    expect(pill.dataset.online).toBe('false');
+  });
+
+  it('reflects pending uploads when online', async () => {
+    const root = document.createElement('div');
+    await mountWorkspace(root, makeIpc());
+    tauriListeners['drive-status-changed']![0]!({
+      payload: {
+        connected: true,
+        account_email: 'alice@example.com',
+        online: true,
+        pending_count: 5,
+      },
+    });
+    const pill = root.querySelector<HTMLElement>('[data-test="drive-status-pill"]')!;
+    expect(pill.textContent).toMatch(/pending/i);
+    expect(pill.textContent).toContain('5');
+  });
+
+  it('shows "not connected" copy when DriveStatus.connected=false', async () => {
+    const root = document.createElement('div');
+    await mountWorkspace(root, makeIpc());
+    tauriListeners['drive-status-changed']![0]!({
+      payload: {
+        connected: false,
+        account_email: null,
+        online: true,
+        pending_count: 0,
+      },
+    });
+    const pill = root.querySelector<HTMLElement>('[data-test="drive-status-pill"]')!;
+    expect(pill.textContent).toMatch(/not connected/i);
+    expect(pill.dataset.connected).toBe('false');
+  });
+});
