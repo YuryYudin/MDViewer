@@ -4,26 +4,41 @@ import type { WorkspaceState } from './Workspace';
 /**
  * Render the tab strip into `root` based on the supplied workspace state.
  *
- * Each tab is a button that calls `ipc.activateTab(id)` on click. A small "x"
- * inside each tab calls `ipc.closeTab(id)` and stops propagation so closing a
- * tab does not also activate it. A trailing "+" button is provided for
- * opening a new file (the host wires it to the same handler StartPage uses).
+ * Each tab is a button. Clicking the body activates the tab; clicking the
+ * inner "x" closes it (with stopPropagation so closing doesn't also
+ * activate). A trailing "+" button is provided for opening a new file
+ * (the host wires it to the same handler StartPage uses).
  *
  * Tab labels show the file's basename (the regression: we were rendering
  * the opaque tab id, which surfaced a UUID instead of the filename). The
  * full path lives on `title` for hover.
  *
- * `onAfterChange` is fired after activate / close IPCs resolve so the
- * caller (Workspace) can repaint — without this, clicking × removed the
- * tab on the Rust side but left the stale strip on screen.
+ * Two callbacks distinguish the two flows because they need different
+ * follow-up wiring:
+ *
+ * - `onActivate(tab)` — must re-load the document. Workspace caches the
+ *   active tab's payload (html, threads, source); without re-loading via
+ *   `openDocument`, the view re-renders the previous doc on refresh and
+ *   the click appears to do nothing.
+ * - `onAfterClose()` — TabBar already called `ipc.closeTab`; the host
+ *   only needs to repaint the strip.
  *
  * Tab labels use `textContent` so a malicious file path cannot inject markup.
  */
+export interface TabBarCallbacks {
+  /** Called after the user clicks a tab body. The host should activate
+   * the tab AND refresh the cached document payload (typically by calling
+   * `ipc.openDocument(tab.path)` then re-mounting). */
+  onActivate?: (tab: { id: string; path: string }) => void | Promise<void>;
+  /** Called after `ipc.closeTab` resolves. The host repaints. */
+  onAfterClose?: () => void | Promise<void>;
+}
+
 export function mountTabBar(
   root: HTMLElement,
   ipc: Ipc,
   state: WorkspaceState,
-  onAfterChange?: () => void | Promise<void>,
+  callbacks?: TabBarCallbacks,
 ): void {
   root.replaceChildren();
   const strip = document.createElement('div');
@@ -53,15 +68,25 @@ export function mountTabBar(
       ev.stopPropagation();
       void (async () => {
         await ipc.closeTab(tab.id);
-        if (onAfterChange) await onAfterChange();
+        if (callbacks?.onAfterClose) await callbacks.onAfterClose();
       })();
     });
     btn.appendChild(close);
 
     btn.addEventListener('click', () => {
+      // The Rust-side activate is delegated to the host's `onActivate`
+      // callback because activation typically requires re-loading the
+      // document (openDocument) — calling activateTab(id) alone updates
+      // Rust's active id but does NOT refresh the host's cached payload,
+      // so the rendered doc stays stale.
       void (async () => {
-        await ipc.activateTab(tab.id);
-        if (onAfterChange) await onAfterChange();
+        if (callbacks?.onActivate) {
+          await callbacks.onActivate({ id: tab.id, path: tab.path });
+        } else {
+          // Defensive fallback when no host wiring is provided (unit tests
+          // that exercise just the dispatch). Mirrors prior behavior.
+          await ipc.activateTab(tab.id);
+        }
       })();
     });
     strip.appendChild(btn);

@@ -302,10 +302,32 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
     const summaries = await ipc.listOpenDocuments();
     state.tabs = summaries.map((s) => ({ id: s.id, path: s.path }));
     state.activeId = state.tabs.length > 0 ? (state.activeId ?? state.tabs[0].id) : null;
-    // The tab strip's close (×) button needs to repaint the workspace so
-    // the closed tab disappears and StartPage returns when the last tab
-    // closes. mountTabBar fires onAfterChange after closeTab resolves.
-    mountTabBar(tabbar, ipc, state, () => { void refresh(); });
+    // Tab-strip wiring:
+    //   - onActivate: a tab click must reload the document (openDocument
+    //     re-activates an existing tab on the Rust side AND returns its
+    //     OpenResult so we can refresh the cached `activeTab` payload).
+    //     Without this, refresh() re-mounts using the previously-active
+    //     tab's html/threads and the click appears to do nothing.
+    //   - onAfterClose: × already called ipc.closeTab; just repaint so
+    //     the closed tab disappears and StartPage returns when the last
+    //     tab closes.
+    mountTabBar(tabbar, ipc, state, {
+      onActivate: async (tab) => {
+        try {
+          const outcome = await ipc.openDocument(tab.path);
+          state.activeId = tab.id;
+          setActive(outcome);
+        } catch (e) {
+          // openDocument failure (file deleted, permissions changed) shouldn't
+          // wedge the strip — log and refresh so the user sees stale state
+          // rather than a frozen window.
+          // eslint-disable-next-line no-console
+          console.warn('tab activation failed:', e);
+        }
+        await refresh();
+      },
+      onAfterClose: () => { void refresh(); },
+    });
 
     // C2: a pending Conflict outcome wins over both StartPage and Document
     // — the user must resolve it before doing anything else. Conflicts

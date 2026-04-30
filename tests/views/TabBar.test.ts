@@ -124,7 +124,7 @@ describe('TabBar', () => {
     expect(ipc.activateTab).not.toHaveBeenCalled();
   });
 
-  it('fires onAfterChange after closeTab so the workspace can repaint', async () => {
+  it('fires onAfterClose after closeTab so the workspace can repaint', async () => {
     // Regression: clicking × removed the tab on the Rust side but the
     // tab strip never repainted because the workspace had no signal to
     // re-run refresh(). Without this hook the tab stayed visible.
@@ -134,18 +134,24 @@ describe('TabBar', () => {
       tabs: [{ id: 't1', path: '/docs/a.md' }],
       activeId: 't1',
     };
-    const onAfterChange = vi.fn();
-    mountTabBar(root, ipc, state, onAfterChange);
+    const onAfterClose = vi.fn();
+    mountTabBar(root, ipc, state, { onAfterClose });
     (root.querySelector('[data-test="tab-close"]') as HTMLElement).click();
-    // Drain the microtask queue so the async closeTab → onAfterChange
+    // Drain the microtask queue so the async closeTab → onAfterClose
     // chain has a chance to settle.
     await Promise.resolve();
     await Promise.resolve();
     expect(ipc.closeTab).toHaveBeenCalledWith('t1');
-    expect(onAfterChange).toHaveBeenCalled();
+    expect(onAfterClose).toHaveBeenCalled();
   });
 
-  it('fires onAfterChange after activateTab too so the active doc swap repaints', async () => {
+  it('fires onActivate (NOT activateTab) on tab click — host owns the doc swap', async () => {
+    // Regression: clicking another tab called ipc.activateTab(id) which
+    // updates Rust's active id but does NOT refresh the host's cached
+    // document payload. The host has to re-load the doc (typically via
+    // ipc.openDocument(path) which both activates the tab and returns
+    // its OpenResult). Without this, the rendered HTML stayed at the
+    // previously-active tab and the click appeared to do nothing.
     const root = document.createElement('div');
     const ipc = makeIpc();
     const state: WorkspaceState = {
@@ -155,14 +161,38 @@ describe('TabBar', () => {
       ],
       activeId: 't1',
     };
-    const onAfterChange = vi.fn();
-    mountTabBar(root, ipc, state, onAfterChange);
+    const onActivate = vi.fn();
+    mountTabBar(root, ipc, state, { onActivate });
+    const tabs = root.querySelectorAll<HTMLElement>('[data-test="tab"]');
+    tabs[1].click();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(onActivate).toHaveBeenCalledWith({ id: 't2', path: '/docs/b.md' });
+    // ipc.activateTab is NOT called from TabBar when onActivate is
+    // provided — the host owns the activation flow (typically via
+    // openDocument which activates as a side-effect).
+    expect(ipc.activateTab).not.toHaveBeenCalled();
+  });
+
+  it('falls back to ipc.activateTab when no onActivate callback is provided', async () => {
+    // Defensive: without a host wiring (e.g. unit tests that exercise
+    // just the dispatch), TabBar still calls activateTab so behavior
+    // doesn't silently break.
+    const root = document.createElement('div');
+    const ipc = makeIpc();
+    const state: WorkspaceState = {
+      tabs: [
+        { id: 't1', path: '/docs/a.md' },
+        { id: 't2', path: '/docs/b.md' },
+      ],
+      activeId: 't1',
+    };
+    mountTabBar(root, ipc, state);
     const tabs = root.querySelectorAll<HTMLElement>('[data-test="tab"]');
     tabs[1].click();
     await Promise.resolve();
     await Promise.resolve();
     expect(ipc.activateTab).toHaveBeenCalledWith('t2');
-    expect(onAfterChange).toHaveBeenCalled();
   });
 
   it('new-tab + button dispatches mdviewer:open-file on document', () => {

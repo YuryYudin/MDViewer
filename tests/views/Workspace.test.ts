@@ -119,6 +119,58 @@ describe('Workspace', () => {
     expect(root.querySelector('[data-view="start"]')).toBeTruthy();
   });
 
+  it('clicking another tab calls openDocument(path) and swaps the rendered HTML', async () => {
+    // Regression: TabBar's click handler used to call ipc.activateTab(id)
+    // and trigger a workspace refresh. activateTab updates Rust's active
+    // id but does NOT refresh the host's cached payload, so refresh()
+    // re-mounted with the previously-active tab's html and the click
+    // appeared to do nothing. Fix: TabBar now exposes onActivate(tab),
+    // and Workspace wires it to openDocument(tab.path) → setActive →
+    // refresh — same path the recents-click flow takes.
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    const ids = ['t-a', 't-b'];
+    const ipc = makeIpc();
+    (ipc.listOpenDocuments as any).mockImplementation(() =>
+      Promise.resolve(ids.map((id) => ({ id, path: `/docs/${id}.md` }))),
+    );
+    // openDocument returns each tab's distinct html so we can assert the
+    // swap is visible in the DOM.
+    (ipc.openDocument as any).mockImplementation(async (path: string) => {
+      const tabId = path.endsWith('t-a.md') ? 't-a' : 't-b';
+      return {
+        kind: 'document',
+        tab_id: tabId,
+        path,
+        html: `<p data-test="doc-marker">${tabId} content</p>`,
+        threads: [],
+      };
+    });
+    const handle = await mountWorkspace(root, ipc);
+    // Prime: open the first tab via the existing setActive path so the
+    // workspace has a Document mounted before the user clicks the second.
+    handle.setActive({
+      kind: 'document',
+      tab_id: 't-a',
+      path: '/docs/t-a.md',
+      html: '<p data-test="doc-marker">t-a content</p>',
+      threads: [],
+    });
+    await handle.refresh();
+    expect(root.querySelector('[data-test="doc-marker"]')!.textContent).toBe('t-a content');
+
+    // User clicks the second tab.
+    const tabs = root.querySelectorAll<HTMLElement>('[data-test="tab"]');
+    expect(tabs.length).toBe(2);
+    tabs[1].click();
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(ipc.openDocument).toHaveBeenCalledWith('/docs/t-b.md');
+    expect(root.querySelector('[data-test="doc-marker"]')!.textContent).toBe('t-b content');
+
+    document.body.removeChild(root);
+  });
+
   it('refresh() picks up new tabs and replaces StartPage with Document', async () => {
     const root = document.createElement('div');
     let ids: string[] = [];
