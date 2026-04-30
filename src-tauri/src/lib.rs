@@ -33,6 +33,7 @@ pub mod comments;
 pub mod conflict;
 pub mod doc_prefs;
 pub mod document;
+pub mod drive;
 pub mod menu;
 pub mod recents;
 pub mod session;

@@ -56,6 +56,22 @@ base64 = "0.22"
 similar = "2.5"
 walkdir = "2"
 
+# Google Drive integration (added in A1). HTTP client uses rustls (no
+# OpenSSL system dep). `oauth2` drives the PKCE loopback flow. `tiny_http`
+# hosts the localhost redirect listener during the auth round-trip.
+# `urlencoding` builds query strings without pulling a heavy URL crate.
+# `keyring` stores the refresh token in the OS-native secret store with
+# default features off so we avoid async runtimes we don't want; we opt
+# in only to the per-OS native backends we actually use.
+# `tauri-plugin-stronghold` provides an encrypted at-rest fallback for
+# secrets the keyring can't hold.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "multipart"] }
+oauth2 = { version = "4", default-features = false, features = ["reqwest", "rustls-tls"] }
+tauri-plugin-stronghold = "2"
+tiny_http = "0.12"
+urlencoding = "2"
+keyring = { version = "3", default-features = false, features = ["apple-native", "windows-native", "sync-secret-service"] }
+
 # E2E testing on macOS. Optional dep gated behind the `e2e` feature so
 # release bundles built without the feature never expose a WebDriver port.
 # The debug-build e2e workflow is `cargo build --features e2e`.

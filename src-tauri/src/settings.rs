@@ -144,7 +144,76 @@ pub struct AdvancedSettings {
     pub verbose_logs: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum BackendMode {
+    Auto,
+    AlwaysSidecar,
+    AlwaysDrive,
+}
+
+impl Default for BackendMode {
+    fn default() -> Self {
+        BackendMode::Auto
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
+pub struct DriveSettings {
+    #[serde(default)]
+    pub feature_enabled: bool,
+    #[serde(default)]
+    pub connected: bool,
+    #[serde(default)]
+    pub account_email: Option<String>,
+    #[serde(default)]
+    pub backend_mode: BackendMode,
+    #[serde(default = "default_active_poll")]
+    pub poll_interval_active_secs: u64,
+    #[serde(default = "default_unfocused_poll")]
+    pub poll_interval_unfocused_secs: u64,
+    #[serde(default)]
+    pub custom_oauth_client_id: Option<String>,
+    /// C2: once the user successfully connects to Drive for the first time,
+    /// this flips to `true` to globally suppress the Drive-detect toast on
+    /// future opens. Declared here in A1 so C2 (which only modifies frontend
+    /// + doc_prefs files) can rely on the field already existing.
+    #[serde(default)]
+    pub detect_toast_suppressed: bool,
+}
+
+fn default_active_poll() -> u64 {
+    5
+}
+fn default_unfocused_poll() -> u64 {
+    10
+}
+
+impl Default for DriveSettings {
+    fn default() -> Self {
+        Self {
+            feature_enabled: false,
+            connected: false,
+            account_email: None,
+            backend_mode: BackendMode::Auto,
+            poll_interval_active_secs: 5,
+            poll_interval_unfocused_secs: 10,
+            custom_oauth_client_id: None,
+            detect_toast_suppressed: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
+pub struct CloudSettings {
+    #[serde(default)]
+    pub drive: DriveSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 #[ts(export)]
 pub struct Settings {
     pub profile: ProfileSettings,
@@ -153,6 +222,8 @@ pub struct Settings {
     pub comments: CommentsSettings,
     pub advanced: AdvancedSettings,
     pub shortcuts: BTreeMap<String, String>, // action → keybinding
+    #[serde(default)]
+    pub cloud: CloudSettings,
 }
 
 impl Default for Settings {
@@ -192,6 +263,7 @@ impl Default for Settings {
                 verbose_logs: false,
             },
             shortcuts: default_shortcuts(),
+            cloud: CloudSettings::default(),
         }
     }
 }
