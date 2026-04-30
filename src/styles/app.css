@@ -1032,6 +1032,65 @@ body {
   border-color: var(--accent);
 }
 
+/* Link confirmation modal — surfaces when the user clicks an external
+ * link in the rendered document. Three buttons: Cancel / open here /
+ * open in browser. Uses the same .modal-overlay machinery as Settings
+ * and ShareDialog so the focus-trap + Escape semantics agree. */
+[data-view='link-confirm'] {
+  width: 460px;
+  max-width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.3);
+  padding: 22px 24px;
+}
+[data-view='link-confirm'] h2 {
+  margin: 0 0 6px;
+  font-size: 16px;
+}
+[data-view='link-confirm'] p {
+  margin: 0 0 12px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+[data-view='link-confirm'] .link-url {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 12px;
+  margin-bottom: 16px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--text);
+  word-break: break-all;
+  max-height: 120px;
+  overflow-y: auto;
+}
+[data-view='link-confirm'] .modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+[data-view='link-confirm'] button {
+  padding: 6px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  background: var(--surface-2);
+  color: var(--text);
+  cursor: pointer;
+  font-family: var(--sans);
+  font-size: 13px;
+}
+[data-view='link-confirm'] button:hover {
+  border-color: var(--accent);
+}
+[data-view='link-confirm'] button.primary {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
 /* External-change banner (B2) */
 [data-view='external-change'] {
   background: var(--warn-bg);

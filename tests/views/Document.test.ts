@@ -602,6 +602,175 @@ describe('Document', () => {
     });
   });
 
+  describe('link confirmation modal', () => {
+    function ipcWithOpener() {
+      const i = ipc() as unknown as Record<string, ReturnType<typeof vi.fn>>;
+      i.openExternalUrl = vi.fn().mockResolvedValue(undefined);
+      return i as unknown as Ipc & { openExternalUrl: ReturnType<typeof vi.fn> };
+    }
+
+    it('intercepts external link clicks and surfaces a confirmation modal', async () => {
+      const root = makeRoot();
+      const i = ipcWithOpener();
+      await mountDocument(root, i, {
+        tabId: 't',
+        html: '<p><a href="https://example.com/x">click</a></p>',
+        threads: [],
+      });
+      const link = root.querySelector('a[href]')! as HTMLAnchorElement;
+      expect(document.querySelector('[data-region="link-confirm-overlay"]')).toBeNull();
+      link.click();
+      const overlay = document.querySelector('[data-region="link-confirm-overlay"]');
+      expect(overlay).toBeTruthy();
+      const url = overlay!.querySelector('[data-test="link-url"]');
+      expect(url!.textContent).toBe('https://example.com/x');
+      // None of the three actions should have fired yet.
+      expect(i.openExternalUrl).not.toHaveBeenCalled();
+    });
+
+    it('Cancel button dismisses the modal without invoking any IPC', async () => {
+      const root = makeRoot();
+      const i = ipcWithOpener();
+      await mountDocument(root, i, {
+        tabId: 't',
+        html: '<p><a href="https://example.com/">click</a></p>',
+        threads: [],
+      });
+      (root.querySelector('a[href]') as HTMLAnchorElement).click();
+      const overlay = document.querySelector('[data-region="link-confirm-overlay"]')!;
+      (overlay.querySelector('[data-action="cancel"]') as HTMLButtonElement).click();
+      expect(document.querySelector('[data-region="link-confirm-overlay"]')).toBeNull();
+      expect(i.openExternalUrl).not.toHaveBeenCalled();
+    });
+
+    it('"Open in new tab" calls openExternalUrl with the href and dismisses', async () => {
+      const root = makeRoot();
+      const i = ipcWithOpener();
+      await mountDocument(root, i, {
+        tabId: 't',
+        html: '<p><a href="https://example.com/page">click</a></p>',
+        threads: [],
+      });
+      (root.querySelector('a[href]') as HTMLAnchorElement).click();
+      const overlay = document.querySelector('[data-region="link-confirm-overlay"]')!;
+      (overlay.querySelector('[data-action="open-browser"]') as HTMLButtonElement).click();
+      expect(i.openExternalUrl).toHaveBeenCalledWith('https://example.com/page');
+      expect(document.querySelector('[data-region="link-confirm-overlay"]')).toBeNull();
+    });
+
+    it('"Open in current tab" sets window.location.href and dismisses', async () => {
+      const root = makeRoot();
+      const i = ipcWithOpener();
+      await mountDocument(root, i, {
+        tabId: 't',
+        html: '<p><a href="https://example.com/here">click</a></p>',
+        threads: [],
+      });
+      (root.querySelector('a[href]') as HTMLAnchorElement).click();
+      // jsdom blocks real navigation but lets us spy on location.href assigns.
+      const original = window.location.href;
+      let assigned: string | null = null;
+      const desc = Object.getOwnPropertyDescriptor(window, 'location')!;
+      Object.defineProperty(window, 'location', {
+        configurable: true,
+        value: new Proxy(window.location, {
+          set(_t, prop, val) {
+            if (prop === 'href') assigned = String(val);
+            return true;
+          },
+          get(t, p) { return (t as never)[p as never]; },
+        }),
+      });
+      try {
+        const overlay = document.querySelector('[data-region="link-confirm-overlay"]')!;
+        (overlay.querySelector('[data-action="open-here"]') as HTMLButtonElement).click();
+        expect(assigned).toBe('https://example.com/here');
+        expect(document.querySelector('[data-region="link-confirm-overlay"]')).toBeNull();
+        expect(i.openExternalUrl).not.toHaveBeenCalled();
+      } finally {
+        Object.defineProperty(window, 'location', desc);
+        // assert original isn't mutated as a sanity check
+        expect(window.location.href).toBe(original);
+      }
+    });
+
+    it('Escape key dismisses the modal', async () => {
+      const root = makeRoot();
+      await mountDocument(root, ipcWithOpener(), {
+        tabId: 't',
+        html: '<p><a href="https://example.com/">click</a></p>',
+        threads: [],
+      });
+      (root.querySelector('a[href]') as HTMLAnchorElement).click();
+      const overlay = document.querySelector(
+        '[data-region="link-confirm-overlay"]',
+      ) as HTMLElement;
+      overlay.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      expect(document.querySelector('[data-region="link-confirm-overlay"]')).toBeNull();
+    });
+
+    it('clicking the backdrop (overlay itself) dismisses but inner clicks do not', async () => {
+      const root = makeRoot();
+      await mountDocument(root, ipcWithOpener(), {
+        tabId: 't',
+        html: '<p><a href="https://example.com/">click</a></p>',
+        threads: [],
+      });
+      (root.querySelector('a[href]') as HTMLAnchorElement).click();
+      const overlay = document.querySelector(
+        '[data-region="link-confirm-overlay"]',
+      ) as HTMLElement;
+      // Click on the panel — should NOT dismiss.
+      overlay.querySelector<HTMLElement>('[data-view="link-confirm"]')!.click();
+      expect(document.querySelector('[data-region="link-confirm-overlay"]')).toBeTruthy();
+      // Click on the overlay (backdrop) — should dismiss.
+      overlay.click();
+      expect(document.querySelector('[data-region="link-confirm-overlay"]')).toBeNull();
+    });
+
+    it('in-page anchor links (#fragment) navigate normally without showing the modal', async () => {
+      const root = makeRoot();
+      await mountDocument(root, ipcWithOpener(), {
+        tabId: 't',
+        html: '<p><a href="#section-2">jump</a></p>',
+        threads: [],
+      });
+      (root.querySelector('a[href]') as HTMLAnchorElement).click();
+      expect(document.querySelector('[data-region="link-confirm-overlay"]')).toBeNull();
+    });
+
+    it('rapid double-click keeps a single modal mounted', async () => {
+      const root = makeRoot();
+      await mountDocument(root, ipcWithOpener(), {
+        tabId: 't',
+        html: '<p><a href="https://example.com/">click</a></p>',
+        threads: [],
+      });
+      const link = root.querySelector('a[href]') as HTMLAnchorElement;
+      link.click();
+      link.click();
+      expect(
+        document.querySelectorAll('[data-region="link-confirm-overlay"]').length,
+      ).toBe(1);
+    });
+
+    it('renders the URL via textContent so HTML in the href cannot inject markup', async () => {
+      const root = makeRoot();
+      await mountDocument(root, ipcWithOpener(), {
+        tabId: 't',
+        // The href is sanitized by the browser's attribute parser, but we
+        // still verify the URL panel uses textContent (no <img> ever
+        // materializes inside the modal).
+        html: '<p><a href="https://example.com/&quot;onload=alert(1)">x</a></p>',
+        threads: [],
+      });
+      (root.querySelector('a[href]') as HTMLAnchorElement).click();
+      const overlay = document.querySelector('[data-region="link-confirm-overlay"]')!;
+      expect(overlay.querySelector('img')).toBeNull();
+      expect(overlay.querySelector('script')).toBeNull();
+    });
+  });
+
   it('uses textContent length when the selection container is an element (not a text node)', async () => {
     const root = makeRoot();
     // The span carrier itself has data-src-offset; setting the range's start

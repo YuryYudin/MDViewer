@@ -139,6 +139,13 @@ export interface Ipc {
    * "reset to global default" path). A missing entry is a no-op.
    */
   deleteDocPref(path: string): Promise<void>;
+  /**
+   * Open an external `http(s)` URL in the user's default system browser.
+   * Used by the rendered-document link interceptor — the WebView's default
+   * link click would otherwise navigate the entire app away to the URL.
+   * Rejects non-http(s) schemes (file://, javascript:, custom schemes).
+   */
+  openExternalUrl(url: string): Promise<void>;
 }
 
 /**
@@ -188,4 +195,5 @@ export const tauriIpc: Ipc = {
   getDocPref: (path) => invoke<DocPref | null>('get_doc_pref', { path }),
   setDocPref: (path, pref) => invoke<void>('set_doc_pref', { path, pref }),
   deleteDocPref: (path) => invoke<void>('delete_doc_pref', { path }),
+  openExternalUrl: (url) => invoke<void>('open_external_url', { url }),
 };

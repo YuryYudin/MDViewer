@@ -535,6 +535,34 @@ fn delete_doc_pref(state: State<'_, Ws>, path: String) {
     }
 }
 
+/// Open an http/https URL in the user's default system browser.
+///
+/// Used by the rendered-document link interceptor (Document.ts): clicks on
+/// `<a>` elements bubble through a confirmation modal that calls this IPC
+/// when the user picks "Open in browser". Restricted to `http`/`https` so
+/// we never shell out for `file://`, `javascript:`, custom-scheme, or any
+/// other URL the user could be tricked into clicking.
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    let lowered = url.to_ascii_lowercase();
+    if !lowered.starts_with("http://") && !lowered.starts_with("https://") {
+        return Err("only http/https URLs may be opened externally".into());
+    }
+    let result = if cfg!(target_os = "macos") {
+        std::process::Command::new("open").arg(&url).spawn()
+    } else if cfg!(target_os = "windows") {
+        // `cmd /c start "" "<url>"` — the empty quoted string is a window
+        // title placeholder so the URL itself isn't consumed as the title.
+        std::process::Command::new("cmd")
+            .args(["/c", "start", "", &url])
+            .spawn()
+    } else {
+        // Linux / BSD / other Unix — xdg-open is the desktop-spec entry point.
+        std::process::Command::new("xdg-open").arg(&url).spawn()
+    };
+    result.map(|_| ()).map_err(|e| e.to_string())
+}
+
 fn main() {
     // C3: lightweight CLI dispatch before the Tauri runtime spins up. The
     // subcommand intentionally bypasses tauri::Builder so it can be used
@@ -763,6 +791,7 @@ fn main() {
             get_doc_pref,
             set_doc_pref,
             delete_doc_pref,
+            open_external_url,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

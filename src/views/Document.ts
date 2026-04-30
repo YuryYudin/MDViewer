@@ -193,6 +193,24 @@ export async function mountDocument(
   // outside the unit tests.
   attachSelectionPopover(render, ipc, () => args.tabId, () => offsetsFromSelection());
 
+  // Link-click interceptor: a bare `<a href>` in the rendered HTML would
+  // navigate the entire WKWebView to the URL, replacing the app interface
+  // with the destination page. We intercept the click, preventDefault, and
+  // surface a confirmation modal so the user can choose between opening in
+  // the system browser (default, safe) or in the current WebView (replaces
+  // the app — only happens with explicit consent). Cancel keeps everything
+  // as-is.
+  render.addEventListener('click', (ev) => {
+    const target = (ev.target as HTMLElement | null)?.closest?.('a[href]');
+    if (!(target instanceof HTMLAnchorElement)) return;
+    const href = target.getAttribute('href') ?? '';
+    // Allow in-page anchor navigation (#heading) — that's just scrolling
+    // the rendered doc, not leaving the app.
+    if (href.startsWith('#')) return;
+    ev.preventDefault();
+    showLinkConfirm(view, ipc, href);
+  });
+
   // Lazy-load Mermaid only when the rendered HTML contains a mermaid block.
   // Static-importing mermaid would roughly double the WebView bundle even
   // when no diagrams are present.
@@ -390,4 +408,118 @@ function paintHighlight(root: HTMLElement, threadId: string, start: number, end:
     el.insertBefore(mark, afterNode);
     el.insertBefore(beforeNode, mark);
   }
+}
+
+/**
+ * Mount a confirmation modal asking the user how to handle a clicked link.
+ * Three actions:
+ *   - Open in browser → IPC `open_external_url` (system default browser).
+ *   - Open in this window → navigate the WebView to the URL (replaces the
+ *     app interface — only happens with explicit consent).
+ *   - Cancel → dismiss the modal, no navigation.
+ *
+ * The URL is rendered via `textContent` so a malicious href can't inject
+ * markup into the modal. Cancel via Escape key, the Cancel button, or
+ * clicking the backdrop.
+ */
+function showLinkConfirm(host: HTMLElement, ipc: Ipc, href: string): void {
+  // De-dupe: if a modal is already open (rapid double-click), bring the
+  // existing one to focus instead of stacking another.
+  const existing = document.querySelector('[data-region="link-confirm-overlay"]');
+  if (existing instanceof HTMLElement) {
+    existing.querySelector<HTMLButtonElement>('[data-action="open-browser"]')?.focus();
+    return;
+  }
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.setAttribute('data-region', 'link-confirm-overlay');
+
+  const panel = document.createElement('div');
+  panel.setAttribute('data-view', 'link-confirm');
+
+  const title = document.createElement('h2');
+  title.textContent = 'Open external link?';
+  panel.appendChild(title);
+
+  const desc = document.createElement('p');
+  desc.textContent = 'This link will take you outside MDViewer.';
+  panel.appendChild(desc);
+
+  const urlBox = document.createElement('div');
+  urlBox.setAttribute('data-test', 'link-url');
+  urlBox.className = 'link-url';
+  urlBox.textContent = href;
+  panel.appendChild(urlBox);
+
+  const actions = document.createElement('div');
+  actions.className = 'modal-actions';
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.setAttribute('data-action', 'cancel');
+  cancelBtn.textContent = 'Cancel';
+
+  const sameTabBtn = document.createElement('button');
+  sameTabBtn.setAttribute('data-action', 'open-here');
+  sameTabBtn.textContent = 'Open in current tab';
+  sameTabBtn.setAttribute(
+    'title',
+    'Replaces the MDViewer interface with the page (use Back to return).',
+  );
+
+  const newTabBtn = document.createElement('button');
+  newTabBtn.setAttribute('data-action', 'open-browser');
+  newTabBtn.textContent = 'Open in new tab';
+  newTabBtn.setAttribute(
+    'title',
+    'Opens in your default web browser as a new tab — keeps MDViewer running.',
+  );
+  // Default action — focused so a quick Enter sends the user to the browser
+  // (the safe path) rather than the app-replacing one.
+  newTabBtn.classList.add('primary');
+
+  actions.append(cancelBtn, sameTabBtn, newTabBtn);
+  panel.appendChild(actions);
+  overlay.appendChild(panel);
+
+  function dismiss(): void {
+    overlay.removeEventListener('keydown', onKeyDown);
+    overlay.remove();
+  }
+  function onKeyDown(ev: KeyboardEvent): void {
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      dismiss();
+    }
+  }
+
+  cancelBtn.addEventListener('click', dismiss);
+  // Backdrop click (anywhere on the overlay outside the panel) cancels.
+  overlay.addEventListener('click', (ev) => {
+    if (ev.target === overlay) dismiss();
+  });
+  overlay.addEventListener('keydown', onKeyDown);
+
+  sameTabBtn.addEventListener('click', () => {
+    dismiss();
+    // Same-window navigation — the user explicitly chose to leave the app.
+    window.location.href = href;
+  });
+  newTabBtn.addEventListener('click', () => {
+    dismiss();
+    void ipc.openExternalUrl(href).catch((err) => {
+      // Surface the failure inline so the user isn't left wondering why
+      // nothing happened (e.g. a non-http URL the Rust handler rejected).
+      // eslint-disable-next-line no-console
+      console.warn('open_external_url failed:', err);
+    });
+  });
+
+  // Mount on the body so the overlay sits above the workspace chrome
+  // (sidebar, toolbar) — anchoring inside `host` would clip it to the
+  // doc area. Tabindex makes the overlay focusable so Escape works.
+  overlay.tabIndex = -1;
+  document.body.appendChild(overlay);
+  newTabBtn.focus();
+  void host;
 }

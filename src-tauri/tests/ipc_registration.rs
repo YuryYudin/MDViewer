@@ -274,6 +274,45 @@ fn doc_pref_serializes_with_snake_case_payload() {
 }
 
 #[test]
+fn open_external_url_rejects_non_http_schemes() {
+    // The IPC handler must refuse anything that isn't http(s) so a
+    // user can't be tricked into shelling out for `file://`,
+    // `javascript:`, or a custom scheme. We mirror the handler's
+    // validation here (the actual handler lives in main.rs which the
+    // integration-test crate can't import).
+    fn validate(url: &str) -> Result<(), String> {
+        let lowered = url.to_ascii_lowercase();
+        if !lowered.starts_with("http://") && !lowered.starts_with("https://") {
+            return Err("only http/https URLs may be opened externally".into());
+        }
+        Ok(())
+    }
+    assert!(validate("https://example.com/").is_ok());
+    assert!(validate("HTTP://example.com/").is_ok());
+    assert!(validate("file:///etc/passwd").is_err());
+    assert!(validate("javascript:alert(1)").is_err());
+    assert!(validate("ftp://example.com/").is_err());
+    assert!(validate("").is_err());
+}
+
+#[test]
+fn ipc_registration_includes_open_external_url() {
+    // Source-level smoke that the new command is wired into main.rs.
+    let main_rs = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    )
+    .expect("read main.rs");
+    assert!(
+        main_rs.contains("fn open_external_url("),
+        "main.rs must declare `fn open_external_url(...)`",
+    );
+    assert!(
+        main_rs.contains("            open_external_url,"),
+        "main.rs must register `open_external_url` in the invoke_handler! list",
+    );
+}
+
+#[test]
 fn ipc_registration_includes_doc_pref_commands() {
     // Source-level smoke: read main.rs and assert the three new commands
     // were appended to the invoke_handler! macro. We can't link into main.rs
