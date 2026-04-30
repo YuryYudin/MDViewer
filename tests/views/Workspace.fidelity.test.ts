@@ -67,7 +67,7 @@ describe('Workspace shell — wireframe layout', () => {
     const status = root.querySelector<HTMLElement>('[data-region="status"]')!;
     const order = Array.from(status.children)
       .map((c) => (c as HTMLElement).getAttribute('data-test') ?? c.className);
-    expect(order).toEqual(['user-name', 'grow', 'version-label']);
+    expect(order).toEqual(['user-name', 'link-preview', 'grow', 'version-label']);
   });
 
   it('renders the product version via app_info into the status bar', async () => {

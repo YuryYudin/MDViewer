@@ -775,6 +775,23 @@ describe('Workspace — comments-sidebar toggle', () => {
     expect(body.getAttribute('data-sidebar')).toBe('hidden');
   });
 
+  it('updates the status-bar link preview on mdviewer:link-hover events', async () => {
+    const ipc = makeIpc();
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    await mountWorkspace(root, ipc);
+    const preview = root.querySelector<HTMLElement>('[data-test="link-preview"]')!;
+    expect(preview.textContent).toBe('');
+    document.dispatchEvent(
+      new CustomEvent('mdviewer:link-hover', { detail: { href: 'https://example.com/x' } }),
+    );
+    expect(preview.textContent).toBe('https://example.com/x');
+    document.dispatchEvent(
+      new CustomEvent('mdviewer:link-hover', { detail: { href: null } }),
+    );
+    expect(preview.textContent).toBe('');
+  });
+
   it('toggle is a no-op when StartPage is mounted (no document, sidebar element absent)', async () => {
     const ipc = makeIpc();
     const root = document.createElement('div');

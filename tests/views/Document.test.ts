@@ -602,14 +602,14 @@ describe('Document', () => {
     });
   });
 
-  describe('link confirmation modal', () => {
+  describe('link click + hover', () => {
     function ipcWithOpener() {
       const i = ipc() as unknown as Record<string, ReturnType<typeof vi.fn>>;
       i.openExternalUrl = vi.fn().mockResolvedValue(undefined);
       return i as unknown as Ipc & { openExternalUrl: ReturnType<typeof vi.fn> };
     }
 
-    it('intercepts external link clicks and surfaces a confirmation modal', async () => {
+    it('clicking an external link calls openExternalUrl and prevents default navigation', async () => {
       const root = makeRoot();
       const i = ipcWithOpener();
       await mountDocument(root, i, {
@@ -617,157 +617,82 @@ describe('Document', () => {
         html: '<p><a href="https://example.com/x">click</a></p>',
         threads: [],
       });
-      const link = root.querySelector('a[href]')! as HTMLAnchorElement;
-      expect(document.querySelector('[data-region="link-confirm-overlay"]')).toBeNull();
-      link.click();
-      const overlay = document.querySelector('[data-region="link-confirm-overlay"]');
-      expect(overlay).toBeTruthy();
-      const url = overlay!.querySelector('[data-test="link-url"]');
-      expect(url!.textContent).toBe('https://example.com/x');
-      // None of the three actions should have fired yet.
-      expect(i.openExternalUrl).not.toHaveBeenCalled();
+      const link = root.querySelector('a[href]') as HTMLAnchorElement;
+      const event = new MouseEvent('click', { bubbles: true, cancelable: true });
+      link.dispatchEvent(event);
+      expect(i.openExternalUrl).toHaveBeenCalledWith('https://example.com/x');
+      expect(event.defaultPrevented).toBe(true);
     });
 
-    it('Cancel button dismisses the modal without invoking any IPC', async () => {
-      const root = makeRoot();
-      const i = ipcWithOpener();
-      await mountDocument(root, i, {
-        tabId: 't',
-        html: '<p><a href="https://example.com/">click</a></p>',
-        threads: [],
-      });
-      (root.querySelector('a[href]') as HTMLAnchorElement).click();
-      const overlay = document.querySelector('[data-region="link-confirm-overlay"]')!;
-      (overlay.querySelector('[data-action="cancel"]') as HTMLButtonElement).click();
-      expect(document.querySelector('[data-region="link-confirm-overlay"]')).toBeNull();
-      expect(i.openExternalUrl).not.toHaveBeenCalled();
-    });
-
-    it('"Open in new tab" calls openExternalUrl with the href and dismisses', async () => {
-      const root = makeRoot();
-      const i = ipcWithOpener();
-      await mountDocument(root, i, {
-        tabId: 't',
-        html: '<p><a href="https://example.com/page">click</a></p>',
-        threads: [],
-      });
-      (root.querySelector('a[href]') as HTMLAnchorElement).click();
-      const overlay = document.querySelector('[data-region="link-confirm-overlay"]')!;
-      (overlay.querySelector('[data-action="open-browser"]') as HTMLButtonElement).click();
-      expect(i.openExternalUrl).toHaveBeenCalledWith('https://example.com/page');
-      expect(document.querySelector('[data-region="link-confirm-overlay"]')).toBeNull();
-    });
-
-    it('"Open in current tab" sets window.location.href and dismisses', async () => {
-      const root = makeRoot();
-      const i = ipcWithOpener();
-      await mountDocument(root, i, {
-        tabId: 't',
-        html: '<p><a href="https://example.com/here">click</a></p>',
-        threads: [],
-      });
-      (root.querySelector('a[href]') as HTMLAnchorElement).click();
-      // jsdom blocks real navigation but lets us spy on location.href assigns.
-      const original = window.location.href;
-      let assigned: string | null = null;
-      const desc = Object.getOwnPropertyDescriptor(window, 'location')!;
-      Object.defineProperty(window, 'location', {
-        configurable: true,
-        value: new Proxy(window.location, {
-          set(_t, prop, val) {
-            if (prop === 'href') assigned = String(val);
-            return true;
-          },
-          get(t, p) { return (t as never)[p as never]; },
-        }),
-      });
-      try {
-        const overlay = document.querySelector('[data-region="link-confirm-overlay"]')!;
-        (overlay.querySelector('[data-action="open-here"]') as HTMLButtonElement).click();
-        expect(assigned).toBe('https://example.com/here');
-        expect(document.querySelector('[data-region="link-confirm-overlay"]')).toBeNull();
-        expect(i.openExternalUrl).not.toHaveBeenCalled();
-      } finally {
-        Object.defineProperty(window, 'location', desc);
-        // assert original isn't mutated as a sanity check
-        expect(window.location.href).toBe(original);
-      }
-    });
-
-    it('Escape key dismisses the modal', async () => {
+    it('rendered <a> elements get a `title` attribute equal to the href so the native tooltip shows the URL', async () => {
       const root = makeRoot();
       await mountDocument(root, ipcWithOpener(), {
         tabId: 't',
-        html: '<p><a href="https://example.com/">click</a></p>',
+        html: '<p><a href="https://example.com/x">click</a> <a href="https://anchor.example/y">two</a></p>',
         threads: [],
       });
-      (root.querySelector('a[href]') as HTMLAnchorElement).click();
-      const overlay = document.querySelector(
-        '[data-region="link-confirm-overlay"]',
-      ) as HTMLElement;
-      overlay.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-      expect(document.querySelector('[data-region="link-confirm-overlay"]')).toBeNull();
+      const links = root.querySelectorAll<HTMLAnchorElement>('a[href]');
+      expect(links[0].getAttribute('title')).toBe('https://example.com/x');
+      expect(links[1].getAttribute('title')).toBe('https://anchor.example/y');
     });
 
-    it('clicking the backdrop (overlay itself) dismisses but inner clicks do not', async () => {
+    it('does not set a title on in-page anchor links so the tooltip stays clean', async () => {
       const root = makeRoot();
       await mountDocument(root, ipcWithOpener(), {
         tabId: 't',
-        html: '<p><a href="https://example.com/">click</a></p>',
+        html: '<p><a href="#heading">jump</a></p>',
         threads: [],
       });
-      (root.querySelector('a[href]') as HTMLAnchorElement).click();
-      const overlay = document.querySelector(
-        '[data-region="link-confirm-overlay"]',
-      ) as HTMLElement;
-      // Click on the panel — should NOT dismiss.
-      overlay.querySelector<HTMLElement>('[data-view="link-confirm"]')!.click();
-      expect(document.querySelector('[data-region="link-confirm-overlay"]')).toBeTruthy();
-      // Click on the overlay (backdrop) — should dismiss.
-      overlay.click();
-      expect(document.querySelector('[data-region="link-confirm-overlay"]')).toBeNull();
+      const link = root.querySelector('a[href]') as HTMLAnchorElement;
+      expect(link.hasAttribute('title')).toBe(false);
     });
 
-    it('in-page anchor links (#fragment) navigate normally without showing the modal', async () => {
+    it('in-page anchor links (#fragment) do NOT call openExternalUrl and do not preventDefault', async () => {
       const root = makeRoot();
-      await mountDocument(root, ipcWithOpener(), {
+      const i = ipcWithOpener();
+      await mountDocument(root, i, {
         tabId: 't',
         html: '<p><a href="#section-2">jump</a></p>',
         threads: [],
       });
-      (root.querySelector('a[href]') as HTMLAnchorElement).click();
-      expect(document.querySelector('[data-region="link-confirm-overlay"]')).toBeNull();
+      const link = root.querySelector('a[href]') as HTMLAnchorElement;
+      const event = new MouseEvent('click', { bubbles: true, cancelable: true });
+      link.dispatchEvent(event);
+      expect(i.openExternalUrl).not.toHaveBeenCalled();
+      expect(event.defaultPrevented).toBe(false);
     });
 
-    it('rapid double-click keeps a single modal mounted', async () => {
+    it('hovering an external link dispatches mdviewer:link-hover with the href', async () => {
       const root = makeRoot();
       await mountDocument(root, ipcWithOpener(), {
         tabId: 't',
-        html: '<p><a href="https://example.com/">click</a></p>',
+        html: '<p><a href="https://example.com/hov">x</a></p>',
         threads: [],
+      });
+      const events: (string | null)[] = [];
+      document.addEventListener('mdviewer:link-hover', (ev) => {
+        events.push((ev as CustomEvent<{ href: string | null }>).detail.href);
       });
       const link = root.querySelector('a[href]') as HTMLAnchorElement;
-      link.click();
-      link.click();
-      expect(
-        document.querySelectorAll('[data-region="link-confirm-overlay"]').length,
-      ).toBe(1);
+      link.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      expect(events).toEqual(['https://example.com/hov']);
+      link.dispatchEvent(new MouseEvent('mouseout', { bubbles: true }));
+      expect(events).toEqual(['https://example.com/hov', null]);
     });
 
-    it('renders the URL via textContent so HTML in the href cannot inject markup', async () => {
+    it('hovering an in-page anchor link does NOT fire link-hover events', async () => {
       const root = makeRoot();
       await mountDocument(root, ipcWithOpener(), {
         tabId: 't',
-        // The href is sanitized by the browser's attribute parser, but we
-        // still verify the URL panel uses textContent (no <img> ever
-        // materializes inside the modal).
-        html: '<p><a href="https://example.com/&quot;onload=alert(1)">x</a></p>',
+        html: '<p><a href="#h">jump</a></p>',
         threads: [],
       });
-      (root.querySelector('a[href]') as HTMLAnchorElement).click();
-      const overlay = document.querySelector('[data-region="link-confirm-overlay"]')!;
-      expect(overlay.querySelector('img')).toBeNull();
-      expect(overlay.querySelector('script')).toBeNull();
+      const handler = vi.fn();
+      document.addEventListener('mdviewer:link-hover', handler);
+      const link = root.querySelector('a[href]') as HTMLAnchorElement;
+      link.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      link.dispatchEvent(new MouseEvent('mouseout', { bubbles: true }));
+      expect(handler).not.toHaveBeenCalled();
     });
   });
 

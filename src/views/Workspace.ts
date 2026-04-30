@@ -92,6 +92,14 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
   userName.setAttribute('data-test', 'user-name');
   userName.className = 'profile-chip';
   status.appendChild(userName);
+  // URL hover preview — populated by Document.ts via the
+  // `mdviewer:link-hover` CustomEvent. Empty string when no link is
+  // hovered; the CSS rule hides the chip in that state so it doesn't
+  // leave a gap in the status bar.
+  const linkPreview = document.createElement('span');
+  linkPreview.setAttribute('data-test', 'link-preview');
+  linkPreview.className = 'link-preview';
+  status.appendChild(linkPreview);
   const grow = document.createElement('span');
   grow.className = 'grow';
   status.appendChild(grow);
@@ -99,6 +107,14 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
   versionText.setAttribute('data-test', 'version-label');
   versionText.className = 'version-label';
   status.appendChild(versionText);
+  document.addEventListener(
+    'mdviewer:link-hover',
+    (ev: Event) => {
+      const detail = (ev as CustomEvent<{ href: string | null }>).detail;
+      linkPreview.textContent = detail?.href ?? '';
+    },
+    { signal: mountAbort.signal },
+  );
   // Populate the version chip from app_info; the chip stays empty if
   // the IPC fails (defensive — unit tests stub it out).
   void ipc.appInfo()
