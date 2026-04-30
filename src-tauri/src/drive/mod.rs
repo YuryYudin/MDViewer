@@ -6,9 +6,12 @@
 
 pub mod api;
 pub mod auth;
+pub mod cache;
+pub mod comments;
 pub mod detect;
 pub mod file_id;
 pub mod keyring;
+pub mod queue;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
 #[ts(export)]
