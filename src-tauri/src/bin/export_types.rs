@@ -97,6 +97,17 @@ fn export_all() -> Result<String, Box<dyn std::error::Error>> {
     buf.push_str(&mdviewer_lib::doc_prefs::DocPref::export_to_string().unwrap());
     buf.push_str("\n");
 
+    // A1/A7: Drive integration types — TabBackend (per-tab routing label),
+    // DriveStatus (status-pill snapshot), DriveCollaborator (collaborator
+    // chip metadata). Consumed by A8's DriveSettings / DriveStatus views
+    // and the IPC wrappers in src/ipc.ts.
+    buf.push_str(&mdviewer_lib::drive::TabBackend::export_to_string().unwrap());
+    buf.push_str("\n");
+    buf.push_str(&mdviewer_lib::drive::DriveStatus::export_to_string().unwrap());
+    buf.push_str("\n");
+    buf.push_str(&mdviewer_lib::drive::DriveCollaborator::export_to_string().unwrap());
+    buf.push_str("\n");
+
     // A5 appends `RenderResult`, `RenderOptions`.
     // A6 appends `Anchor`, `ResolveOutcome`.
     // A7 appends `Thread`, `Comment`, `NewThread`, `NewComment`.

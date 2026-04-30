@@ -209,6 +209,61 @@ describe('tauriIpc', () => {
     expect(invoke).toHaveBeenCalledWith('reload_document', { path: '/x.md' });
   });
 
+  it('exposes the six drive command wrappers as functions', async () => {
+    // A8: typed wrappers around the Drive IPC commands. `is_drive_desktop_path`
+    // is intentionally omitted — C2's DriveDetectToast is its only caller and
+    // invokes it raw.
+    const ipc = await import('../src/ipc');
+    expect(typeof ipc.driveConnect).toBe('function');
+    expect(typeof ipc.driveDisconnect).toBe('function');
+    expect(typeof ipc.driveStatus).toBe('function');
+    expect(typeof ipc.driveOpenUrl).toBe('function');
+    expect(typeof ipc.driveResolvePath).toBe('function');
+    expect(typeof ipc.driveGetCollaborators).toBe('function');
+  });
+
+  it('driveConnect invokes drive_connect with no args', async () => {
+    const ipc = await import('../src/ipc');
+    await ipc.driveConnect();
+    expect(invoke).toHaveBeenCalledWith('drive_connect');
+  });
+
+  it('driveDisconnect invokes drive_disconnect with no args', async () => {
+    const ipc = await import('../src/ipc');
+    await ipc.driveDisconnect();
+    expect(invoke).toHaveBeenCalledWith('drive_disconnect');
+  });
+
+  it('driveStatus invokes drive_status with no args', async () => {
+    const ipc = await import('../src/ipc');
+    await ipc.driveStatus();
+    expect(invoke).toHaveBeenCalledWith('drive_status');
+  });
+
+  it('driveOpenUrl invokes drive_open_url with { url }', async () => {
+    const ipc = await import('../src/ipc');
+    await ipc.driveOpenUrl('https://docs.google.com/document/d/abc/edit');
+    expect(invoke).toHaveBeenCalledWith('drive_open_url', {
+      url: 'https://docs.google.com/document/d/abc/edit',
+    });
+  });
+
+  it('driveResolvePath invokes drive_resolve_path with { localPath }', async () => {
+    const ipc = await import('../src/ipc');
+    await ipc.driveResolvePath('/Users/me/Google Drive/file.md');
+    expect(invoke).toHaveBeenCalledWith('drive_resolve_path', {
+      localPath: '/Users/me/Google Drive/file.md',
+    });
+  });
+
+  it('driveGetCollaborators invokes drive_get_collaborators with { fileId }', async () => {
+    const ipc = await import('../src/ipc');
+    await ipc.driveGetCollaborators('drive-file-123');
+    expect(invoke).toHaveBeenCalledWith('drive_get_collaborators', {
+      fileId: 'drive-file-123',
+    });
+  });
+
   it('exposes every IPC method as a function', () => {
     // Pinned Ipc shape so a future rename / dropped method fails loudly here
     // before drift propagates to view modules.

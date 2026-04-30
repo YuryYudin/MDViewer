@@ -30,6 +30,14 @@ export type {
   RecentEntry,
   TabSummary,
   DocPref,
+  // A8: Drive integration types — re-exported here so callers don't need
+  // to know whether a type lives in ./types-generated or in a Drive view.
+  TabBackend,
+  DriveStatus,
+  DriveCollaborator,
+  BackendMode,
+  DriveSettings,
+  CloudSettings,
 } from './types-generated';
 
 import type {
@@ -46,6 +54,8 @@ import type {
   RecentEntry,
   TabSummary,
   DocPref,
+  DriveStatus,
+  DriveCollaborator,
 } from './types-generated';
 
 // `Anchor` is the canonical name across the wire. Older planning notes used
@@ -198,3 +208,29 @@ export const tauriIpc: Ipc = {
   deleteDocPref: (path) => invoke<void>('delete_doc_pref', { path }),
   openExternalUrl: (url) => invoke<void>('open_external_url', { url }),
 };
+
+/**
+ * A8: typed wrappers around the Drive IPC commands registered in A7.
+ *
+ * Note: A7 registers seven IPC commands but only six get a typed wrapper here.
+ * `is_drive_desktop_path` is intentionally invoked raw from C2's
+ * DriveDetectToast (i.e. `invoke('is_drive_desktop_path', { path })`) because
+ * it's a pure path-classification helper with no auth or workspace state and
+ * no shared call-site outside the toast — adding a wrapper for a single
+ * caller would just be type-tax with no payoff.
+ *
+ * `drive_connect` and `drive_disconnect` round-trip a fresh `DriveStatus`
+ * snapshot so the caller can update its UI without a follow-up
+ * `drive_status` IPC. The Rust side ALSO emits `drive-status-changed` so
+ * status-pill subscribers see the update without polling.
+ */
+export const driveConnect = (): Promise<DriveStatus> => invoke<DriveStatus>('drive_connect');
+export const driveDisconnect = (): Promise<DriveStatus> =>
+  invoke<DriveStatus>('drive_disconnect');
+export const driveStatus = (): Promise<DriveStatus> => invoke<DriveStatus>('drive_status');
+export const driveOpenUrl = (url: string): Promise<TabSummary> =>
+  invoke<TabSummary>('drive_open_url', { url });
+export const driveResolvePath = (localPath: string): Promise<string> =>
+  invoke<string>('drive_resolve_path', { localPath });
+export const driveGetCollaborators = (fileId: string): Promise<DriveCollaborator[]> =>
+  invoke<DriveCollaborator[]>('drive_get_collaborators', { fileId });
