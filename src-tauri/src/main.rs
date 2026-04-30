@@ -587,6 +587,10 @@ async fn drive_connect(
     let st = ws.drive_status();
     let _ = app.emit("drive-status-changed", &st);
     // TODO(B6): replay queues here
+    // TODO(B1): on first successful connect, spawn run_polling_loop:
+    //   tauri::async_runtime::spawn(run_polling_loop(app.clone()));
+    //   Hold the JoinHandle in Workspace.polling_task: Option<JoinHandle<()>>
+    //   so drive_disconnect can abort it via tokio::sync::watch or handle.abort().
     Ok(st)
 }
 

@@ -9,11 +9,19 @@ use mdviewer_lib::drive::TabBackend;
 use mdviewer_lib::workspace::Tab;
 use std::path::Path;
 
+#[cfg(target_os = "macos")]
+#[serial_test::serial]
 #[test]
 fn backend_lifecycle_local_upgrades_to_drive_desktop_on_connect() {
     // macOS Drive Desktop CloudStorage path. Setting HOME so detect.rs's
     // platform-specific prefix match resolves regardless of whose box runs
     // the test.
+    //
+    // Gated to macOS because Tab::compute_backend dispatches on
+    // std::env::consts::OS, so the assertion would fail on Linux/Windows CI.
+    // Tagged #[serial_test::serial] because it mutates the process-global
+    // HOME env var, which is not thread-safe under cargo's default parallel
+    // test runner.
     std::env::set_var("HOME", "/Users/alice");
     let drive_path = Path::new(
         "/Users/alice/Library/CloudStorage/GoogleDrive-alice@gmail.com/My Drive/notes.md",
@@ -39,6 +47,88 @@ fn backend_lifecycle_local_upgrades_to_drive_desktop_on_connect() {
         Tab::compute_backend(local_path, true),
         TabBackend::Local,
         "non-drive paths must stay Local even when connected"
+    );
+}
+
+/// Fix 1 regression test: drive_disconnect must downgrade DriveDesktop tabs
+/// back to Local. The bug fixed here was that drive_disconnect read the
+/// settings.cloud.drive.connected flag (still true at the moment of call)
+/// and passed that into `recompute_backends_after_connect_change`, leaving
+/// DriveDesktop tabs incorrectly connected. The fix passes `false`
+/// explicitly so the disconnect intent doesn't depend on a settings
+/// round-trip.
+///
+/// Gated to macOS for the same reason as the test above (and because we
+/// open a real tab whose path lives under a CloudStorage prefix that only
+/// exists on macOS).
+#[cfg(target_os = "macos")]
+#[serial_test::serial]
+#[test]
+fn drive_disconnect_downgrades_drive_desktop_tab_to_local() {
+    use mdviewer_lib::workspace::{OpenOpts, OpenOutcome, Workspace};
+
+    std::env::set_var("HOME", "/Users/alice");
+
+    // Build a temp data dir + a real markdown file inside a synthetic Drive
+    // Desktop mount. We have to drop the file on disk first (open_document
+    // reads it through the canonicalize+read_to_string pair) so we mirror
+    // the CloudStorage layout under a tempdir HOME.
+    //
+    // We canonicalize the synthetic HOME because open_document calls
+    // path.canonicalize() before computing the backend, and on macOS that
+    // resolves `/var/folders/...` to `/private/var/folders/...`. Without
+    // this matching round-trip the detect.rs prefix match would miss.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home_raw = tmp.path().join("alice-home");
+    std::fs::create_dir_all(&home_raw).unwrap();
+    let home = home_raw.canonicalize().unwrap();
+    let drive_root = home
+        .join("Library")
+        .join("CloudStorage")
+        .join("GoogleDrive-alice@gmail.com")
+        .join("My Drive");
+    std::fs::create_dir_all(&drive_root).unwrap();
+    let doc_path = drive_root.join("notes.md");
+    std::fs::write(&doc_path, "# hello").unwrap();
+
+    // Point HOME at the canonicalized synthetic root so detect.rs's prefix
+    // match resolves against the canonicalized doc path.
+    std::env::set_var("HOME", &home);
+
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let mut ws = Workspace::new(&data_dir).unwrap();
+
+    // Flip the connected flag so open_document picks DriveDesktop as the
+    // backend for the new tab.
+    ws.settings_store_mut()
+        .update(|s| {
+            s.cloud.drive.connected = true;
+        })
+        .unwrap();
+
+    let outcome = ws.open_document(&doc_path, OpenOpts::default()).unwrap();
+    let tab_id = match outcome {
+        OpenOutcome::Document(r) => r.tab_id,
+        OpenOutcome::Conflict { .. } => panic!("expected Document on first open"),
+    };
+    assert_eq!(
+        ws.tab(&tab_id).unwrap().backend,
+        TabBackend::DriveDesktop,
+        "tab must start as DriveDesktop while connected"
+    );
+
+    // The bug: drive_disconnect was reading the still-true settings flag
+    // and passing it to recompute, leaving the tab's backend at
+    // DriveDesktop. The fix passes `false` explicitly. Note that we leave
+    // the settings flag alone here on purpose — the regression test is
+    // exactly that disconnect must NOT depend on the flag's current value.
+    ws.drive_disconnect();
+
+    assert_eq!(
+        ws.tab(&tab_id).unwrap().backend,
+        TabBackend::Local,
+        "drive_disconnect must downgrade DriveDesktop tabs to Local even when the settings.connected flag has not yet been flipped"
     );
 }
 

@@ -250,12 +250,18 @@ impl Workspace {
     }
 
     /// A7: build the current `DriveStatus` snapshot from settings + queue
-    /// totals. The `pending_count` sums the line-count of every drive_queue
-    /// file currently open; an empty / missing queue file contributes zero.
-    /// Caller diffs against `self.last_drive_status` to decide whether to
-    /// emit `drive-status-changed`.
+    /// totals. The `pending_count` here is the **count of files with pending
+    /// writes** — i.e., the number of non-empty `DriveQueue`s, NOT the total
+    /// op count across them. `DriveQueue` does not currently expose a `len()`
+    /// accessor and the spec doesn't require op-level granularity for the
+    /// status badge, so per-file granularity is sufficient. Caller diffs
+    /// against `self.last_drive_status` to decide whether to emit
+    /// `drive-status-changed`.
     pub fn drive_status(&self) -> DriveStatus {
         let s = self.settings.get();
+        // Count of files with pending writes (not the total op count across
+        // those files). See the doc-comment above for why per-file
+        // granularity is sufficient for the status badge.
         let pending: u32 = self
             .drive_queues
             .values()
@@ -321,8 +327,11 @@ impl Workspace {
     /// they're held for B2 to surface a reconnect prompt.
     pub fn drive_disconnect(&mut self) {
         self.drive_api = None;
-        let connected = self.settings.get().cloud.drive.connected;
-        self.recompute_backends_after_connect_change(connected);
+        // Pass `false` explicitly: the disconnect intent is unambiguous and
+        // we must not depend on a settings round-trip (the settings flag may
+        // not have been flipped yet at the time this is called, which would
+        // leave DriveDesktop tabs incorrectly connected).
+        self.recompute_backends_after_connect_change(false);
         self.last_drive_status = None;
     }
 
@@ -638,6 +647,10 @@ impl Workspace {
 /// differs from the previous one — heartbeats are filtered out at the
 /// `Workspace::drive_status` accessor level (B6 will tighten this once the
 /// status fields include real online / pending counts).
+///
+/// Cancellation: this loop currently runs until the process exits. B1 must
+/// thread a cancel signal (recommended: `tokio::sync::watch::Receiver<bool>`
+/// passed in alongside `app`) so drive_disconnect can stop polling cleanly.
 pub async fn run_polling_loop(app: tauri::AppHandle) {
     use std::time::Duration;
     use tauri::Manager;
@@ -678,6 +691,13 @@ pub async fn run_polling_loop(app: tauri::AppHandle) {
 
         // Cap concurrent in-flight requests at 8 so a workspace with many
         // Drive tabs doesn't trip Drive's per-second quota.
+        //
+        // TODO(B6): for the semaphore to provide real concurrency, B6 must
+        // snapshot the per-file inputs (file_id, etag, last_fetched), DROP
+        // the workspace lock, then do the reqwest call, then re-acquire the
+        // lock to merge results into id_maps/cache_meta. Holding state.lock()
+        // across drive_poll_one (as the body below does today) would
+        // serialize all 8 permits to 1.
         let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(8));
         let mut tasks = Vec::new();
         for fid in drive_tabs {
