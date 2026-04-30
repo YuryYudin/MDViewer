@@ -44,8 +44,14 @@ The `tags: ['v*']` trigger fires the moment the tag lands. CI takes ~15–20 min
 1. Go to https://github.com/YuryYudin/MDViewer/releases — your draft release should be at the top, with the artifacts attached.
 2. Skim the auto-generated notes (you can replace them with a curated changelog).
 3. Smoke-test at least one bundle on its native OS:
-   - macOS: download the DMG, drag to Applications, right-click → Open (first-launch only). The status bar should read `MDViewer v$NEW`.
-   - Windows / Linux: similar.
+   - macOS: download the DMG, drag to Applications. With ad-hoc signing
+     (in tauri.conf.json since `v0.1.1`), Gatekeeper shows "developer
+     cannot be verified" — click OK, go to System Settings → Privacy &
+     Security → "Open Anyway". `v0.1.0` was unsigned and shows the
+     misleading "is damaged" dialog; users need `xattr -cr
+     /Applications/MDViewer.app` for that single release. Confirm the
+     status bar reads `MDViewer v$NEW`.
+   - Windows / Linux: similar (Windows SmartScreen → "More info → Run anyway").
 4. Click **Publish release** when satisfied.
 
 ## Pre-release / smoke-test runs

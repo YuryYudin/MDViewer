@@ -124,6 +124,22 @@ npm run build:appimage   # Linux (AppImage)
 npm run build:deb        # Linux (deb)
 ```
 
+### Installing on macOS — first-launch caveat
+
+MDViewer release bundles are not currently notarized (an Apple Developer account is required and not yet in scope). When you mount the DMG and copy `MDViewer.app` to `/Applications/`, macOS Gatekeeper will refuse to launch it on first run.
+
+The dialog you see depends on the build:
+
+- **`v0.1.0` (unsigned)**: misleading "MDViewer is damaged and can't be opened. You should move it to the Bin." Don't move it to the Bin — the binary is fine. Strip the quarantine attribute once:
+  ```bash
+  xattr -cr /Applications/MDViewer.app
+  ```
+  Re-launch — it'll open normally from then on.
+
+- **`v0.1.1` and later (ad-hoc signed)**: standard "MDViewer cannot be opened because the developer cannot be verified." Click **OK**, then go to **System Settings → Privacy & Security**, scroll to the bottom, and click **Open Anyway** next to the MDViewer entry. The next launch goes through.
+
+Notarization (proper signing + Apple-side scan) is on the roadmap once the project moves beyond pre-1.0 cadence.
+
 ---
 
 ## Sharing a document

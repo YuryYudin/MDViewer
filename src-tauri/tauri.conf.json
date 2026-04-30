@@ -46,6 +46,9 @@
         "role": "Viewer",
         "mimeType": "text/markdown"
       }
-    ]
+    ],
+    "macOS": {
+      "signingIdentity": "-"
+    }
   }
 }
