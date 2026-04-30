@@ -81,11 +81,9 @@ struct SelfWrite {
 /// current on-disk snapshot to detect a third-party write that landed
 /// between open and save.
 ///
-/// `Unchanged` requires both mtime AND hash to agree. Some sync clients
-/// touch mtime without changing content (false-positive trap) and some
-/// change content without touching mtime when copies have identical times
-/// (false-negative trap). The hash is the source of truth — mtime is
-/// surfaced in the `Changed` variant only as diagnostic context.
+/// `Unchanged` is determined by **hash alone** — mtime agreement is not
+/// required, because some sync clients (Drive, Dropbox) touch mtime without
+/// changing the byte content.
 #[derive(Debug, Clone)]
 pub enum CompareForSave {
     Unchanged,
@@ -278,7 +276,7 @@ impl Watcher {
     /// to detect a third-party write that landed between open and save.
     /// Local-backend tabs intentionally don't call this — they have a
     /// different conflict path and shouldn't pay the read+hash cost.
-    pub fn note_open(&mut self, path: &Path) -> std::io::Result<()> {
+    pub fn note_open(&self, path: &Path) -> std::io::Result<()> {
         let snap = snapshot(path)?;
         let key = canonical(path);
         self.state

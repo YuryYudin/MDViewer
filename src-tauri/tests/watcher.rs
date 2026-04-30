@@ -279,7 +279,7 @@ fn compare_for_save_unchanged_when_neither_mtime_nor_hash_changes() {
     let p = dir.path().join("notes.md");
     write_file(&p, "# hello\n");
     let (tx, _rx) = std::sync::mpsc::channel();
-    let mut w = Watcher::new(tx).unwrap();
+    let w = Watcher::new(tx).unwrap();
     w.note_open(&p).unwrap();
     let r = w.compare_for_save(&p).unwrap();
     assert!(matches!(r, CompareForSave::Unchanged));
@@ -291,7 +291,7 @@ fn compare_for_save_changed_when_content_differs() {
     let p = dir.path().join("notes.md");
     write_file(&p, "# v1\n");
     let (tx, _rx) = std::sync::mpsc::channel();
-    let mut w = Watcher::new(tx).unwrap();
+    let w = Watcher::new(tx).unwrap();
     w.note_open(&p).unwrap();
     // Force mtime advance by sleeping so coarse-grained FS clocks (HFS+,
     // some Linux filesystems) record a distinct timestamp; the content
@@ -309,7 +309,7 @@ fn compare_for_save_returns_unchanged_when_only_mtime_advances_with_same_content
     let p = dir.path().join("notes.md");
     write_file(&p, "# same\n");
     let (tx, _rx) = std::sync::mpsc::channel();
-    let mut w = Watcher::new(tx).unwrap();
+    let w = Watcher::new(tx).unwrap();
     w.note_open(&p).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(20));
     // Re-write identical content — mtime advances but hash matches. Some
