@@ -41,6 +41,7 @@ use mdviewer_lib::{
     build_info,
     comments::{NewComment, NewThread, Thread},
     conflict::{self, Hunk},
+    doc_prefs::DocPref,
     document::{self, RenderOptions, RenderResult},
     settings::Settings,
     watcher::{ExternalChangeEvent, Watcher},
@@ -485,6 +486,41 @@ fn resolve_anchor(
         .map_err(|e| e.to_string())
 }
 
+// ----------------------------------------------------------------------------
+// A3: per-document font-size IPC commands.
+//
+// The frontend wrappers (A4) call these to read/write/reset the per-document
+// override stored in `<data_dir>/doc_prefs.json`. All three are thin shims
+// over `Workspace::doc_prefs()` / `doc_prefs_mut()` — the single store lives
+// on Workspace so concurrent IPC calls don't race on the JSON file.
+// ----------------------------------------------------------------------------
+
+#[tauri::command]
+fn get_doc_pref(state: State<'_, Ws>, path: String) -> Option<DocPref> {
+    state.lock().ok()?.doc_prefs().load(Path::new(&path))
+}
+
+#[tauri::command]
+fn set_doc_pref(state: State<'_, Ws>, path: String, pref: DocPref) {
+    // Defense-in-depth clamp: the design specifies the IPC handler silently
+    // coerces font_size_px into 10..=24 before persisting. The TS clamp is
+    // the user-facing bound; this Rust clamp guards against fuzzed or
+    // hand-edited invoke payloads. Errors are swallowed (no toaster on a
+    // transient disk hiccup) — see the design doc's `Avoid` notes for A3.
+    let mut pref = pref;
+    pref.font_size_px = pref.font_size_px.clamp(10, 24);
+    if let Ok(mut ws) = state.lock() {
+        let _ = ws.doc_prefs_mut().save(Path::new(&path), pref);
+    }
+}
+
+#[tauri::command]
+fn delete_doc_pref(state: State<'_, Ws>, path: String) {
+    if let Ok(mut ws) = state.lock() {
+        let _ = ws.doc_prefs_mut().delete(Path::new(&path));
+    }
+}
+
 fn main() {
     // C3: lightweight CLI dispatch before the Tauri runtime spins up. The
     // subcommand intentionally bypasses tauri::Builder so it can be used
@@ -671,6 +707,9 @@ fn main() {
             export_document,
             reload_document,
             import_comments,
+            get_doc_pref,
+            set_doc_pref,
+            delete_doc_pref,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

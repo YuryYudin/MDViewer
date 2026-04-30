@@ -23,7 +23,9 @@
 
 use mdviewer_lib::anchor::{Anchor, ResolveOutcome};
 use mdviewer_lib::comments::Thread;
+use mdviewer_lib::doc_prefs::DocPref;
 use mdviewer_lib::workspace::Workspace;
+use std::path::Path;
 use std::sync::Mutex;
 use tempfile::TempDir;
 
@@ -184,6 +186,114 @@ fn open_outcome_serializes_with_kind_discriminant() {
     let v = serde_json::to_value(&conflict).unwrap();
     assert_eq!(v["kind"], "conflict");
     assert_eq!(v["local"], "L");
+}
+
+// ---------------------------------------------------------------------------
+// A3: doc_prefs IPC command shapes
+//
+// We can't import main.rs's `#[tauri::command] fn`s from a Rust integration
+// test (separate crate), so we mirror their handler bodies here against the
+// real `Mutex<Workspace>` State equivalent and exercise the round-trip.
+//
+// `set_doc_pref_handler_logic` exists to pin the silent-coerce contract: an
+// out-of-range font_size_px coming from the frontend (e.g. a hand-edited
+// invoke payload) must NOT bubble an error — it gets clamped to 10..=24 and
+// persisted. The clamp lives at the store level (A2) but the IPC handler
+// repeats it as defense-in-depth per the design doc.
+// ---------------------------------------------------------------------------
+
+fn get_doc_pref_handler_logic(state: &Mutex<Workspace>, path: &Path) -> Option<DocPref> {
+    state.lock().unwrap().doc_prefs().load(path)
+}
+
+fn set_doc_pref_handler_logic(state: &Mutex<Workspace>, path: &Path, mut pref: DocPref) {
+    pref.font_size_px = pref.font_size_px.clamp(10, 24);
+    let _ = state.lock().unwrap().doc_prefs_mut().save(path, pref);
+}
+
+fn delete_doc_pref_handler_logic(state: &Mutex<Workspace>, path: &Path) {
+    let _ = state.lock().unwrap().doc_prefs_mut().delete(path);
+}
+
+#[test]
+fn doc_pref_round_trip_through_handler_logic() {
+    let (state, tmp) = ws();
+    let doc = tmp.path().join("note.md");
+    std::fs::write(&doc, "").unwrap();
+
+    assert_eq!(get_doc_pref_handler_logic(&state, &doc), None);
+
+    set_doc_pref_handler_logic(&state, &doc, DocPref { font_size_px: 17 });
+    assert_eq!(
+        get_doc_pref_handler_logic(&state, &doc),
+        Some(DocPref { font_size_px: 17 })
+    );
+
+    delete_doc_pref_handler_logic(&state, &doc);
+    assert_eq!(get_doc_pref_handler_logic(&state, &doc), None);
+}
+
+#[test]
+fn set_doc_pref_silently_coerces_out_of_range() {
+    // Design contract: set_doc_pref must NOT return an error for fuzzed /
+    // hand-edited values — it silently coerces font_size_px into 10..=24.
+    let (state, tmp) = ws();
+    let doc = tmp.path().join("clamp.md");
+    std::fs::write(&doc, "").unwrap();
+
+    set_doc_pref_handler_logic(&state, &doc, DocPref { font_size_px: 9999 });
+    assert_eq!(
+        get_doc_pref_handler_logic(&state, &doc),
+        Some(DocPref { font_size_px: 24 }),
+        "above-max coerced to 24"
+    );
+
+    set_doc_pref_handler_logic(&state, &doc, DocPref { font_size_px: 1 });
+    assert_eq!(
+        get_doc_pref_handler_logic(&state, &doc),
+        Some(DocPref { font_size_px: 10 }),
+        "below-min coerced to 10"
+    );
+}
+
+#[test]
+fn doc_pref_serializes_with_snake_case_payload() {
+    // The IPC boundary needs DocPref to deserialize from the same canonical
+    // snake_case shape that ts-rs emits for the frontend wrapper. Pin the
+    // wire shape here so an accidental rename (e.g. via #[serde(rename)])
+    // would fail the build.
+    let pref = DocPref { font_size_px: 14 };
+    let v = serde_json::to_value(&pref).unwrap();
+    assert_eq!(v["font_size_px"], 14);
+
+    let parsed: DocPref = serde_json::from_value(serde_json::json!({
+        "font_size_px": 12
+    }))
+    .unwrap();
+    assert_eq!(parsed.font_size_px, 12);
+}
+
+#[test]
+fn ipc_registration_includes_doc_pref_commands() {
+    // Source-level smoke: read main.rs and assert the three new commands
+    // were appended to the invoke_handler! macro. We can't link into main.rs
+    // from this test crate, so the static check is the closest proxy short
+    // of a full tauri::test harness.
+    let main_rs = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    )
+    .expect("read main.rs");
+    for cmd in ["get_doc_pref", "set_doc_pref", "delete_doc_pref"] {
+        assert!(
+            main_rs.contains(&format!("fn {cmd}(")),
+            "main.rs must declare `fn {cmd}(...)`"
+        );
+        // The macro arm is a bare identifier — match it as `\n    cmd,`.
+        assert!(
+            main_rs.contains(&format!("            {cmd},")),
+            "main.rs must register `{cmd}` in the invoke_handler! list"
+        );
+    }
 }
 
 #[test]
