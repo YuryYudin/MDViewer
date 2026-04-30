@@ -212,6 +212,20 @@ export async function main(): Promise<void> {
       case 'toggle_dark':
         applyTheme(currentTheme === 'dark' ? 'light' : 'dark');
         break;
+      case 'font_increase':
+        // Three distinct event names (no payload) instead of one + delta —
+        // the menuBridge contract is `{ actionString -> eventName }` with
+        // no detail; widening it to carry a payload was rejected in the
+        // design doc, so the keymap and the menu bridge converge on the
+        // same three CustomEvents.
+        document.dispatchEvent(new CustomEvent('mdviewer:font-increase'));
+        break;
+      case 'font_decrease':
+        document.dispatchEvent(new CustomEvent('mdviewer:font-decrease'));
+        break;
+      case 'font_reset':
+        document.dispatchEvent(new CustomEvent('mdviewer:font-reset'));
+        break;
     }
   };
   installKeymap(settings, dispatchAction);

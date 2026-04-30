@@ -30,6 +30,15 @@ export const MENU_ACTION_TO_EVENT: Readonly<Record<string, string>> = Object.fre
   'save-file': 'mdviewer:save-active',
   'toggle-edit': 'mdviewer:toggle-edit',
   'toggle-sidebar': 'mdviewer:toggle-sidebar',
+  // View → Zoom items. The Rust side (`menu_id_to_action`) maps the menu
+  // ids `menu-zoom-in / menu-zoom-out / menu-zoom-reset` to these
+  // kebab-case action strings; we map them in turn to the three distinct
+  // `mdviewer:font-*` CustomEvents (no payload) that Workspace listens
+  // for. Three events instead of one + delta payload because widening
+  // this bridge to carry a `detail` was rejected in the design doc.
+  'zoom-in': 'mdviewer:font-increase',
+  'zoom-out': 'mdviewer:font-decrease',
+  'zoom-reset': 'mdviewer:font-reset',
 });
 
 /**
