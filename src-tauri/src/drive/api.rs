@@ -108,6 +108,12 @@ impl DriveApi {
                     if status.is_success() {
                         return Ok(r);
                     }
+                    // 304 Not Modified is a successful conditional-GET
+                    // outcome, not a failure — return Ok so the caller can
+                    // detect it via response.status() and skip retries.
+                    if status == reqwest::StatusCode::NOT_MODIFIED {
+                        return Ok(r);
+                    }
                     if status.as_u16() == 412 {
                         return Err(super::DriveError::PreconditionFailed);
                     }
@@ -148,6 +154,14 @@ impl DriveApi {
             }
             req
         })?;
+        // 304 Not Modified means the caller's cache is still valid; return an
+        // empty payload so the caller's prior cache stays authoritative.
+        if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
+            return Ok(CommentList {
+                comments: Vec::new(),
+                next_page_token: None,
+            });
+        }
         resp.json::<CommentList>()
             .map_err(|e| super::DriveError::Api(e.to_string()))
     }

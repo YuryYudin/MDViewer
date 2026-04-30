@@ -80,3 +80,35 @@ fn api_does_not_retry_on_4xx() {
     assert!(matches!(res, Err(_)));
     assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
+
+#[test]
+#[serial_test::serial]
+fn api_handles_304_not_modified_without_retry() {
+    let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let c = counter.clone();
+    let (base, _h) = stub_server(move |req| {
+        c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        // Verify the If-None-Match header was sent.
+        let has_inm = req
+            .headers()
+            .iter()
+            .any(|h| h.field.equiv("If-None-Match"));
+        assert!(has_inm, "expected If-None-Match header on conditional GET");
+        tiny_http::Response::from_string("").with_status_code(304)
+    });
+    std::env::set_var("MDVIEWER_DRIVE_API_BASE", &base);
+    let api = DriveApi::with_token("fake".into());
+    let res = api
+        .list_comments(&ListCommentsArgs {
+            file_id: "FID",
+            start_modified_time: None,
+            if_none_match: Some("\"etag-abc\""),
+        })
+        .expect("304 should be treated as successful no-change response");
+    assert!(res.comments.is_empty(), "304 returns empty comment list");
+    assert_eq!(
+        counter.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "304 must not trigger retry storm"
+    );
+}
