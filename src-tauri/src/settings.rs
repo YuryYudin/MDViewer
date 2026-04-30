@@ -157,6 +157,12 @@ fn default_shortcuts() -> BTreeMap<String, String> {
     m.insert("resolve_thread".into(), "Mod+Shift+R".into());
     m.insert("toggle_dark".into(), "Mod+Shift+D".into());
     m.insert("open_settings".into(), "Mod+,".into());
+    // Font-zoom defaults — universal browser-zoom accelerators. The TS
+    // keymap folds shifted-symbol keys back to their unshifted form so
+    // `Cmd+Shift+=` (the natural physical press for `+`) also matches `Mod+=`.
+    m.insert("font_increase".into(), "Mod+=".into());
+    m.insert("font_decrease".into(), "Mod+-".into());
+    m.insert("font_reset".into(), "Mod+0".into());
     m
 }
 
@@ -279,4 +285,31 @@ fn diff_event(a: &Settings, b: &Settings) -> Option<ChangeEvent> {
         return Some(ChangeEvent::Shortcuts);
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The font-zoom keymap actions (`font_increase`, `font_decrease`,
+    /// `font_reset`) must ship with the universal browser-zoom accelerators
+    /// `Mod+=` / `Mod+-` / `Mod+0`. The frontend keymap reads these defaults
+    /// directly; if any of them go missing or change shape the corresponding
+    /// `Cmd+=` / `Cmd+-` / `Cmd+0` shortcut becomes a no-op.
+    #[test]
+    fn default_shortcuts_includes_font_zoom_bindings() {
+        let shortcuts = default_shortcuts();
+        assert_eq!(
+            shortcuts.get("font_increase").map(String::as_str),
+            Some("Mod+="),
+        );
+        assert_eq!(
+            shortcuts.get("font_decrease").map(String::as_str),
+            Some("Mod+-"),
+        );
+        assert_eq!(
+            shortcuts.get("font_reset").map(String::as_str),
+            Some("Mod+0"),
+        );
+    }
 }
