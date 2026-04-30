@@ -28,10 +28,12 @@ use crate::settings::ExternalChangeBehavior;
 use anyhow::Result;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as NotifyWatcher};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 /// Which kind of file an event refers to. `.md` external changes route into
 /// `document.rs`; sidecar changes route through `sidecar.rs`'s auto-merge
@@ -73,6 +75,37 @@ struct SelfWrite {
     at: std::time::Instant,
 }
 
+/// Result of [`Watcher::compare_for_save`]. The watcher captures
+/// `(mtime, sha256)` at open time via [`Watcher::note_open`]; at save time
+/// the caller (B5's save path for DriveDesktop tabs) compares against the
+/// current on-disk snapshot to detect a third-party write that landed
+/// between open and save.
+///
+/// `Unchanged` requires both mtime AND hash to agree. Some sync clients
+/// touch mtime without changing content (false-positive trap) and some
+/// change content without touching mtime when copies have identical times
+/// (false-negative trap). The hash is the source of truth — mtime is
+/// surfaced in the `Changed` variant only as diagnostic context.
+#[derive(Debug, Clone)]
+pub enum CompareForSave {
+    Unchanged,
+    Changed {
+        since_open_mtime: SystemTime,
+        current_mtime: SystemTime,
+        since_open_hash: String,
+        current_hash: String,
+    },
+}
+
+/// Per-path snapshot recorded by [`Watcher::note_open`]. Stored inside
+/// `State` so the same mutex that guards the rest of the watcher state
+/// covers the snapshot map — `compare_for_save` only takes that one lock.
+#[derive(Clone)]
+struct OpenSnapshot {
+    mtime: SystemTime,
+    sha256: String,
+}
+
 /// Mutable state accessed from both the public API and notify's worker
 /// thread. All fields live behind a single mutex so the worker callback
 /// only takes one lock per event.
@@ -86,6 +119,12 @@ struct State {
     unsaved: HashMap<PathBuf, bool>,
     /// Self-write suppression list. Trimmed on every `record_self_write`.
     self_writes: Vec<SelfWrite>,
+    /// Per-path `(mtime, sha256)` snapshot recorded at open time. Drives
+    /// [`Watcher::compare_for_save`] — used by B5's DriveDesktop save path
+    /// to detect third-party writes that landed between open and save.
+    /// Capture is opt-in via [`Watcher::note_open`] so Local-backend tabs
+    /// (which use a different conflict path) don't pay the read+hash cost.
+    open_snapshots: HashMap<PathBuf, OpenSnapshot>,
 }
 
 /// How long a self-write entry stays in the suppression list. Long enough
@@ -230,6 +269,75 @@ impl Watcher {
         // across a long session of frequent saves.
         s.self_writes.retain(|sw| sw.at.elapsed() < SELF_WRITE_TTL);
     }
+
+    /// Capture an `(mtime, sha256)` snapshot of `path` as the "since-open"
+    /// baseline for a later [`Self::compare_for_save`] call.
+    ///
+    /// Called from the tab-open path for DriveDesktop-backend tabs only;
+    /// B5's save handler diff-checks against this snapshot before flushing
+    /// to detect a third-party write that landed between open and save.
+    /// Local-backend tabs intentionally don't call this — they have a
+    /// different conflict path and shouldn't pay the read+hash cost.
+    pub fn note_open(&mut self, path: &Path) -> std::io::Result<()> {
+        let snap = snapshot(path)?;
+        let key = canonical(path);
+        self.state
+            .lock()
+            .unwrap()
+            .open_snapshots
+            .insert(key, snap);
+        Ok(())
+    }
+
+    /// Compare the current on-disk `(mtime, sha256)` of `path` against the
+    /// snapshot captured by the prior [`Self::note_open`] call.
+    ///
+    /// Returns [`CompareForSave::Unchanged`] when the hash matches the
+    /// since-open hash (regardless of mtime — sync clients touching mtime
+    /// without changing bytes is a known false-positive trap), or
+    /// [`CompareForSave::Changed`] with both mtimes and both hashes as
+    /// diagnostic context when the hash differs.
+    ///
+    /// If `path` was never `note_open`'d, returns `Unchanged` so callers
+    /// that opt into snapshotting only some tabs see a safe default — the
+    /// "no snapshot, no conflict to detect" semantics. Errors propagate
+    /// from the I/O read used to compute the current snapshot (e.g. the
+    /// file was deleted between open and save).
+    pub fn compare_for_save(&self, path: &Path) -> std::io::Result<CompareForSave> {
+        let current = snapshot(path)?;
+        let key = canonical(path);
+        let opened = match self.state.lock().unwrap().open_snapshots.get(&key) {
+            Some(s) => s.clone(),
+            None => return Ok(CompareForSave::Unchanged),
+        };
+        if opened.sha256 == current.sha256 {
+            return Ok(CompareForSave::Unchanged);
+        }
+        Ok(CompareForSave::Changed {
+            since_open_mtime: opened.mtime,
+            current_mtime: current.mtime,
+            since_open_hash: opened.sha256,
+            current_hash: current.sha256,
+        })
+    }
+}
+
+/// Read `path`, hash its contents with SHA-256, and bundle the hash with
+/// the file's mtime. Used by both [`Watcher::note_open`] (capturing the
+/// since-open baseline) and [`Watcher::compare_for_save`] (capturing the
+/// current state to compare against the baseline).
+///
+/// Reads the whole file in one shot rather than streaming because Markdown
+/// docs we care about here cap at a few hundred KB; a streaming hash would
+/// add complexity for no measurable win at this size.
+fn snapshot(path: &Path) -> std::io::Result<OpenSnapshot> {
+    let meta = std::fs::metadata(path)?;
+    let mtime = meta.modified()?;
+    let bytes = std::fs::read(path)?;
+    let mut h = Sha256::new();
+    h.update(&bytes);
+    let sha256 = format!("{:x}", h.finalize());
+    Ok(OpenSnapshot { mtime, sha256 })
 }
 
 /// Canonicalize a path so notify's worker thread (which normalizes through
