@@ -3,9 +3,12 @@
 //!
 //! The resolver returns one of:
 //!   - `Resolved(file_id)` when exactly one match is returned
-//!   - `Ambiguous(Vec<FileMatch>)` when multiple matches exist (capped at
-//!     `CAP=50` so a malicious / accidentally large result set can't exhaust
-//!     memory or render the picker unusable)
+//!   - `Ambiguous(Vec<FileMatch>)` when 2..=50 matches exist (renderable
+//!     in the disambiguation picker)
+//!   - `TooManyMatches { sample, total_estimate }` when more than `CAP=50`
+//!     matches exist. We surface this distinctly as
+//!     "ambiguity too large to display" so the UI can prompt for narrower
+//!     input rather than silently truncating into a misleading picker.
 //!
 //! Caching: the in-memory `cache_q: HashMap<String, String>` deduplicates
 //! identical query strings — a second call with the same `q` returns the
@@ -20,6 +23,15 @@ use std::sync::Mutex;
 pub enum FileIdResolution {
     Resolved(String),
     Ambiguous(Vec<FileMatch>),
+    /// More than `CAP=50` matches were returned by `files.list`. We expose
+    /// a 50-element `sample` plus a `total_estimate` (count of matches the
+    /// API actually returned, before truncation) so callers can render an
+    /// "ambiguity too large to display" message and ask for a narrower
+    /// query.
+    TooManyMatches {
+        sample: Vec<FileMatch>,
+        total_estimate: usize,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -107,16 +119,22 @@ pub fn resolve_file_id(
     let body = backend.files_list(&q)?;
     let parsed: FilesList = serde_json::from_str(&body)
         .map_err(|e| super::DriveError::Api(format!("files.list parse: {e}")))?;
+    let total_returned = parsed.files.len();
     let matches: Vec<FileMatch> = parsed
         .files
         .into_iter()
-        .take(CAP)
         .map(|f| FileMatch {
             id: f.id,
             name: f.name,
             parents: f.parents.unwrap_or_default(),
         })
         .collect();
+    if total_returned > CAP {
+        return Ok(FileIdResolution::TooManyMatches {
+            sample: matches.into_iter().take(CAP).collect(),
+            total_estimate: total_returned,
+        });
+    }
     Ok(match matches.len() {
         0 => {
             return Err(super::DriveError::Api(format!(
