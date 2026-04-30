@@ -4,6 +4,7 @@
 //! `workspace::Tab` (added in A7) plus the `DriveStatus` snapshot consumed by
 //! the status pill view (added in A8).
 
+pub mod api;
 pub mod auth;
 pub mod keyring;
 
