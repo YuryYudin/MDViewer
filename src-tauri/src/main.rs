@@ -623,7 +623,14 @@ fn main() {
             }
         }))
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_fs::init());
+        .plugin(tauri_plugin_fs::init())
+        // Persist window state (position + size, plus maximized/fullscreen
+        // flags) across restarts. The plugin saves on close and restores
+        // on launch — first-run picks up the defaults from
+        // `tauri.conf.json::app.windows[0]`. Tracked to the app config dir
+        // (`window-state.json`), which our `MDVIEWER_DATA_DIR` override
+        // already redirects for the e2e suite.
+        .plugin(tauri_plugin_window_state::Builder::default().build());
 
     // E2E hook (macOS-friendly via tauri-webdriver). Loaded only when the
     // crate is built with `--features e2e`; release bundles never expose

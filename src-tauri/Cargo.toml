@@ -28,6 +28,10 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["devtools"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
+# Persists window position + size on close and restores on next start.
+# Cross-platform — Tauri-official plugin, writes to the app config dir
+# (which our `MDVIEWER_DATA_DIR` override already redirects for tests).
+tauri-plugin-window-state = "2"
 # Funnels every secondary `mdviewer …` invocation into the running
 # instance instead of spawning a duplicate window. The callback receives
 # the second invocation's argv + cwd; we route them through the same
