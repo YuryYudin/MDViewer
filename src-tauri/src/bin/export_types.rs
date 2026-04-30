@@ -34,6 +34,15 @@ fn export_all() -> Result<String, Box<dyn std::error::Error>> {
     buf.push_str("\n");
     buf.push_str(&mdviewer_lib::settings::AdvancedSettings::export_to_string().unwrap());
     buf.push_str("\n");
+    // A1: Drive/Cloud sub-tree types — BackendMode enum + DriveSettings +
+    // CloudSettings struct, emitted before `Settings` so its `cloud` field
+    // resolves the inline declaration without dangling imports.
+    buf.push_str(&mdviewer_lib::settings::BackendMode::export_to_string().unwrap());
+    buf.push_str("\n");
+    buf.push_str(&mdviewer_lib::settings::DriveSettings::export_to_string().unwrap());
+    buf.push_str("\n");
+    buf.push_str(&mdviewer_lib::settings::CloudSettings::export_to_string().unwrap());
+    buf.push_str("\n");
     buf.push_str(&mdviewer_lib::settings::Settings::export_to_string().unwrap());
     buf.push_str("\n");
 

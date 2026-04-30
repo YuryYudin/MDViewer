@@ -159,7 +159,7 @@ impl Default for BackendMode {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[ts(export)]
 pub struct DriveSettings {
     #[serde(default)]
@@ -206,14 +206,14 @@ impl Default for DriveSettings {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[ts(export)]
 pub struct CloudSettings {
     #[serde(default)]
     pub drive: DriveSettings,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[ts(export)]
 pub struct Settings {
     pub profile: ProfileSettings,
