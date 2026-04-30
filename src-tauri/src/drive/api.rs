@@ -280,6 +280,52 @@ impl DriveApi {
             .map_err(|e| super::DriveError::Api(e.to_string()))
     }
 
+    /// GET `files/<id>?alt=media` — returns the raw response so the caller
+    /// can stream the body to disk and capture the HTTP `ETag` header (used
+    /// for the next round's `If-Match` precondition on PATCH). The Drive
+    /// `etag` *field* on the JSON resource is **not** the same value and
+    /// must not be substituted here.
+    pub fn raw_get_media(
+        &self,
+        file_id: &str,
+    ) -> Result<reqwest::blocking::Response, super::DriveError> {
+        let path = format!("/drive/v3/files/{}", urlencoding::encode(file_id));
+        self.send_with_retry(|| {
+            self.client
+                .get(format!("{}{}", self.base, path))
+                .query(&[("alt", "media")])
+        })
+    }
+
+    /// PATCH `upload/drive/v3/files/<id>?uploadType=media` with `If-Match` set
+    /// to the prior ETag. A 412 is mapped by `send_with_retry` to
+    /// `DriveError::PreconditionFailed` so the caller surfaces a conflict
+    /// banner. On success, returns the new ETag from the response header so
+    /// the caller can update its cached metadata in lockstep with the write.
+    pub fn raw_patch_media(
+        &self,
+        file_id: &str,
+        body: &[u8],
+        etag: &str,
+    ) -> Result<String, super::DriveError> {
+        let path = format!(
+            "/upload/drive/v3/files/{}?uploadType=media",
+            urlencoding::encode(file_id)
+        );
+        let resp = self.send_with_retry(|| {
+            self.client
+                .patch(format!("{}{}", self.base, path))
+                .header("If-Match", etag)
+                .header("Content-Type", "text/markdown")
+                .body(body.to_vec())
+        })?;
+        resp.headers()
+            .get(reqwest::header::ETAG)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned)
+            .ok_or_else(|| super::DriveError::Api("missing ETag on upload".into()))
+    }
+
     /// PATCH update file metadata or content. Caller supplies the JSON body
     /// shape (e.g. `{"name":"renamed.md"}`) and an optional ETag for
     /// optimistic concurrency. A 412 on the response is mapped to

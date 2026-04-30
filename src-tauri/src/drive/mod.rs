@@ -10,6 +10,7 @@ pub mod cache;
 pub mod comments;
 pub mod detect;
 pub mod file_id;
+pub mod files;
 pub mod keyring;
 pub mod queue;
 
