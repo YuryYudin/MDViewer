@@ -22,6 +22,15 @@ use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use std::time::UNIX_EPOCH;
 
+/// Canonicalize `p`, falling back to `p` as-given if canonicalize fails (e.g.
+/// for nonexistent files). Shared between [`RecentsStore::push`] and the
+/// per-document preferences store so both stores agree on the key shape:
+/// a path canonicalized on tab open must match the same form on save, or
+/// lookups silently miss.
+pub(crate) fn canonical_or_self(p: &Path) -> PathBuf {
+    p.canonicalize().unwrap_or_else(|_| p.to_path_buf())
+}
+
 /// One entry in the most-recently-used list, augmented with the file's
 /// last-modified mtime (Unix seconds) so the StartPage can render
 /// wireframe-01's "when" column ("2 hours ago", "Yesterday", "Mar 14")
@@ -90,7 +99,7 @@ impl RecentsStore {
     /// pushes serialize against each other and the on-disk file always
     /// reflects the most-recent in-memory state.
     pub fn push(&self, p: &Path) -> Result<()> {
-        let canonical = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+        let canonical = canonical_or_self(p);
         let mut g = self.inner.write().unwrap();
         g.retain(|x| x != &canonical);
         g.insert(0, canonical);

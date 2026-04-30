@@ -31,6 +31,7 @@ pub mod anchor;
 pub mod cli;
 pub mod comments;
 pub mod conflict;
+pub mod doc_prefs;
 pub mod document;
 pub mod menu;
 pub mod recents;
