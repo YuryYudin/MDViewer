@@ -44,7 +44,7 @@ function defaultSettings(): Settings {
         account_email: null,
         backend_mode: 'auto',
         poll_interval_active_secs: 5n,
-        poll_interval_unfocused_secs: 30n,
+        poll_interval_unfocused_secs: 10n,
         custom_oauth_client_id: null,
         detect_toast_suppressed: false,
       },

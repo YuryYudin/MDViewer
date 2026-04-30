@@ -310,6 +310,7 @@ pub enum ChangeEvent {
     Comments,
     Advanced,
     Shortcuts,
+    Cloud,
 }
 
 pub struct SettingsStore {
@@ -420,6 +421,9 @@ fn diff_event(a: &Settings, b: &Settings) -> Option<ChangeEvent> {
     }
     if a.shortcuts != b.shortcuts {
         return Some(ChangeEvent::Shortcuts);
+    }
+    if a.cloud != b.cloud {
+        return Some(ChangeEvent::Cloud);
     }
     None
 }

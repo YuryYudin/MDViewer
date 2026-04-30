@@ -290,10 +290,12 @@ describe('tauriIpc', () => {
       'getDocPref',
       'setDocPref',
       'deleteDocPref',
+      'importComments',
+      'openExternalUrl',
     ];
     for (const m of required) {
       expect(typeof tauriIpc[m]).toBe('function');
     }
-    expect(required.length).toBe(22);
+    expect(required.length).toBe(24);
   });
 });

@@ -3,7 +3,10 @@
 //! Tauri binary entry: registers all Phase-1 IPC commands (`app_info` plus
 //! 13 workspace/comments/render commands) plus the Phase-2 `save_document`
 //! and `set_dirty` (B3) and the Phase-3 `diff_md` (C2), `export_document`
-//! (C3), and `reload_document` (C2 follow-up) — 19 total at this point.
+//! (C3), and `reload_document` (C2 follow-up), plus the seven new Drive
+//! commands (`drive_connect`, `drive_disconnect`, `drive_status`,
+//! `drive_open_url`, `drive_resolve_path`, `drive_get_collaborators`,
+//! `is_drive_desktop_path`) added in A7 — 30+ commands at this point.
 //!
 //! In addition the binary handles a single CLI subcommand:
 //!     mdviewer migrate-sidecars <dir>

@@ -1,5 +1,6 @@
 // src-tauri/tests/drive_settings.rs
-use mdviewer_lib::settings::{BackendMode, Settings};
+use mdviewer_lib::settings::{BackendMode, ChangeEvent, Settings, SettingsStore};
+use tempfile::TempDir;
 
 #[test]
 fn cloud_drive_defaults_are_quiet() {
@@ -71,4 +72,62 @@ verbose_logs = false
 "##;
     let parsed: Settings = toml::from_str(legacy).expect("legacy TOML must still parse");
     assert!(!parsed.cloud.drive.feature_enabled);
+}
+
+// Mutating ONLY a `cloud.drive.*` field must produce `Some(ChangeEvent::Cloud)`
+// from `diff_event` so `update()` writes to disk and emits a typed event.
+// Before this fix, `diff_event` skipped the cloud branch entirely, returning
+// None for cloud-only changes — which short-circuited the disk-write path,
+// so toggles like BYO client_id, the connect flag, account_email, and the
+// detect-toast suppression bit were silently lost on restart.
+#[test]
+fn cloud_only_change_emits_cloud_event() {
+    let tmp = TempDir::new().unwrap();
+    let store = SettingsStore::open(tmp.path()).unwrap();
+    let rx = store.subscribe();
+
+    store
+        .update(|s| s.cloud.drive.feature_enabled = true)
+        .unwrap();
+    let event = rx.try_recv().expect("cloud-only change must emit an event");
+    assert!(matches!(event, ChangeEvent::Cloud));
+
+    // BYO OAuth client id is the most regression-prone field — exercise it too.
+    store
+        .update(|s| {
+            s.cloud.drive.custom_oauth_client_id =
+                Some("123.apps.googleusercontent.com".into())
+        })
+        .unwrap();
+    assert!(matches!(rx.try_recv().unwrap(), ChangeEvent::Cloud));
+}
+
+// Round-trip: cloud-only mutations must persist to settings.toml on disk.
+// Reopening the store from the same directory must surface the changed
+// values — proves the disk-write path is reached when only `cloud` differs.
+#[test]
+fn cloud_only_change_round_trips_to_disk() {
+    let tmp = TempDir::new().unwrap();
+    {
+        let store = SettingsStore::open(tmp.path()).unwrap();
+        store
+            .update(|s| {
+                s.cloud.drive.feature_enabled = true;
+                s.cloud.drive.account_email = Some("bob@example.com".into());
+                s.cloud.drive.custom_oauth_client_id =
+                    Some("999.apps.googleusercontent.com".into());
+                s.cloud.drive.detect_toast_suppressed = true;
+            })
+            .unwrap();
+    }
+
+    let reopened = SettingsStore::open(tmp.path()).unwrap();
+    let s = reopened.get();
+    assert!(s.cloud.drive.feature_enabled);
+    assert_eq!(s.cloud.drive.account_email.as_deref(), Some("bob@example.com"));
+    assert_eq!(
+        s.cloud.drive.custom_oauth_client_id.as_deref(),
+        Some("999.apps.googleusercontent.com")
+    );
+    assert!(s.cloud.drive.detect_toast_suppressed);
 }
