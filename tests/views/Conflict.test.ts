@@ -148,6 +148,83 @@ describe('Conflict', () => {
     (root.querySelector('[data-action="accept-right"]') as HTMLButtonElement).click();
     expect(handle.unresolvedCount()).toBe(1);
   });
+
+  // B5: wireframe-07 Drive context banner. Same diff-merge view, two
+  // different banner copies depending on which Drive code path triggered
+  // the conflict (DriveApi 412 vs DriveDesktop watcher mismatch). Local
+  // conflicts must NOT show the banner — the copy is Drive-specific.
+  it('shows the Drive API banner on a 412-driven conflict', async () => {
+    const root = document.createElement('div');
+    const ipc = ipcStub([
+      {
+        kind: 'conflicting',
+        local_text: 'left',
+        incoming_text: 'right',
+        local_range: [0, 1],
+        incoming_range: [0, 1],
+      },
+    ]);
+    await mountConflict(root, ipc, {
+      tabId: 't',
+      path: 'drive-api://FID',
+      local: 'left',
+      incoming: 'right',
+      driveSource: 'DriveApiEtag',
+    });
+    const banner = root.querySelector('.drive-banner');
+    expect(banner).toBeTruthy();
+    // Wireframe-07: the API copy talks about "someone else updated" — not
+    // the disk/sync wording reserved for the DriveDesktop branch.
+    expect(banner?.textContent).toMatch(/Drive file/i);
+    expect(banner?.textContent).toMatch(/Someone else/i);
+  });
+
+  it('shows the Drive Desktop banner when the watcher detected on-disk drift', async () => {
+    const root = document.createElement('div');
+    const ipc = ipcStub([
+      {
+        kind: 'conflicting',
+        local_text: 'left',
+        incoming_text: 'right',
+        local_range: [0, 1],
+        incoming_range: [0, 1],
+      },
+    ]);
+    await mountConflict(root, ipc, {
+      tabId: 't',
+      path: '/Users/me/Drive/notes.md',
+      local: 'left',
+      incoming: 'right',
+      driveSource: 'DriveDesktopWatcher',
+    });
+    const banner = root.querySelector('.drive-banner');
+    expect(banner).toBeTruthy();
+    // The DriveDesktop copy must reference the on-disk / sync source so a
+    // user with both flavors knows which client touched the file.
+    expect(banner?.textContent).toMatch(/Drive Desktop/i);
+    expect(banner?.textContent).toMatch(/disk/i);
+  });
+
+  it('omits the Drive banner for plain local conflicts', async () => {
+    const root = document.createElement('div');
+    const ipc = ipcStub([
+      {
+        kind: 'conflicting',
+        local_text: 'left',
+        incoming_text: 'right',
+        local_range: [0, 1],
+        incoming_range: [0, 1],
+      },
+    ]);
+    // No driveSource → Local-backend conflict, no Drive-specific banner.
+    await mountConflict(root, ipc, {
+      tabId: 't',
+      path: '/tmp/a.md',
+      local: 'left',
+      incoming: 'right',
+    });
+    expect(root.querySelector('.drive-banner')).toBeFalsy();
+  });
 });
 
 describe('mergeBytes', () => {

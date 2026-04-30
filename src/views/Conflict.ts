@@ -14,11 +14,28 @@ import type { Hunk, Ipc } from '../ipc';
  * round-trip to Rust just to splice strings would force every keystroke
  * onto the IPC channel.
  */
+/**
+ * Discriminator for the optional Drive-context banner. The two Drive code
+ * paths into this view have very different mental models for the user
+ * (DriveApi: "someone else uploaded a new revision while you were editing"
+ * vs DriveDesktop: "your local sync client wrote new bytes to disk while
+ * you were editing"), so wireframe-07 calls for two distinct banner copies
+ * sharing the same diff-merge surface.
+ */
+export type DriveConflictSource = 'DriveApiEtag' | 'DriveDesktopWatcher';
+
 export interface ConflictArgs {
   tabId: string;
   path: string;
   local: string;
   incoming: string;
+  /**
+   * If present, render the wireframe-07 Drive-context banner above the
+   * diff. Omit (or pass `null` / `undefined`) for plain Local-backend
+   * conflicts — those reuse the same view but must NOT show the
+   * Drive-specific copy.
+   */
+  driveSource?: DriveConflictSource | null;
 }
 
 export interface ConflictHandle {
@@ -35,6 +52,23 @@ export async function mountConflict(
   const view = document.createElement('section');
   view.setAttribute('data-view', 'conflict');
   view.className = 'conflict';
+
+  // B5: wireframe-07 Drive-context banner. Hidden by default (Local-backend
+  // conflicts) so the same view serves both audiences. The two Drive code
+  // paths get distinct copy because the underlying root cause differs —
+  // a 412 from the API means a remote collaborator pushed a new revision,
+  // a watcher mismatch means the user's own Drive Desktop client touched
+  // the file from another window.
+  if (args.driveSource) {
+    const banner = document.createElement('div');
+    banner.className = 'drive-banner conflict-banner';
+    banner.setAttribute('data-drive-source', args.driveSource);
+    banner.textContent =
+      args.driveSource === 'DriveApiEtag'
+        ? 'Someone else updated this Drive file. Review both versions and merge.'
+        : 'This Drive Desktop file changed on disk while you were editing. Review both versions and merge.';
+    view.appendChild(banner);
+  }
 
   const hunks = await ipc.diffMd(args.local, args.incoming);
 
