@@ -359,6 +359,9 @@ body {
   overflow: auto;
   background: var(--surface);
   padding: 32px 56px 80px;
+  /* Rendered markdown body scales with --doc-font-size (per-document
+   * override). Chrome continues to derive from --font-size on body. */
+  font-size: var(--doc-font-size);
 }
 /* Edit region: only visible when in Edit mode. The `hidden` HTML
  * attribute on the element (set by Document.ts) flips display to none
@@ -372,17 +375,19 @@ body {
   flex-direction: column;
 }
 
-/* Rendered markdown typography (mirrors wireframe `.md`) */
+/* Rendered markdown typography (mirrors wireframe `.md`).
+ * Heading / code / pre sizes are em-relative so they scale with
+ * --doc-font-size on the [data-region='render'] container. */
 [data-region='render'] h1 {
-  font-size: 26px;
+  font-size: 1.85em;
   margin: 0 0 12px;
 }
 [data-region='render'] h2 {
-  font-size: 19px;
+  font-size: 1.35em;
   margin: 28px 0 8px;
 }
 [data-region='render'] h3 {
-  font-size: 16px;
+  font-size: 1.15em;
   margin: 22px 0 6px;
 }
 [data-region='render'] p {
@@ -403,12 +408,12 @@ body {
   padding: 10px 12px;
   overflow-x: auto;
   font-family: var(--mono);
-  font-size: 12.5px;
+  font-size: 0.92em;
   line-height: 1.45;
 }
 [data-region='render'] code {
   font-family: var(--mono);
-  font-size: 12.5px;
+  font-size: 0.92em;
 }
 [data-region='render'] table {
   border-collapse: collapse;
@@ -535,8 +540,16 @@ body {
   margin-bottom: 4px;
 }
 [data-view='sidebar-comments'] [data-test='comment-body-rendered'] {
-  font-size: 13px;
   margin: 0 0 4px;
+}
+
+/* Sidebar comment bodies + reply composer scale with --doc-font-size,
+ * mirroring the rendered markdown body so a thread reads at the same
+ * size as the prose it's anchored to. The reply composer textarea IS
+ * the [data-test='reply-body'] element — no separate selector needed. */
+[data-view='sidebar-comments'] [data-test='comment-body-rendered'],
+[data-view='sidebar-comments'] [data-test='reply-body'] {
+  font-size: var(--doc-font-size);
 }
 
 /* Inline ThreadDetail under each thread */
@@ -575,7 +588,9 @@ body {
   border-radius: 4px;
   padding: 6px 8px;
   font-family: var(--sans);
-  font-size: 12.5px;
+  /* font-size omitted: see the [data-view='sidebar-comments']
+   * [data-test='reply-body'] rule above — the textarea inherits
+   * --doc-font-size so the composer matches the rendered body. */
   background: var(--surface);
   color: var(--text);
 }
