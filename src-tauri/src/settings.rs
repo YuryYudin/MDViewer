@@ -202,7 +202,7 @@ impl SettingsStore {
     pub fn open(data_dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(data_dir).context("create data dir")?;
         let path = data_dir.join("settings.toml");
-        let settings: Settings = if path.exists() {
+        let mut settings: Settings = if path.exists() {
             let bytes = std::fs::read_to_string(&path).context("read settings.toml")?;
             toml::from_str(&bytes).unwrap_or_default()
         } else {
@@ -210,6 +210,17 @@ impl SettingsStore {
             std::fs::write(&path, toml::to_string_pretty(&s)?)?;
             s
         };
+        // Defense-in-depth merge: every default shortcut not explicitly set
+        // in the user's settings.toml gets filled with its built-in value.
+        // Without this, an empty `[shortcuts]` block (or one written by an
+        // older app version that didn't ship today's actions) leaves the JS
+        // keymap with a partial — or empty — binding map, and the user's
+        // `Cmd+=` / `Cmd+-` / `Cmd+0` gestures silently no-op. The merge
+        // preserves user customizations: only keys missing from the loaded
+        // map are overwritten.
+        for (action, combo) in default_shortcuts() {
+            settings.shortcuts.entry(action).or_insert(combo);
+        }
         Ok(Self {
             inner: Arc::new(RwLock::new(settings)),
             path,
@@ -310,6 +321,125 @@ mod tests {
         assert_eq!(
             shortcuts.get("font_reset").map(String::as_str),
             Some("Mod+0"),
+        );
+    }
+
+    /// Pins the load-time merge of `default_shortcuts()` into the loaded
+    /// shortcut map. The wdio fixture writes a settings.toml with an empty
+    /// `[shortcuts]` section, which deserializes to `BTreeMap::new()`. Without
+    /// the merge in `SettingsStore::open`, all keyboard shortcuts would be
+    /// no-ops — including the `Cmd+=` / `Cmd+-` / `Cmd+0` font-zoom bindings
+    /// that the e2e suite (spec 15) drives via `browser.keys()`. The merge
+    /// also future-proofs real users: when we add a new default shortcut, it
+    /// shows up immediately on next launch instead of requiring a fresh
+    /// settings.toml.
+    #[test]
+    fn missing_shortcuts_are_filled_from_defaults_at_load_time() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Hand-roll a settings.toml with no [shortcuts] entries — same shape
+        // wdio.conf.ts seeds for e2e runs.
+        let toml_str = concat!(
+            "[profile]\n",
+            "user_id = \"x\"\n",
+            "display_name = \"y\"\n",
+            "color = \"#000000\"\n",
+            "\n",
+            "[appearance]\n",
+            "theme = \"light\"\n",
+            "font_size_px = 14\n",
+            "line_height = 150\n",
+            "density = \"comfortable\"\n",
+            "\n",
+            "[editor]\n",
+            "default_open_mode = \"view\"\n",
+            "auto_save = false\n",
+            "auto_save_debounce_ms = 500\n",
+            "external_change_behavior = \"ask\"\n",
+            "syntax_highlighting = true\n",
+            "mermaid_enabled = true\n",
+            "show_whitespace = false\n",
+            "word_wrap = true\n",
+            "\n",
+            "[comments]\n",
+            "auto_merge = \"ask\"\n",
+            "reattachment_confidence = 75\n",
+            "sidecar_pattern = \"{name}.md.comments.json\"\n",
+            "show_resolved = true\n",
+            "\n",
+            "[advanced]\n",
+            "verbose_logs = false\n",
+            "\n",
+            "[shortcuts]\n",
+        );
+        std::fs::write(dir.path().join("settings.toml"), toml_str).unwrap();
+        let store = SettingsStore::open(dir.path()).expect("open");
+        let s = store.get();
+        // Every default shortcut is present after load.
+        for (action, combo) in default_shortcuts() {
+            assert_eq!(
+                s.shortcuts.get(&action).map(String::as_str),
+                Some(combo.as_str()),
+                "default shortcut for {action} missing after load",
+            );
+        }
+    }
+
+    /// User-customized shortcuts must NOT be overwritten by the default
+    /// merge. If the user remapped `font_increase` to `Mod+Shift+=`, that
+    /// value persists; only missing keys get filled from defaults.
+    #[test]
+    fn user_customized_shortcuts_override_defaults_after_load() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let toml_str = concat!(
+            "[profile]\n",
+            "user_id = \"x\"\n",
+            "display_name = \"y\"\n",
+            "color = \"#000000\"\n",
+            "\n",
+            "[appearance]\n",
+            "theme = \"light\"\n",
+            "font_size_px = 14\n",
+            "line_height = 150\n",
+            "density = \"comfortable\"\n",
+            "\n",
+            "[editor]\n",
+            "default_open_mode = \"view\"\n",
+            "auto_save = false\n",
+            "auto_save_debounce_ms = 500\n",
+            "external_change_behavior = \"ask\"\n",
+            "syntax_highlighting = true\n",
+            "mermaid_enabled = true\n",
+            "show_whitespace = false\n",
+            "word_wrap = true\n",
+            "\n",
+            "[comments]\n",
+            "auto_merge = \"ask\"\n",
+            "reattachment_confidence = 75\n",
+            "sidecar_pattern = \"{name}.md.comments.json\"\n",
+            "show_resolved = true\n",
+            "\n",
+            "[advanced]\n",
+            "verbose_logs = false\n",
+            "\n",
+            "[shortcuts]\n",
+            "font_increase = \"Mod+Shift+=\"\n",
+        );
+        std::fs::write(dir.path().join("settings.toml"), toml_str).unwrap();
+        let store = SettingsStore::open(dir.path()).expect("open");
+        let s = store.get();
+        assert_eq!(
+            s.shortcuts.get("font_increase").map(String::as_str),
+            Some("Mod+Shift+="),
+            "user override must win over default",
+        );
+        // Other defaults still get filled in.
+        assert_eq!(
+            s.shortcuts.get("font_decrease").map(String::as_str),
+            Some("Mod+-"),
+        );
+        assert_eq!(
+            s.shortcuts.get("open_file").map(String::as_str),
+            Some("Mod+O"),
         );
     }
 }

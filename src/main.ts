@@ -177,6 +177,18 @@ export async function main(): Promise<void> {
         const { emit } = await import('@tauri-apps/api/event');
         await emit('menu-action', action);
       },
+      fireKeymapAction(action: 'font_increase' | 'font_decrease' | 'font_reset'): void {
+        // tauri-webdriver-automation does not deliver the W3C Meta key
+        // through `browser.keys(['Meta', '='])` (the actions JSON sent
+        // has `keyDown value: ""` — the harness drops the modifier).
+        // Hook bypasses the keyboard pipeline by calling dispatchAction
+        // directly with the same action the keymap canonicalization
+        // would have produced for `Mod+=` / `Mod+-` / `Mod+0`. Keymap
+        // unit tests cover the key→action mapping (including the
+        // shifted-symbol fold); this hook lets the e2e suite cover the
+        // listener → applyFontDelta → IPC chain on the real WebView.
+        dispatchAction(action);
+      },
     };
   }
 
