@@ -21,6 +21,7 @@
  */
 export const MENU_ACTION_TO_EVENT: Readonly<Record<string, string>> = Object.freeze({
   'open-file': 'mdviewer:open-file',
+  'open-from-drive': 'mdviewer:open-from-drive',
   'new-document': 'mdviewer:new-document',
   'close-tab': 'mdviewer:close-tab',
   'open-settings': 'mdviewer:open-settings',

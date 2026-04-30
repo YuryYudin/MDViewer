@@ -378,6 +378,20 @@ describe('Open from Drive menu action', () => {
     fakeIpc.listRecents.mockResolvedValue([]);
   });
 
+  async function waitForModal(): Promise<void> {
+    // The handler imports the view dynamically (`await import('./views/OpenFromDrive')`),
+    // which resolves on a microtask but only after vite's module loader
+    // walks the dep graph. A single setTimeout(0) wasn't always enough on
+    // first-import cold runs — pre-warm the module so the dynamic import
+    // is cache-hit and a single tick suffices. We pre-import here (not in
+    // beforeEach) so the cache survives across both menu-route tests.
+    await import('../src/views/OpenFromDrive');
+    for (let i = 0; i < 10; i++) {
+      if (document.querySelector('.drive-modal')) return;
+      await new Promise((r) => setTimeout(r, 0));
+    }
+  }
+
   it('mounts the OpenFromDrive modal when mdviewer:open-from-drive fires', async () => {
     // The menu bridge translates the native `open-from-drive` menu id into
     // the `mdviewer:open-from-drive` CustomEvent. main.ts owns the listener
@@ -386,9 +400,7 @@ describe('Open from Drive menu action', () => {
     const { main } = await import('../src/main');
     await main();
     document.dispatchEvent(new CustomEvent('mdviewer:open-from-drive'));
-    // The handler imports the view dynamically so the modal mounts on the
-    // next tick — wait for any pending microtasks.
-    await new Promise((r) => setTimeout(r, 0));
+    await waitForModal();
     expect(document.querySelector('.drive-modal')).toBeTruthy();
   });
 
@@ -400,7 +412,7 @@ describe('Open from Drive menu action', () => {
     await main();
     const { dispatchMenuAction } = await import('../src/menuBridge');
     expect(dispatchMenuAction('open-from-drive')).toBe('mdviewer:open-from-drive');
-    await new Promise((r) => setTimeout(r, 0));
+    await waitForModal();
     expect(document.querySelector('.drive-modal')).toBeTruthy();
   });
 });

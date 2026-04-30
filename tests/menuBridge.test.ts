@@ -20,6 +20,7 @@ describe('menuBridge', () => {
     }
     // The minimum the user explicitly asked for: File menu items + Settings.
     expect(MENU_ACTION_TO_EVENT['open-file']).toBe('mdviewer:open-file');
+    expect(MENU_ACTION_TO_EVENT['open-from-drive']).toBe('mdviewer:open-from-drive');
     expect(MENU_ACTION_TO_EVENT['new-document']).toBe('mdviewer:new-document');
     expect(MENU_ACTION_TO_EVENT['close-tab']).toBe('mdviewer:close-tab');
     expect(MENU_ACTION_TO_EVENT['open-settings']).toBe('mdviewer:open-settings');

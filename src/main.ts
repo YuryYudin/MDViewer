@@ -83,6 +83,22 @@ export async function main(): Promise<void> {
     workspace = await mountWorkspace(root!, tauriIpc);
   }
 
+  // Open-from-Drive entry point. The native menu bridge translates the
+  // `open-from-drive` menu id into this CustomEvent (see menuBridge.ts).
+  // The view is loaded dynamically so unit tests that don't exercise the
+  // modal don't pay its parse cost. Same lazy-mount pattern as the
+  // Settings overlay above.
+  document.addEventListener('mdviewer:open-from-drive', () => {
+    void (async () => {
+      try {
+        const { mountOpenFromDrive } = await import('./views/OpenFromDrive');
+        mountOpenFromDrive();
+      } catch (err) {
+        console.warn('open-from-drive flow failed:', err);
+      }
+    })();
+  });
+
   // Global "open another document" entry point. The TabBar's "+" button
   // and the open_file keymap action both dispatch this, plus StartPage
   // dispatches it from its Open button so the three paths converge on

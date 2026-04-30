@@ -1076,3 +1076,81 @@ body {
   font-size: 13px;
   color: #6a3a0c;
 }
+
+/* =====================================================================
+ * Open-from-Drive modal (B3) — wireframe 04.
+ * Reuses the .modal-overlay backdrop already declared above; only the
+ * card body, hint affordances, and action row need fresh rules.
+ * ===================================================================== */
+.drive-modal .modal-card {
+  width: 480px;
+  max-width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.3);
+  padding: 22px 24px;
+}
+.drive-modal h2 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+.drive-modal .modal-intro {
+  margin: 0 0 14px;
+  color: var(--text-dim);
+  font-size: 12.5px;
+}
+.drive-modal .modal-field {
+  display: block;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+.drive-modal input[type='text'] {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 13px;
+  box-sizing: border-box;
+}
+.drive-modal .modal-hint {
+  margin: 8px 0 14px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.drive-modal .modal-hint[data-state='valid'] {
+  color: var(--text);
+}
+.drive-modal .modal-hint[data-state='invalid'] {
+  color: var(--danger);
+}
+.drive-modal .modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.drive-modal .modal-actions button {
+  padding: 6px 14px;
+  border-radius: 5px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text);
+  cursor: pointer;
+  font-family: var(--sans);
+  font-size: 13px;
+}
+.drive-modal .modal-actions [data-testid='drive-modal-open']:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.drive-modal .modal-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
