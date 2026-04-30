@@ -623,3 +623,79 @@ describe('Drive section', () => {
     expect(last.cloud.drive.custom_oauth_client_id).toBeNull();
   });
 });
+
+// Direct mountDriveSettings tests — exercise the catch-branch + notify path
+// that the parent Settings.ts shell doesn't wire (it omits the optional
+// notify hook). Without these the connect/disconnect failure branches
+// remain uncovered (DriveSettings.ts:103-104 + 116-117).
+describe('Drive section — connect/disconnect failure paths', () => {
+  beforeEach(() => {
+    driveInvoke.mockReset();
+  });
+
+  it('renders an error notify when driveDisconnect rejects', async () => {
+    const root = document.createElement('div');
+    const settings = settingsWithDrive({
+      connected: true,
+      account_email: 'alice@example.com',
+    });
+    driveInvoke.mockRejectedValueOnce(new Error('network down'));
+    const notify = vi.fn();
+    const { mountDriveSettings } = await import('../../src/views/DriveSettings');
+    mountDriveSettings(root, settings, {
+      saveSettings: vi.fn().mockResolvedValue(undefined),
+      notify,
+    });
+    const btn = root.querySelector<HTMLButtonElement>('[data-testid="drive-disconnect-btn"]')!;
+    btn.click();
+    // Two microtask flushes: one for the awaited driveDisconnect rejection,
+    // one for the ensuing catch handler synchronous notify call.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(driveInvoke).toHaveBeenCalledWith('drive_disconnect');
+    expect(notify).toHaveBeenCalledWith(
+      expect.stringMatching(/Failed to disconnect.*network down/),
+      'error',
+    );
+  });
+
+  it('renders an error notify when driveConnect rejects', async () => {
+    const root = document.createElement('div');
+    const settings = settingsWithDrive({ connected: false });
+    driveInvoke.mockRejectedValueOnce(new Error('oauth denied'));
+    const notify = vi.fn();
+    const { mountDriveSettings } = await import('../../src/views/DriveSettings');
+    mountDriveSettings(root, settings, {
+      saveSettings: vi.fn().mockResolvedValue(undefined),
+      notify,
+    });
+    const btn = root.querySelector<HTMLButtonElement>('[data-testid="drive-connect-btn"]')!;
+    btn.click();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(driveInvoke).toHaveBeenCalledWith('drive_connect');
+    expect(notify).toHaveBeenCalledWith(
+      expect.stringMatching(/Failed to connect.*oauth denied/),
+      'error',
+    );
+  });
+
+  it('does not throw when driveDisconnect rejects with no notify hook supplied', async () => {
+    // Defense against the optional-chaining branch (deps.notify?.) — the
+    // failure path must still be silent-safe when the caller (today's
+    // Settings.ts) omits the notify hook.
+    const root = document.createElement('div');
+    const settings = settingsWithDrive({ connected: true, account_email: 'a@b' });
+    driveInvoke.mockRejectedValueOnce(new Error('boom'));
+    const { mountDriveSettings } = await import('../../src/views/DriveSettings');
+    mountDriveSettings(root, settings, {
+      saveSettings: vi.fn().mockResolvedValue(undefined),
+    });
+    const btn = root.querySelector<HTMLButtonElement>('[data-testid="drive-disconnect-btn"]')!;
+    expect(() => btn.click()).not.toThrow();
+    await Promise.resolve();
+    await Promise.resolve();
+    // No assertion needed beyond "did not throw". The aim is to cover the
+    // `deps.notify?.()` short-circuit branch alongside the wired one above.
+  });
+});
