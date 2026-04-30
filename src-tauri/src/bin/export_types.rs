@@ -79,6 +79,11 @@ fn export_all() -> Result<String, Box<dyn std::error::Error>> {
     buf.push_str(&mdviewer_lib::recents::RecentEntry::export_to_string().unwrap());
     buf.push_str("\n");
 
+    // Font-size feature: per-document font-size override. Crosses IPC via
+    // `get_doc_pref` / `set_doc_pref` / `delete_doc_pref` (see main.rs).
+    buf.push_str(&mdviewer_lib::doc_prefs::DocPref::export_to_string().unwrap());
+    buf.push_str("\n");
+
     // A5 appends `RenderResult`, `RenderOptions`.
     // A6 appends `Anchor`, `ResolveOutcome`.
     // A7 appends `Thread`, `Comment`, `NewThread`, `NewComment`.

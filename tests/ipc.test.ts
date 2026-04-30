@@ -13,9 +13,10 @@ const invoke = vi.fn();
 vi.mock('@tauri-apps/api/core', () => ({ invoke: (...args: unknown[]) => invoke(...args) }));
 
 import { tauriIpc, type Ipc } from '../src/ipc';
-import type { Anchor, Settings } from '../src/ipc';
+import type { Anchor, DocPref, Settings } from '../src/ipc';
 
 const dummyAnchor: Anchor = { start: 0, end: 4, exact: 'abcd', prefix: '', suffix: '' };
+const dummyDocPref: DocPref = { font_size_px: 16 };
 const dummySettings: Settings = {
   profile: { user_id: 'u', display_name: 'D', color: '#fff' },
   appearance: { theme: 'light', font_size_px: 14, line_height: 1.5, density: 'normal' },
@@ -83,6 +84,57 @@ describe('tauriIpc', () => {
   it('setSettings invokes set_settings with { settings }', async () => {
     await tauriIpc.setSettings(dummySettings);
     expect(invoke).toHaveBeenCalledWith('set_settings', { settings: dummySettings });
+  });
+
+  it('setSettings dispatches mdviewer:settings-changed on document with detail = settings', async () => {
+    // The wrapper dispatches a CustomEvent on `document` after a successful
+    // set_settings invoke. Workspace.ts (A9) subscribes to this so the
+    // toolbar font-size readout stays in sync when the global default
+    // changes from the Settings UI.
+    const handler = vi.fn();
+    document.addEventListener('mdviewer:settings-changed', handler as EventListener, {
+      once: true,
+    });
+    await tauriIpc.setSettings(dummySettings);
+    expect(handler).toHaveBeenCalledTimes(1);
+    const ev = handler.mock.calls[0][0] as CustomEvent<Settings>;
+    expect(ev.detail).toEqual(dummySettings);
+  });
+
+  it('setSettings does NOT dispatch the event when the invoke rejects', async () => {
+    // Listeners only fire on a successful save; a rejection from the Rust
+    // handler must surface as a thrown promise without a stale event.
+    invoke.mockRejectedValueOnce(new Error('boom'));
+    const handler = vi.fn();
+    document.addEventListener('mdviewer:settings-changed', handler as EventListener, {
+      once: true,
+    });
+    await expect(tauriIpc.setSettings(dummySettings)).rejects.toThrow('boom');
+    expect(handler).not.toHaveBeenCalled();
+    document.removeEventListener('mdviewer:settings-changed', handler as EventListener);
+  });
+
+  it('getDocPref invokes get_doc_pref with { path }', async () => {
+    invoke.mockResolvedValueOnce(dummyDocPref);
+    const got = await tauriIpc.getDocPref('/x.md');
+    expect(invoke).toHaveBeenCalledWith('get_doc_pref', { path: '/x.md' });
+    expect(got).toEqual(dummyDocPref);
+  });
+
+  it('getDocPref returns null when the Rust handler reports no override', async () => {
+    invoke.mockResolvedValueOnce(null);
+    const got = await tauriIpc.getDocPref('/missing.md');
+    expect(got).toBeNull();
+  });
+
+  it('setDocPref invokes set_doc_pref with { path, pref }', async () => {
+    await tauriIpc.setDocPref('/x.md', dummyDocPref);
+    expect(invoke).toHaveBeenCalledWith('set_doc_pref', { path: '/x.md', pref: dummyDocPref });
+  });
+
+  it('deleteDocPref invokes delete_doc_pref with { path }', async () => {
+    await tauriIpc.deleteDocPref('/x.md');
+    expect(invoke).toHaveBeenCalledWith('delete_doc_pref', { path: '/x.md' });
   });
 
   it('listThreads invokes list_threads with { tabId }', async () => {
@@ -180,10 +232,13 @@ describe('tauriIpc', () => {
       'diffMd',
       'exportDocument',
       'reloadDocument',
+      'getDocPref',
+      'setDocPref',
+      'deleteDocPref',
     ];
     for (const m of required) {
       expect(typeof tauriIpc[m]).toBe('function');
     }
-    expect(required.length).toBe(19);
+    expect(required.length).toBe(22);
   });
 });

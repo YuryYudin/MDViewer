@@ -28,6 +28,7 @@ export type {
   ExportResult,
   RecentEntry,
   TabSummary,
+  DocPref,
 } from './types-generated';
 
 import type {
@@ -43,6 +44,7 @@ import type {
   ExportResult,
   RecentEntry,
   TabSummary,
+  DocPref,
 } from './types-generated';
 
 // `Anchor` is the canonical name across the wire. Older planning notes used
@@ -112,7 +114,32 @@ export interface Ipc {
    * doesn't surface as an external-change event.
    */
   importComments(args: { tabId: string; incomingPath: string }): Promise<void>;
+  /**
+   * Font-size feature: read the per-document font-size override for `path`.
+   * Returns `null` when no entry exists (the toolbar then falls back to the
+   * global default from `Settings.appearance.font_size_px`).
+   */
+  getDocPref(path: string): Promise<DocPref | null>;
+  /**
+   * Font-size feature: persist a per-document override for `path`. The Rust
+   * handler clamps `font_size_px` into `10..=24` before writing — frontend
+   * code can pass user input through unchanged.
+   */
+  setDocPref(path: string, pref: DocPref): Promise<void>;
+  /**
+   * Font-size feature: clear the per-document override for `path` (the
+   * "reset to global default" path). A missing entry is a no-op.
+   */
+  deleteDocPref(path: string): Promise<void>;
 }
+
+/**
+ * CustomEvent name fired on `document` after a successful `set_settings`
+ * round-trip. Workspace.ts (A9) subscribes to this so the toolbar
+ * font-size readout doesn't go stale when the global default is changed
+ * from the Settings UI.
+ */
+const SETTINGS_CHANGED_EVENT = 'mdviewer:settings-changed';
 
 export const tauriIpc: Ipc = {
   appInfo: () => invoke('app_info'),
@@ -122,7 +149,14 @@ export const tauriIpc: Ipc = {
   listOpenDocuments: () => invoke('list_open_documents'),
   listRecents: () => invoke('list_recents'),
   getSettings: () => invoke('get_settings'),
-  setSettings: (s) => invoke('set_settings', { settings: s }),
+  // Wraps the bare `invoke('set_settings', ...)` so a successful save also
+  // broadcasts `mdviewer:settings-changed` on `document`. The dispatch is
+  // intentionally AFTER `await invoke` — listeners only fire when the Rust
+  // handler accepted the write. A rejection re-throws untouched (no event).
+  setSettings: async (s) => {
+    await invoke('set_settings', { settings: s });
+    document.dispatchEvent(new CustomEvent(SETTINGS_CHANGED_EVENT, { detail: s }));
+  },
   listThreads: (tabId) => invoke('list_threads', { tabId }),
   createThread: (tabId, anchor, body) => invoke('create_thread', { tabId, anchor, body }),
   // post_reply / resolve_thread take tab_id explicitly (the Rust handler uses
@@ -140,4 +174,9 @@ export const tauriIpc: Ipc = {
   reloadDocument: (path) => invoke<OpenResult>('reload_document', { path }),
   importComments: (args) =>
     invoke<void>('import_comments', { tabId: args.tabId, incomingPath: args.incomingPath }),
+  // Doc-pref wrappers (A4). Argument shapes match the Rust handlers in
+  // src-tauri/src/main.rs (`get_doc_pref` / `set_doc_pref` / `delete_doc_pref`).
+  getDocPref: (path) => invoke<DocPref | null>('get_doc_pref', { path }),
+  setDocPref: (path, pref) => invoke<void>('set_doc_pref', { path, pref }),
+  deleteDocPref: (path) => invoke<void>('delete_doc_pref', { path }),
 };
