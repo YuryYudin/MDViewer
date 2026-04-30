@@ -71,6 +71,11 @@ tauri-plugin-stronghold = "2"
 tiny_http = "0.12"
 urlencoding = "2"
 keyring = { version = "3", default-features = false, features = ["apple-native", "windows-native", "sync-secret-service"] }
+# `sha2` + `getrandom` back the vault-key derivation in `drive::keyring`:
+# a per-machine random salt (getrandom) is hashed (sha2) to produce the
+# 32-byte key Stronghold uses to encrypt the OAuth refresh token at rest.
+sha2 = "0.10"
+getrandom = "0.2"
 
 # E2E testing on macOS. Optional dep gated behind the `e2e` feature so
 # release bundles built without the feature never expose a WebDriver port.

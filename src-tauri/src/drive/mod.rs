@@ -4,6 +4,8 @@
 //! `workspace::Tab` (added in A7) plus the `DriveStatus` snapshot consumed by
 //! the status pill view (added in A8).
 
+pub mod keyring;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
