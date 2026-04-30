@@ -426,6 +426,182 @@ describe('Document', () => {
     });
   });
 
+  describe('font-zoom cluster', () => {
+    it('renders a span[data-region="font-zoom"].zoom with the three controls in order', async () => {
+      const root = makeRoot();
+      await mountDocument(root, ipc(), { tabId: 't', html, threads: [] });
+      const cluster = root.querySelector<HTMLSpanElement>(
+        '[data-region="doc-toolbar"] span[data-region="font-zoom"]',
+      );
+      expect(cluster).toBeTruthy();
+      expect(cluster!.tagName.toLowerCase()).toBe('span');
+      expect(cluster!.classList.contains('zoom')).toBe(true);
+      // The three controls in order: decrease, readout/reset, increase
+      const buttons = Array.from(cluster!.querySelectorAll('button'));
+      expect(buttons.length).toBe(3);
+      expect(buttons[0]!.getAttribute('data-action')).toBe('font-decrease');
+      expect(buttons[1]!.getAttribute('data-action')).toBe('font-reset');
+      expect(buttons[1]!.getAttribute('data-test')).toBe('font-readout');
+      expect(buttons[2]!.getAttribute('data-action')).toBe('font-increase');
+    });
+
+    it('cluster sits after the Share button in the toolbar', async () => {
+      const root = makeRoot();
+      await mountDocument(root, ipc(), { tabId: 't', html, threads: [] });
+      const toolbar = root.querySelector<HTMLDivElement>('[data-region="doc-toolbar"]')!;
+      const shareIdx = Array.from(toolbar.children).findIndex(
+        (c) => c.getAttribute('data-action') === 'share',
+      );
+      const clusterIdx = Array.from(toolbar.children).findIndex(
+        (c) => c.getAttribute('data-region') === 'font-zoom',
+      );
+      expect(shareIdx).toBeGreaterThanOrEqual(0);
+      expect(clusterIdx).toBeGreaterThan(shareIdx);
+    });
+
+    it('readout reflects the configured value (default 14)', async () => {
+      const root = makeRoot();
+      await mountDocument(root, ipc(), { tabId: 't', html, threads: [] });
+      const readout = root.querySelector<HTMLButtonElement>('[data-test="font-readout"]')!;
+      expect(readout.textContent).toBe('14');
+    });
+
+    it('readout reflects an explicit fontSizePx prop', async () => {
+      const root = makeRoot();
+      await mountDocument(root, ipc(), {
+        tabId: 't',
+        html,
+        threads: [],
+        fontSizePx: 18,
+      });
+      const readout = root.querySelector<HTMLButtonElement>('[data-test="font-readout"]')!;
+      expect(readout.textContent).toBe('18');
+    });
+
+    it('clicking decrease dispatches mdviewer:font-decrease on document', async () => {
+      const root = makeRoot();
+      await mountDocument(root, ipc(), { tabId: 't', html, threads: [] });
+      const listener = vi.fn();
+      document.addEventListener('mdviewer:font-decrease', listener as EventListener);
+      try {
+        const btn = root.querySelector<HTMLButtonElement>('[data-action="font-decrease"]')!;
+        btn.click();
+        expect(listener).toHaveBeenCalledTimes(1);
+        const ev = listener.mock.calls[0]![0] as CustomEvent;
+        expect(ev.type).toBe('mdviewer:font-decrease');
+        // No payload — Workspace.ts owns the deltas, not Document.ts
+        expect(ev.detail).toBeNull();
+      } finally {
+        document.removeEventListener('mdviewer:font-decrease', listener as EventListener);
+      }
+    });
+
+    it('clicking the readout (reset) dispatches mdviewer:font-reset', async () => {
+      const root = makeRoot();
+      await mountDocument(root, ipc(), { tabId: 't', html, threads: [] });
+      const listener = vi.fn();
+      document.addEventListener('mdviewer:font-reset', listener as EventListener);
+      try {
+        const btn = root.querySelector<HTMLButtonElement>('[data-action="font-reset"]')!;
+        btn.click();
+        expect(listener).toHaveBeenCalledTimes(1);
+        expect((listener.mock.calls[0]![0] as CustomEvent).type).toBe('mdviewer:font-reset');
+      } finally {
+        document.removeEventListener('mdviewer:font-reset', listener as EventListener);
+      }
+    });
+
+    it('clicking increase dispatches mdviewer:font-increase', async () => {
+      const root = makeRoot();
+      await mountDocument(root, ipc(), { tabId: 't', html, threads: [] });
+      const listener = vi.fn();
+      document.addEventListener('mdviewer:font-increase', listener as EventListener);
+      try {
+        const btn = root.querySelector<HTMLButtonElement>('[data-action="font-increase"]')!;
+        btn.click();
+        expect(listener).toHaveBeenCalledTimes(1);
+        expect((listener.mock.calls[0]![0] as CustomEvent).type).toBe(
+          'mdviewer:font-increase',
+        );
+      } finally {
+        document.removeEventListener('mdviewer:font-increase', listener as EventListener);
+      }
+    });
+
+    it('at the minimum (10 px) the decrease button is disabled and titled', async () => {
+      const root = makeRoot();
+      await mountDocument(root, ipc(), {
+        tabId: 't',
+        html,
+        threads: [],
+        fontSizePx: 10,
+      });
+      const dec = root.querySelector<HTMLButtonElement>('[data-action="font-decrease"]')!;
+      const inc = root.querySelector<HTMLButtonElement>('[data-action="font-increase"]')!;
+      expect(dec.disabled).toBe(true);
+      expect(dec.getAttribute('title')).toBe('Already at minimum (10 px)');
+      expect(inc.disabled).toBe(false);
+    });
+
+    it('at the maximum (24 px) the increase button is disabled and titled', async () => {
+      const root = makeRoot();
+      await mountDocument(root, ipc(), {
+        tabId: 't',
+        html,
+        threads: [],
+        fontSizePx: 24,
+      });
+      const dec = root.querySelector<HTMLButtonElement>('[data-action="font-decrease"]')!;
+      const inc = root.querySelector<HTMLButtonElement>('[data-action="font-increase"]')!;
+      expect(inc.disabled).toBe(true);
+      expect(inc.getAttribute('title')).toBe('Already at maximum (24 px)');
+      expect(dec.disabled).toBe(false);
+    });
+
+    it('at a mid value (14 px) neither bound button is disabled', async () => {
+      const root = makeRoot();
+      await mountDocument(root, ipc(), {
+        tabId: 't',
+        html,
+        threads: [],
+        fontSizePx: 14,
+      });
+      const dec = root.querySelector<HTMLButtonElement>('[data-action="font-decrease"]')!;
+      const inc = root.querySelector<HTMLButtonElement>('[data-action="font-increase"]')!;
+      expect(dec.disabled).toBe(false);
+      expect(inc.disabled).toBe(false);
+    });
+
+    it('the readout reset button is never disabled', async () => {
+      // At min and at max, the readout still needs to be clickable to reset.
+      for (const px of [10, 14, 24]) {
+        const root = makeRoot();
+        await mountDocument(root, ipc(), { tabId: 't', html, threads: [], fontSizePx: px });
+        const readout = root.querySelector<HTMLButtonElement>('[data-action="font-reset"]')!;
+        expect(readout.disabled).toBe(false);
+      }
+    });
+
+    it('cluster is visible in BOTH View and Edit modes', async () => {
+      const root = makeRoot();
+      const view = await mountDocument(root, ipc(), {
+        tabId: 't',
+        path: '/tmp/a.md',
+        source: 'Hello',
+        settings: settings(),
+        html,
+        threads: [],
+      });
+      // View mode: visible
+      let cluster = root.querySelector<HTMLSpanElement>('[data-region="font-zoom"]')!;
+      expect(cluster.hidden).toBe(false);
+      // Switch to Edit mode
+      await view.setMode('edit');
+      cluster = root.querySelector<HTMLSpanElement>('[data-region="font-zoom"]')!;
+      expect(cluster.hidden).toBe(false);
+    });
+  });
+
   it('uses textContent length when the selection container is an element (not a text node)', async () => {
     const root = makeRoot();
     // The span carrier itself has data-src-offset; setting the range's start

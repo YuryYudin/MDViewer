@@ -21,7 +21,24 @@ export interface DocumentMountArgs {
    * used by Workspace to refresh the sidebar's orphan section.
    */
   onOrphansChanged?(orphans: Thread[]): void;
+  /**
+   * Initial value rendered in the doc-toolbar's font-zoom readout, used to
+   * pick the disabled state for the `−` / `+` buttons. Defaults to 14 px to
+   * match the wireframe's default panel. Workspace.ts (A9) updates the
+   * readout text + disabled states as the size changes after mount; this
+   * prop only seeds the first render so the displayed number agrees with
+   * whatever the active tab's effective size is at mount time.
+   */
+  fontSizePx?: number;
 }
+
+/**
+ * Lower / upper bounds for the per-document font-size override. The Settings
+ * panel slider uses the same `[10, 24]` range; A9's Workspace listener clamps
+ * to the same bounds before persisting via IPC.
+ */
+const FONT_SIZE_MIN_PX = 10;
+const FONT_SIZE_MAX_PX = 24;
 
 export type DocumentMode = 'view' | 'edit';
 
@@ -84,6 +101,65 @@ export async function mountDocument(
     );
   });
   toolbar.appendChild(shareBtn);
+
+  // Font-zoom cluster — sits after Share, visible in BOTH View and Edit modes
+  // (in Edit mode the actions only affect the next View render; the editor
+  // textarea is intentionally unscaled per Non-Goals). The element types and
+  // class match the existing `.doc-toolbar .zoom` CSS in `app.css`. Each
+  // button dispatches a detail-less CustomEvent on `document`; A9's
+  // Workspace listener owns the clamp / persist / readout update flow.
+  const fontSizePx = args.fontSizePx ?? 14;
+  const zoom = document.createElement('span');
+  zoom.setAttribute('data-region', 'font-zoom');
+  zoom.classList.add('zoom');
+
+  const decreaseBtn = document.createElement('button');
+  decreaseBtn.setAttribute('data-action', 'font-decrease');
+  decreaseBtn.textContent = '−';
+  decreaseBtn.addEventListener('click', () => {
+    document.dispatchEvent(new CustomEvent('mdviewer:font-decrease'));
+  });
+
+  // The readout doubles as the Reset button — clicking it dispatches
+  // mdviewer:font-reset. It is a real <button> (not a <span>) so it joins
+  // the toolbar's Tab order and has implicit `role=button`.
+  const readoutBtn = document.createElement('button');
+  readoutBtn.setAttribute('data-action', 'font-reset');
+  readoutBtn.setAttribute('data-test', 'font-readout');
+  readoutBtn.setAttribute('title', 'Reset to global default');
+  readoutBtn.textContent = String(fontSizePx);
+  readoutBtn.addEventListener('click', () => {
+    document.dispatchEvent(new CustomEvent('mdviewer:font-reset'));
+  });
+
+  const increaseBtn = document.createElement('button');
+  increaseBtn.setAttribute('data-action', 'font-increase');
+  increaseBtn.textContent = '+';
+  increaseBtn.addEventListener('click', () => {
+    document.dispatchEvent(new CustomEvent('mdviewer:font-increase'));
+  });
+
+  // Bound state — disable + retitle the matching no-op button. Reset's title
+  // never changes because reset is always a valid intent. The non-bound side
+  // gets a plain "Decrease/Increase font size" tooltip.
+  if (fontSizePx <= FONT_SIZE_MIN_PX) {
+    decreaseBtn.disabled = true;
+    decreaseBtn.setAttribute('title', `Already at minimum (${FONT_SIZE_MIN_PX} px)`);
+  } else {
+    decreaseBtn.setAttribute('title', 'Decrease font size');
+  }
+  if (fontSizePx >= FONT_SIZE_MAX_PX) {
+    increaseBtn.disabled = true;
+    increaseBtn.setAttribute('title', `Already at maximum (${FONT_SIZE_MAX_PX} px)`);
+  } else {
+    increaseBtn.setAttribute('title', 'Increase font size');
+  }
+
+  zoom.appendChild(decreaseBtn);
+  zoom.appendChild(readoutBtn);
+  zoom.appendChild(increaseBtn);
+  toolbar.appendChild(zoom);
+
   view.appendChild(toolbar);
 
   const render = document.createElement('div');
