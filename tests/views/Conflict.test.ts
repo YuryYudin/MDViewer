@@ -62,7 +62,8 @@ describe('Conflict', () => {
     await mountConflict(root, ipc, { tabId: 't', path: '/tmp/a.md', local: 'left', incoming: 'right' });
     (root.querySelector('[data-action="finish-merge"]') as HTMLButtonElement).click();
     await Promise.resolve();
-    expect(save).toHaveBeenCalledWith('/tmp/a.md', 'left');
+    // B2: saveDocument now takes tabId (not path).
+    expect(save).toHaveBeenCalledWith('t', 'left');
   });
 
   it('Accept Right then Finish merge writes the incoming bytes', async () => {
@@ -84,7 +85,8 @@ describe('Conflict', () => {
     (root.querySelector('[data-action="accept-right"]') as HTMLButtonElement).click();
     (root.querySelector('[data-action="finish-merge"]') as HTMLButtonElement).click();
     await Promise.resolve();
-    expect(save).toHaveBeenCalledWith('/tmp/a.md', 'right');
+    // B2: saveDocument now takes tabId (not path).
+    expect(save).toHaveBeenCalledWith('t', 'right');
   });
 
   it('Hand-edit substitutes the textarea contents on Finish merge', async () => {
@@ -110,7 +112,8 @@ describe('Conflict', () => {
     ta.dispatchEvent(new Event('input'));
     (root.querySelector('[data-action="finish-merge"]') as HTMLButtonElement).click();
     await Promise.resolve();
-    expect(save).toHaveBeenCalledWith('/tmp/a.md', 'merged-by-hand');
+    // B2: saveDocument now takes tabId (not path).
+    expect(save).toHaveBeenCalledWith('t', 'merged-by-hand');
   });
 
   it('emits conflict-resolved after saveDocument completes', async () => {

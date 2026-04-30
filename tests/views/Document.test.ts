@@ -334,7 +334,8 @@ describe('Document', () => {
       ta.value = 'Hello world!';
       await view.setMode('view');
       expect(view.mode()).toBe('view');
-      expect(ipcStub.saveDocument).toHaveBeenCalledWith('/tmp/a.md', 'Hello world!');
+      // B2: saveDocument now takes tabId (not path).
+      expect(ipcStub.saveDocument).toHaveBeenCalledWith('t', 'Hello world!');
       expect(ipcStub.renderMarkdown).toHaveBeenCalledWith('Hello world!');
     });
 

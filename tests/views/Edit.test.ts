@@ -51,7 +51,7 @@ describe('Edit', () => {
     expect(ipc.saveDocument).not.toHaveBeenCalled();
     vi.advanceTimersByTime(1);
     await Promise.resolve();
-    expect(ipc.saveDocument).toHaveBeenCalledWith('/tmp/a.md', 'hello world');
+    expect(ipc.saveDocument).toHaveBeenCalledWith('t', 'hello world');
   });
 
   it('cancels prior debounce when another keystroke arrives within the window', async () => {
@@ -78,7 +78,7 @@ describe('Edit', () => {
     vi.advanceTimersByTime(100);
     await Promise.resolve();
     expect(ipc.saveDocument).toHaveBeenCalledTimes(1);
-    expect(ipc.saveDocument).toHaveBeenCalledWith('/tmp/a.md', 'ab');
+    expect(ipc.saveDocument).toHaveBeenCalledWith('t', 'ab');
   });
 
   it('reflects word_wrap and show_whitespace settings on the textarea', () => {
@@ -133,7 +133,9 @@ describe('Edit', () => {
     ta.dispatchEvent(new Event('input'));
     await view.forceSave();
     expect(ipc.saveDocument).toHaveBeenCalledTimes(1);
-    expect(ipc.saveDocument).toHaveBeenCalledWith('/tmp/a.md', 'fresh');
+    // B2: saveDocument now takes tabId (not path) so dispatch can pick the
+    // right backend without re-deriving it from the path.
+    expect(ipc.saveDocument).toHaveBeenCalledWith('t', 'fresh');
     // Advance past the original debounce window — pending timer should have
     // been canceled when forceSave ran, so the count stays at 1.
     vi.advanceTimersByTime(2000);
@@ -161,7 +163,8 @@ describe('Edit', () => {
     btn.click();
     await Promise.resolve();
     await Promise.resolve();
-    expect(ipc.saveDocument).toHaveBeenCalledWith('/tmp/a.md', 'updated');
+    // B2: saveDocument now takes tabId (not path).
+    expect(ipc.saveDocument).toHaveBeenCalledWith('t', 'updated');
     expect(ipc.saveDocument).toHaveBeenCalledTimes(1);
   });
 

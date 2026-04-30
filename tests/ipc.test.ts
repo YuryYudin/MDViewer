@@ -181,11 +181,14 @@ describe('tauriIpc', () => {
     });
   });
 
-  it('saveDocument invokes save_document with { path, contents }', async () => {
-    await tauriIpc.saveDocument('/x.md', 'hello');
+  it('saveDocument invokes save_document with { tabId, body }', async () => {
+    // B2 wire-shape change: pass tabId (not path) so the Rust dispatch can
+    // pick the right backend (Local / DriveApi / DriveDesktop) without
+    // re-deriving it from the path. The contents arg is serialized as `body`.
+    await tauriIpc.saveDocument('tab-1', 'hello');
     expect(invoke).toHaveBeenCalledWith('save_document', {
-      path: '/x.md',
-      contents: 'hello',
+      tabId: 'tab-1',
+      body: 'hello',
     });
   });
 
