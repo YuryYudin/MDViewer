@@ -62,6 +62,15 @@ pub struct Tab {
     /// demand via the `file_id` resolver. Populated by B2 once `drive_open_url`
     /// returns a resolved file_id.
     pub file_id: Option<String>,
+    /// B2: Drive resource ETag for `backend == DriveApi` tabs. `None` for
+    /// Local + DriveDesktop tabs and as the initial value on a freshly-
+    /// opened DriveApi tab; populated by `drive_open_url` from
+    /// `download_to_cache`'s outcome and refreshed by B5's `save_drive_api_tab`
+    /// success path. Source of truth for the `If-Match` header on the next
+    /// save. Optional so it can't conflict with non-Drive callers and so
+    /// existing literal constructors only need a single `etag: None` field
+    /// added.
+    pub etag: Option<String>,
 }
 
 impl Tab {
@@ -74,6 +83,17 @@ impl Tab {
     /// recognized mount upgrade to `DriveDesktop`. `DriveApi` is never the
     /// default — it's exclusively set by B2's `drive_open_url` flow, which
     /// resolves a Drive URL to a file_id and stamps the backend at construction.
+    /// Wire-shaped projection used by `drive_open_url` (and any future
+    /// caller that needs the same `(id, path)` envelope `list_open_documents`
+    /// emits). Lives on `Tab` so the IPC layer doesn't have to duplicate
+    /// the field-mapping every place it produces a TabSummary.
+    pub fn summary(&self) -> TabSummary {
+        TabSummary {
+            id: self.id.clone(),
+            path: self.path.clone(),
+        }
+    }
+
     pub fn compute_backend(path: &Path, drive_connected: bool) -> TabBackend {
         if !drive_connected {
             return TabBackend::Local;
@@ -303,6 +323,123 @@ impl Workspace {
         anyhow::bail!("not yet implemented")
     }
 
+    /// B2: open a Drive markdown document by URL paste. Parses the URL into
+    /// a `file_id`, de-dupes against any already-open DriveApi tab on that
+    /// file_id (returns the existing handle in that case), then fetches
+    /// metadata, downloads to cache, and registers a new DriveApi-backed
+    /// tab. The fresh tab carries the resource ETag from the download so
+    /// the next save can build an `If-Match` header without a cache_meta
+    /// roundtrip.
+    ///
+    /// Comments are intentionally NOT fetched here — the polling loop's
+    /// first iteration populates them. This keeps the URL-paste flow snappy
+    /// and unifies the comment-load path with the steady-state behavior.
+    pub fn drive_open_url(&mut self, url: &str) -> Result<TabSummary, crate::drive::DriveError> {
+        let file_id = crate::drive::parse_drive_url(url)?;
+
+        // De-dupe: if an existing DriveApi tab already references this
+        // file_id, return its summary instead of opening a duplicate.
+        // Iterates `.values()` because `self.tabs` is a HashMap keyed by
+        // tab id, not by file_id.
+        if let Some(existing) = self.tabs.values().find(|t| {
+            matches!(t.backend, TabBackend::DriveApi)
+                && t.file_id.as_deref() == Some(file_id.as_str())
+        }) {
+            return Ok(existing.summary());
+        }
+
+        let api = self
+            .drive_api
+            .as_ref()
+            .ok_or(crate::drive::DriveError::NotConnected)?
+            .clone();
+        let meta = api.files_get_metadata(&file_id)?;
+        let cfg = self.config_dir.clone();
+        let outcome =
+            crate::drive::files::download_to_cache(&api, &cfg, &file_id, &meta.name)?;
+
+        // Read the freshly-downloaded body so the in-memory tab carries the
+        // same source the editor will display. Treat read failures as a
+        // generic Drive Api error — the file just hit the cache, so a
+        // failure here points at a real fs problem.
+        let source = std::fs::read_to_string(&outcome.cache_path)
+            .map_err(|e| crate::drive::DriveError::Api(e.to_string()))?;
+        let s = self.settings.get();
+        let opts = RenderOptions {
+            syntax_highlighting: s.editor.syntax_highlighting,
+            mermaid_enabled: s.editor.mermaid_enabled,
+        };
+        let render = render_markdown(&source, &opts);
+
+        let id = format!(
+            "tab-{:x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        let tab = Tab {
+            id: id.clone(),
+            path: outcome.cache_path.clone(),
+            source: source.clone(),
+            render,
+            // Empty comments at open — the polling loop populates them on
+            // the next tick. See the doc-comment above for why.
+            comments: CommentsStore::new(),
+            last_saved_snapshot: Some(source),
+            backend: TabBackend::DriveApi,
+            file_id: Some(file_id),
+            etag: Some(outcome.etag.clone()),
+        };
+        let summary = tab.summary();
+        self.tabs.insert(id.clone(), tab);
+        self.order.push(id.clone());
+        self.active = Some(id);
+        Ok(summary)
+    }
+
+    /// B5 dispatch path — uploads `local` to Drive with `If-Match: etag`.
+    /// On a 412 (PreconditionFailed) the helper fetches the remote bytes
+    /// and surfaces a `SaveError::DriveConflict { local, remote, source: DriveApiEtag }`
+    /// so the IPC layer can route it into the existing diff-merge view.
+    /// On success the new ETag is returned (the IPC handler then refreshes
+    /// the tab's `etag` field so the next round picks up the latest value).
+    pub fn save_drive_api_tab(
+        &mut self,
+        tab_id: &str,
+        local: &[u8],
+        etag: &str,
+    ) -> Result<String, SaveError> {
+        let api = self
+            .drive_api
+            .as_ref()
+            .ok_or_else(|| SaveError::Drive(crate::drive::DriveError::NotConnected))?
+            .clone();
+        let file_id = self
+            .tabs
+            .get(tab_id)
+            .and_then(|t| t.file_id.clone())
+            .ok_or_else(|| SaveError::Drive(crate::drive::DriveError::Api("no file_id".into())))?;
+        match crate::drive::files::upload_with_etag(&api, &file_id, local, etag) {
+            Ok(crate::drive::files::UploadOutcome::Updated { new_etag }) => Ok(new_etag),
+            Err(crate::drive::DriveError::PreconditionFailed) => {
+                let resp = api
+                    .raw_get_media(&file_id)
+                    .map_err(SaveError::Drive)?;
+                let remote = resp
+                    .bytes()
+                    .map_err(|e| SaveError::Drive(crate::drive::DriveError::Network(e.to_string())))?
+                    .to_vec();
+                Err(SaveError::DriveConflict {
+                    local: local.to_vec(),
+                    remote,
+                    source: ConflictSource::DriveApiEtag,
+                })
+            }
+            Err(e) => Err(SaveError::Drive(e)),
+        }
+    }
+
     /// A7: stub for B2's `drive_get_collaborators` IPC handler. Returns the
     /// list of `DriveCollaborator`s for `file_id`. B2 calls
     /// `drive_api.list_permissions(file_id)`.
@@ -482,6 +619,10 @@ impl Workspace {
                 last_saved_snapshot: Some(source),
                 backend,
                 file_id: None,
+                // B2: DriveApi tabs set this from download_to_cache's outcome;
+                // Local + DriveDesktop tabs leave it None — they have no
+                // ETag concept.
+                etag: None,
             },
         );
         self.order.push(id.clone());
@@ -606,6 +747,14 @@ impl Workspace {
         self.tabs.get(id)
     }
 
+    /// B2: mutable accessor for the post-save etag refresh path. The
+    /// `save_document` IPC handler in main.rs needs to update `tab.etag`
+    /// after a successful DriveApi upload — without exposing `tabs`
+    /// directly, this accessor is the narrow API for that single mutation.
+    pub fn tab_mut(&mut self, id: &str) -> Option<&mut Tab> {
+        self.tabs.get_mut(id)
+    }
+
     pub fn comments_for(&self, tab_id: &str) -> Result<&CommentsStore> {
         self.tabs
             .get(tab_id)
@@ -632,6 +781,86 @@ impl Workspace {
             .ok_or_else(|| anyhow::anyhow!("no such tab: {tab_id}"))?;
         let threshold = self.settings.get().comments.reattachment_confidence;
         Ok(anchor::resolve_anchor_with_threshold(&tab.source, a, threshold))
+    }
+}
+
+/// B2 (groundwork for B5): typed save-path error. The dispatch in main.rs
+/// matches on this and turns `DriveConflict` into a `SaveOutcome::Conflict`
+/// payload that the existing diff-merge view can render. `Io` and `Drive`
+/// surface as plain `Err(String)` so the existing toast path picks them up.
+#[derive(Debug)]
+pub enum SaveError {
+    Io(std::io::Error),
+    Drive(crate::drive::DriveError),
+    /// Both the user's local bytes and the freshly-fetched remote bytes
+    /// the conflict diff needs. `source` disambiguates the two Drive code
+    /// paths (DriveApi 412 vs DriveDesktop watcher mismatch) so wireframe
+    /// 07's banner copy can be picked accordingly.
+    DriveConflict {
+        local: Vec<u8>,
+        remote: Vec<u8>,
+        source: ConflictSource,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum ConflictSource {
+    DriveApiEtag,
+    DriveDesktopWatcher,
+}
+
+/// Test helpers exposed at `pub` (rather than `#[cfg(test)]`) so the
+/// integration test crates under `src-tauri/tests/` — which are separate
+/// crates from `mdviewer_lib` and so don't see `cfg(test)` items — can
+/// stand up Workspaces with stubbed Drive state. Production callers must
+/// not invoke any of the `*_for_test` / `test_*` methods; the naming
+/// convention is the contract.
+impl Workspace {
+    /// Test-only constructor that wraps `Workspace::new` with `expect`. The
+    /// real constructor returns `anyhow::Result` because `SettingsStore::open`
+    /// can fail on disk I/O — tests can panic on that branch since they
+    /// always pass a fresh tempdir.
+    pub fn new_for_test(config_dir: &std::path::Path) -> Self {
+        Self::new(config_dir).expect("Workspace::new for tests")
+    }
+
+    /// Test-only setter so integration tests can inject a stub `DriveApi`
+    /// (one whose base URL points at `MDVIEWER_DRIVE_API_BASE` → `tiny_http`
+    /// stub server) without going through the full OAuth flow.
+    pub fn set_drive_api_for_test(&mut self, api: std::sync::Arc<crate::drive::api::DriveApi>) {
+        self.drive_api = Some(api);
+    }
+
+    /// Test-only constructor for a DriveApi-backed tab. Used by B5's
+    /// drive_save_conflict tests so they can stand up a tab with a known
+    /// `file_id` + initial etag without round-tripping through
+    /// `drive_open_url` (which would need a stub server).
+    pub fn test_open_drive_api_tab(&mut self, file_id: &str, content: &str) -> String {
+        let id = format!("tab-test-{}", file_id);
+        let render = render_markdown(
+            content,
+            &RenderOptions {
+                syntax_highlighting: false,
+                mermaid_enabled: false,
+            },
+        );
+        self.tabs.insert(
+            id.clone(),
+            Tab {
+                id: id.clone(),
+                path: std::path::PathBuf::from(format!("drive-api://{}", file_id)),
+                source: content.into(),
+                render,
+                comments: CommentsStore::new(),
+                last_saved_snapshot: Some(content.into()),
+                backend: TabBackend::DriveApi,
+                file_id: Some(file_id.into()),
+                etag: None,
+            },
+        );
+        self.order.push(id.clone());
+        self.active = Some(id.clone());
+        id
     }
 }
 

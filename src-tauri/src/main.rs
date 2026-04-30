@@ -278,43 +278,103 @@ fn render_markdown(source: String) -> RenderResult {
     document::render_markdown(&source, &RenderOptions::default())
 }
 
+/// B2: rewritten save_document handler. Takes `(tab_id, body)` and
+/// dispatches on `tab.backend`:
+///
+/// * `Local` — atomic write via `document::save_document` + watcher self-
+///   write priming + tab-snapshot refresh, exactly as the previous
+///   `save_document(path, contents)` handler did.
+/// * `DriveApi` — uploads via `Workspace::save_drive_api_tab` with the
+///   tab's stashed ETag for `If-Match`. Success refreshes `tab.etag`;
+///   a 412 surfaces as `SaveOutcome::Conflict` for the diff-merge view.
+/// * `DriveDesktop` — placeholder branch; B5 wires the watcher
+///   `compare_for_save` path here once B4's helpers land.
+///
+/// Returns the typed `SaveOutcome` enum (distinct from the existing
+/// `document::SaveResult` struct, which counts bytes + hashes for the
+/// on-disk write helper). Frontend callers in `src/views/Edit.ts` and
+/// `src/views/Conflict.ts` route the `Conflict` arm into the existing
+/// diff-merge UI.
 #[tauri::command]
 fn save_document(
     state: State<'_, Ws>,
     watcher: State<'_, Mutex<Watcher>>,
-    path: PathBuf,
-    contents: String,
-) -> Result<(), String> {
-    // save_document calls back into the watcher AFTER the temp file is
-    // fsynced and BEFORE the rename. That closes the race against notify's
-    // worker thread unconditionally — even if notify fires the moment the
-    // rename completes, the suppression list is already primed.
-    let _r = mdviewer_lib::document::save_document(
-        &path,
-        contents.as_bytes(),
-        |p, hash| {
-            // record_self_write takes &self; the lock is held only long enough
-            // to push into the suppression list, which is non-blocking.
-            if let Ok(w) = watcher.lock() {
-                w.record_self_write(p, hash);
+    tab_id: String,
+    body: String,
+) -> Result<mdviewer_lib::document::SaveOutcome, String> {
+    use mdviewer_lib::document::SaveOutcome;
+    use mdviewer_lib::drive::TabBackend;
+    use mdviewer_lib::workspace::SaveError;
+
+    // Snapshot just the per-tab fields we need under a short critical
+    // section, then drop the immutable borrow before re-entering Workspace
+    // mutably. Avoids a mid-function lock upgrade.
+    let (tab_backend, tab_path, tab_etag) = {
+        let ws = state.lock().map_err(|e| e.to_string())?;
+        let tab = ws
+            .tab(&tab_id)
+            .ok_or_else(|| format!("tab not found: {tab_id}"))?;
+        (tab.backend, tab.path.clone(), tab.etag.clone())
+    };
+
+    match tab_backend {
+        TabBackend::Local => {
+            // Existing local save path — atomic write + watcher self-write
+            // priming + tab-snapshot refresh, matching the previous
+            // `save_document(path, contents)` handler one-for-one.
+            mdviewer_lib::document::save_document(
+                &tab_path,
+                body.as_bytes(),
+                |p, hash| {
+                    if let Ok(w) = watcher.lock() {
+                        w.record_self_write(p, hash);
+                    }
+                },
+            )
+            .map_err(|e| e.to_string())?;
+            {
+                let mut ws = state.lock().map_err(|e| e.to_string())?;
+                ws.refresh_tab(&tab_path).map_err(|e| e.to_string())?;
+                ws.prime_saved_snapshot(&tab_path, body);
             }
-        },
-    )
-    .map_err(|e| e.to_string())?;
-    {
-        let mut ws = state.lock().map_err(|e| e.to_string())?;
-        ws.refresh_tab(&path).map_err(|e| e.to_string())?;
-        // C2: keep both the open-tab snapshot and the closed_snapshots
-        // entry in sync with the bytes we just wrote so a subsequent
-        // close+reopen (or external rewrite) can detect divergence.
-        ws.prime_saved_snapshot(&path, contents);
+            if let Ok(w) = watcher.lock() {
+                w.mark_unsaved(&tab_path, false);
+            }
+            Ok(SaveOutcome::Ok { etag: None })
+        }
+        TabBackend::DriveApi => {
+            // The stashed ETag is the source of truth for If-Match; a
+            // missing one degrades to "" so the upload fails fast at the
+            // server with a 412 rather than skipping the precondition.
+            let etag = tab_etag.unwrap_or_default();
+            let mut ws = state.lock().map_err(|e| e.to_string())?;
+            match ws.save_drive_api_tab(&tab_id, body.as_bytes(), &etag) {
+                Ok(new_etag) => {
+                    if let Some(t) = ws.tab_mut(&tab_id) {
+                        t.etag = Some(new_etag.clone());
+                        t.last_saved_snapshot = Some(body.clone());
+                        t.source = body;
+                    }
+                    Ok(SaveOutcome::Ok { etag: Some(new_etag) })
+                }
+                Err(SaveError::DriveConflict { local, remote, source }) => {
+                    Ok(SaveOutcome::Conflict {
+                        local: String::from_utf8_lossy(&local).into_owned(),
+                        remote: String::from_utf8_lossy(&remote).into_owned(),
+                        drive_source: Some(format!("{:?}", source)),
+                    })
+                }
+                Err(e) => Err(format!("{:?}", e)),
+            }
+        }
+        TabBackend::DriveDesktop => {
+            // B5 wires this branch to `Workspace::save_drive_desktop_tab`
+            // once B4's `compare_for_save` watcher helper merges in. Until
+            // then this is a structural NotConnected so the dispatch
+            // compiles cleanly and the IPC surface stays stable.
+            Err("DriveDesktop save dispatch not yet wired (pending B4+B5)".into())
+        }
     }
-    // Successful save clears the dirty bit. The watcher's external-change
-    // override (which forces Ask while edits are pending) deactivates here.
-    if let Ok(w) = watcher.lock() {
-        w.mark_unsaved(&path, false);
-    }
-    Ok(())
 }
 
 /// C2: line-anchored diff between two markdown buffers. Pure function;
@@ -616,11 +676,14 @@ fn drive_status(state: State<'_, Ws>) -> DriveStatus {
 
 #[tauri::command]
 async fn drive_open_url(
-    _state: State<'_, Ws>,
-    _url: String,
+    state: State<'_, Ws>,
+    url: String,
 ) -> Result<TabSummary, String> {
-    // placeholder error string; B2 fills in the real implementation
-    Err("not yet implemented".into())
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .drive_open_url(&url)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

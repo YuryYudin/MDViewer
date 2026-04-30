@@ -51,6 +51,11 @@ fn export_all() -> Result<String, Box<dyn std::error::Error>> {
     buf.push_str("\n");
     buf.push_str(&mdviewer_lib::document::RenderResult::export_to_string().unwrap());
     buf.push_str("\n");
+    // B2: typed `save_document` IPC outcome — Ok{etag} | Conflict{...}.
+    // Distinct from the existing `SaveResult` struct (which is local to
+    // the on-disk write helper and not exported over IPC).
+    buf.push_str(&mdviewer_lib::document::SaveOutcome::export_to_string().unwrap());
+    buf.push_str("\n");
 
     // A6: anchor model + resolve outcome (W3C TextQuote/TextPosition flattened).
     buf.push_str(&mdviewer_lib::anchor::Anchor::export_to_string().unwrap());

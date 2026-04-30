@@ -1,4 +1,4 @@
-import type { Ipc } from '../ipc';
+import type { Ipc, SaveOutcome } from '../ipc';
 
 /**
  * Wireframe 07: raw `.md` editor. The textarea uses `white-space: pre` (or
@@ -27,7 +27,9 @@ export interface EditView {
   destroy(): void;
 }
 
-type SaveCapableIpc = Ipc | { saveDocument(path: string, contents: string): Promise<void> };
+type SaveCapableIpc =
+  | Ipc
+  | { saveDocument(tabId: string, contents: string): Promise<SaveOutcome | void> };
 
 export function mountEdit(
   root: HTMLElement,
@@ -71,7 +73,11 @@ export function mountEdit(
 
   function flush(): Promise<void> {
     clearTimer();
-    return Promise.resolve(ipc.saveDocument(args.path, ta.value));
+    // B2: pass tabId (not path) so the dispatch can pick the right backend.
+    // The returned SaveOutcome is consumed by the caller (Document.ts /
+    // Workspace.ts) — Edit.ts itself only needs the resolution as a
+    // fire-and-forget acknowledgement here.
+    return Promise.resolve(ipc.saveDocument(args.tabId, ta.value)).then(() => undefined);
   }
 
   function schedule(): void {
@@ -80,7 +86,7 @@ export function mountEdit(
     timer = setTimeout(() => {
       timer = undefined;
       // Fire-and-forget; failures surface via the IPC layer's own error path.
-      void ipc.saveDocument(args.path, ta.value);
+      void ipc.saveDocument(args.tabId, ta.value);
     }, args.autoSaveDebounceMs);
   }
 

@@ -130,7 +130,10 @@ export async function mountConflict(
   finish.textContent = 'Finish merge';
   finish.addEventListener('click', async () => {
     const merged = mergeBytes(args.local, args.incoming, hunks, choices);
-    await ipc.saveDocument(args.path, merged);
+    // B2: saveDocument now takes tabId (not path) and returns SaveOutcome.
+    // The Conflict view discards the return — the merge is the user's
+    // explicit resolution, so we never re-enter the conflict loop here.
+    await ipc.saveDocument(args.tabId, merged);
     view.dispatchEvent(
       new CustomEvent('conflict-resolved', {
         bubbles: true,

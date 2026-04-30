@@ -41,6 +41,31 @@ pub struct SaveResult {
     pub content_hash: u64,
 }
 
+/// IPC-facing save outcome for the `save_document` command. Distinct from
+/// the lower-level `SaveResult` struct above (which counts bytes + hashes
+/// and is returned by the `save_document` filesystem helper). Only the IPC
+/// layer surfaces conflicts — the on-disk write helper is local-only and
+/// has no remote-divergence concept.
+///
+/// `Ok.etag` is the new resource ETag for DriveApi saves and `None` for
+/// Local + DriveDesktop saves (no ETag concept on either of those paths).
+/// `Conflict.drive_source` disambiguates the two Drive code paths for the
+/// banner string in wireframe 07; `None` when the conflict came from the
+/// existing Local mtime-mismatch path that predates the Drive integration.
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SaveOutcome {
+    Ok {
+        etag: Option<String>,
+    },
+    Conflict {
+        local: String,
+        remote: String,
+        drive_source: Option<String>,
+    },
+}
+
 /// Atomically write `contents` to `path`.
 ///
 /// The crash-safe pattern: write to `<path>.tmp`, fsync, then `rename` over

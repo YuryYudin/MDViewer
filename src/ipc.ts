@@ -30,6 +30,8 @@ export type {
   RecentEntry,
   TabSummary,
   DocPref,
+  // B2: typed save_document outcome — Ok{etag} | Conflict{local,remote,drive_source}.
+  SaveOutcome,
   // A8: Drive integration types — re-exported here so callers don't need
   // to know whether a type lives in ./types-generated or in a Drive view.
   TabBackend,
@@ -56,6 +58,7 @@ import type {
   DocPref,
   DriveStatus,
   DriveCollaborator,
+  SaveOutcome,
 } from './types-generated';
 
 // `Anchor` is the canonical name across the wire. Older planning notes used
@@ -91,12 +94,27 @@ export interface Ipc {
   renderMarkdown(source: string): Promise<RenderResult>;
   resolveAnchor(tabId: string, anchor: Anchor): Promise<ResolveOutcome>;
   /**
-   * Atomically write `contents` to `path` (B3). The Rust handler also
-   * records a self-write suppression entry on the watcher and refreshes
-   * the matching tab's cached render — callers don't need to follow up
-   * with a separate openDocument refresh.
+   * Save the contents of an open tab. The Rust handler dispatches on the
+   * tab's `backend`:
+   *
+   *   * `Local`        — atomic write to the on-disk path (the original
+   *                      Phase-2 `save_document(path, contents)` semantics
+   *                      under a new envelope shape).
+   *   * `DriveApi`     — uploads to Drive with `If-Match: <etag>`. A 412
+   *                      precondition failure surfaces as
+   *                      `SaveOutcome.Conflict` (routed to Conflict.ts).
+   *   * `DriveDesktop` — wired by B5 to the watcher's `compare_for_save`;
+   *                      mismatch likewise surfaces as `Conflict`.
+   *
+   * The handler also primes the watcher's self-write suppression and
+   * refreshes the matching tab's cached render so callers don't need a
+   * follow-up `openDocument` refresh.
+   *
+   * **Wire shape change (B2):** the previous `(path, contents)` signature
+   * is gone — pass the opaque `tabId` instead so the dispatch can pick the
+   * right backend without re-deriving it from the path.
    */
-  saveDocument(path: string, contents: string): Promise<void>;
+  saveDocument(tabId: string, contents: string): Promise<SaveOutcome>;
   /**
    * Tell the watcher whether the open .md has unsaved edits. While dirty,
    * external-change events are upgraded to `Ask` regardless of the user's
@@ -193,7 +211,8 @@ export const tauriIpc: Ipc = {
   resolveThread: (tabId, threadId) => invoke('resolve_thread', { tabId, threadId }),
   renderMarkdown: (source) => invoke('render_markdown', { source }),
   resolveAnchor: (tabId, anchor) => invoke('resolve_anchor', { tabId, anchor }),
-  saveDocument: (path, contents) => invoke<void>('save_document', { path, contents }),
+  saveDocument: (tabId, contents) =>
+    invoke<SaveOutcome>('save_document', { tabId, body: contents }),
   setDirty: (path, dirty) => invoke<void>('set_dirty', { path, dirty }),
   diffMd: (local, incoming) => invoke<Hunk[]>('diff_md', { local, incoming }),
   exportDocument: (args) =>
