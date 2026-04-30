@@ -94,6 +94,11 @@ e2e = ["dep:tauri-plugin-webdriver-automation"]
 tempfile = "3"
 pretty_assertions = "1"
 criterion = "0.5"
+# Drive integration tests mutate the process-global `MDVIEWER_DRIVE_API_BASE`
+# env var to point at a stub HTTP server. Cargo runs tests in parallel by
+# default, so each such test is tagged `#[serial_test::serial]` to force
+# serial execution within a test crate.
+serial_test = "3"
 
 [[bench]]
 name = "anchor_bench"
