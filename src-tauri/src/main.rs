@@ -343,10 +343,14 @@ fn save_document(
             Ok(SaveOutcome::Ok { etag: None })
         }
         TabBackend::DriveApi => {
-            // The stashed ETag is the source of truth for If-Match; a
-            // missing one degrades to "" so the upload fails fast at the
-            // server with a 412 rather than skipping the precondition.
-            let etag = tab_etag.unwrap_or_default();
+            // The stashed ETag is the source of truth for If-Match. A
+            // missing ETag is a programming error — DriveApi tabs are
+            // populated with `Some(etag)` at `drive_open_url` construction
+            // time and refreshed on every successful save. Erroring here
+            // surfaces the bug locally instead of pretending an empty
+            // string is a valid precondition the Drive backend will reject.
+            let etag = tab_etag
+                .ok_or_else(|| "DriveApi tab missing etag — re-open from URL".to_string())?;
             let mut ws = state.lock().map_err(|e| e.to_string())?;
             match ws.save_drive_api_tab(&tab_id, body.as_bytes(), &etag) {
                 Ok(new_etag) => {
@@ -368,11 +372,29 @@ fn save_document(
             }
         }
         TabBackend::DriveDesktop => {
-            // B5 wires this branch to `Workspace::save_drive_desktop_tab`
-            // once B4's `compare_for_save` watcher helper merges in. Until
-            // then this is a structural NotConnected so the dispatch
-            // compiles cleanly and the IPC surface stays stable.
-            Err("DriveDesktop save dispatch not yet wired (pending B4+B5)".into())
+            // Routes through `Workspace::save_drive_desktop_tab`, which
+            // calls B4's `compare_for_save` to detect external changes.
+            // On `Unchanged` the bytes land via `std::fs::write`; on
+            // `Changed` the user's local edits + the freshly-read remote
+            // bytes surface as `SaveOutcome::Conflict { drive_source:
+            // Some("DriveDesktopWatcher") }` for the diff-merge view.
+            //
+            // Until B5 plumbs the Tauri-managed Watcher into the Workspace
+            // constructor, `save_drive_desktop_tab` errors out with
+            // "workspace has no watcher" — production DriveDesktop saves
+            // are gated on that wiring landing.
+            let mut ws = state.lock().map_err(|e| e.to_string())?;
+            match ws.save_drive_desktop_tab(&tab_id, body.as_bytes()) {
+                Ok(()) => Ok(SaveOutcome::Ok { etag: None }),
+                Err(SaveError::DriveConflict { local, remote, source }) => {
+                    Ok(SaveOutcome::Conflict {
+                        local: String::from_utf8_lossy(&local).into_owned(),
+                        remote: String::from_utf8_lossy(&remote).into_owned(),
+                        drive_source: Some(format!("{:?}", source)),
+                    })
+                }
+                Err(e) => Err(format!("{:?}", e)),
+            }
         }
     }
 }
@@ -853,6 +875,14 @@ fn main() {
                 let saved = ws.session_store().get();
                 let active_target = saved.active_tab.clone();
                 for path in saved.open_tabs {
+                    // Skip synthetic `drive-api://<file_id>` paths — those
+                    // tabs are reopened via `drive_open_url` (which the user
+                    // re-pastes), not the local-fs `open_document` flow.
+                    // Without this guard, `open_document` would try to
+                    // canonicalize + read the synthetic path and fail noisily.
+                    if path.to_string_lossy().starts_with("drive-api://") {
+                        continue;
+                    }
                     match ws.open_document(&path, OpenOpts::default()) {
                         Ok(_) => tracing::info!("restored from session: {}", path.display()),
                         Err(e) => tracing::warn!(

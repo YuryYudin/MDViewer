@@ -74,15 +74,6 @@ pub struct Tab {
 }
 
 impl Tab {
-    /// Compute the backend for a freshly-opened tab.
-    ///
-    /// Returns `Local` whenever Drive is disconnected (regardless of path
-    /// shape) so the rest of the workspace doesn't have to special-case the
-    /// "feature available but offline" branch. When connected, `Local` paths
-    /// outside any known Drive Desktop mount stay `Local`; paths under a
-    /// recognized mount upgrade to `DriveDesktop`. `DriveApi` is never the
-    /// default — it's exclusively set by B2's `drive_open_url` flow, which
-    /// resolves a Drive URL to a file_id and stamps the backend at construction.
     /// Wire-shaped projection used by `drive_open_url` (and any future
     /// caller that needs the same `(id, path)` envelope `list_open_documents`
     /// emits). Lives on `Tab` so the IPC layer doesn't have to duplicate
@@ -94,6 +85,15 @@ impl Tab {
         }
     }
 
+    /// Compute the backend for a freshly-opened tab.
+    ///
+    /// Returns `Local` whenever Drive is disconnected (regardless of path
+    /// shape) so the rest of the workspace doesn't have to special-case the
+    /// "feature available but offline" branch. When connected, `Local` paths
+    /// outside any known Drive Desktop mount stay `Local`; paths under a
+    /// recognized mount upgrade to `DriveDesktop`. `DriveApi` is never the
+    /// default — it's exclusively set by B2's `drive_open_url` flow, which
+    /// resolves a Drive URL to a file_id and stamps the backend at construction.
     pub fn compute_backend(path: &Path, drive_connected: bool) -> TabBackend {
         if !drive_connected {
             return TabBackend::Local;
@@ -213,6 +213,21 @@ pub struct Workspace {
     /// diffs the next snapshot against this and only emits on transitions
     /// (avoids broadcasting a heartbeat on every poll cycle).
     pub(crate) last_drive_status: Option<DriveStatus>,
+    /// B2 (groundwork for B5): optional internal watcher for the
+    /// `save_drive_desktop_tab` flow. The production binary's main.rs holds
+    /// its own `Mutex<Watcher>` for external-change events (registered as
+    /// Tauri managed state); Workspace's copy is **only** used by Drive
+    /// Desktop save-conflict detection (`note_open` at tab-open time +
+    /// `compare_for_save` at save time). The two watchers don't share
+    /// `State`, but the snapshot map B4 added lives inside the watcher
+    /// instance — keeping both calls on the same `Workspace.watcher`
+    /// instance is the only requirement.
+    ///
+    /// `None` when the workspace was constructed via the production
+    /// `Workspace::new` (B5 will widen the constructor to plumb one
+    /// through); `Some` after `new_for_test` so integration tests can
+    /// exercise the save path without a Tauri handle.
+    pub(crate) watcher: Option<crate::watcher::Watcher>,
 }
 
 impl Workspace {
@@ -232,6 +247,10 @@ impl Workspace {
             drive_queues: HashMap::new(),
             id_maps: HashMap::new(),
             last_drive_status: None,
+            // B2: production builds use main.rs's own Mutex<Watcher>; the
+            // workspace-internal slot stays None until B5 plumbs an instance
+            // in for the DriveDesktop save-conflict flow.
+            watcher: None,
         })
     }
 
@@ -378,9 +397,16 @@ impl Workspace {
                 .unwrap_or_default()
                 .as_nanos()
         );
+        // Use a synthetic `drive-api://<file_id>` path so a subsequent
+        // `Workspace::open_document(cache_path)` (e.g. session restore or
+        // file-association launch) doesn't collide with this tab's slot in
+        // `find_by_path`. The cache file is reachable through `outcome.cache_path`
+        // and persisted in cache_meta — Tab.path doesn't need to point at it.
+        // Matches the `test_open_drive_api_tab` helper's path shape.
+        let synthetic_path = std::path::PathBuf::from(format!("drive-api://{}", file_id));
         let tab = Tab {
             id: id.clone(),
-            path: outcome.cache_path.clone(),
+            path: synthetic_path,
             source: source.clone(),
             render,
             // Empty comments at open — the polling loop populates them on
@@ -395,6 +421,9 @@ impl Workspace {
         self.tabs.insert(id.clone(), tab);
         self.order.push(id.clone());
         self.active = Some(id);
+        // Mirror the open_document/close_tab/activate_tab pattern so the
+        // restored-session list picks up Drive-opened tabs across restarts.
+        self.persist_session();
         Ok(summary)
     }
 
@@ -437,6 +466,63 @@ impl Workspace {
                 })
             }
             Err(e) => Err(SaveError::Drive(e)),
+        }
+    }
+
+    /// B5 dispatch path for `DriveDesktop` tabs — calls the watcher's
+    /// `compare_for_save` (B4 API) to decide whether the on-disk file
+    /// diverged from the open-time snapshot. On `Unchanged` we write the
+    /// new bytes locally (atomic-ish via `std::fs::write`) and re-prime
+    /// the watcher's snapshot for the next save. On `Changed` we surface
+    /// `SaveError::DriveConflict { source: DriveDesktopWatcher }` carrying
+    /// both the user's local bytes and the freshly-read remote bytes so
+    /// the existing diff-merge view can render them.
+    ///
+    /// The DriveDesktop case has no ETag — the local Drive Desktop client
+    /// owns the cloud sync; this method only mediates the local
+    /// last-writer-wins. `record_self_write` is intentionally NOT used
+    /// here: B5 routes through this path explicitly so the watcher's
+    /// external-change notification is not relevant (the user just wrote
+    /// the file themselves).
+    pub fn save_drive_desktop_tab(
+        &mut self,
+        tab_id: &str,
+        local: &[u8],
+    ) -> Result<(), SaveError> {
+        let path = self
+            .tabs
+            .get(tab_id)
+            .map(|t| t.path.clone())
+            .ok_or_else(|| {
+                SaveError::Drive(crate::drive::DriveError::Api("no such tab".into()))
+            })?;
+        let watcher = self.watcher.as_ref().ok_or_else(|| {
+            SaveError::Drive(crate::drive::DriveError::Api(
+                "workspace has no watcher; B5 wires this in production".into(),
+            ))
+        })?;
+        match watcher.compare_for_save(&path).map_err(SaveError::Io)? {
+            crate::watcher::CompareForSave::Unchanged => {
+                std::fs::write(&path, local).map_err(SaveError::Io)?;
+                // Re-prime the open-time snapshot so the next save's
+                // compare_for_save baseline is the bytes we just wrote.
+                watcher.note_open(&path).map_err(SaveError::Io)?;
+                if let Some(tab) = self.tabs.get_mut(tab_id) {
+                    if let Ok(s) = std::str::from_utf8(local) {
+                        tab.last_saved_snapshot = Some(s.to_string());
+                        tab.source = s.to_string();
+                    }
+                }
+                Ok(())
+            }
+            crate::watcher::CompareForSave::Changed { .. } => {
+                let remote = std::fs::read(&path).map_err(SaveError::Io)?;
+                Err(SaveError::DriveConflict {
+                    local: local.to_vec(),
+                    remote,
+                    source: ConflictSource::DriveDesktopWatcher,
+                })
+            }
         }
     }
 
@@ -820,8 +906,20 @@ impl Workspace {
     /// real constructor returns `anyhow::Result` because `SettingsStore::open`
     /// can fail on disk I/O — tests can panic on that branch since they
     /// always pass a fresh tempdir.
+    ///
+    /// Also wires an internal `Watcher` (with an mpsc sender that's
+    /// immediately dropped) so the `save_drive_desktop_tab` flow has a
+    /// `compare_for_save` target without forcing every test to construct
+    /// + manage one. Production callers go through `Workspace::new` and
+    /// rely on B5 plumbing the Tauri-managed Watcher in.
     pub fn new_for_test(config_dir: &std::path::Path) -> Self {
-        Self::new(config_dir).expect("Workspace::new for tests")
+        let mut ws = Self::new(config_dir).expect("Workspace::new for tests");
+        // Drop the receiver immediately — the watcher's notify thread will
+        // silently fail to send on every event, which is fine for tests
+        // that only exercise the snapshot map (note_open / compare_for_save).
+        let (tx, _rx) = std::sync::mpsc::channel();
+        ws.watcher = Some(crate::watcher::Watcher::new(tx).expect("Watcher::new for tests"));
+        ws
     }
 
     /// Test-only setter so integration tests can inject a stub `DriveApi`
@@ -860,6 +958,39 @@ impl Workspace {
         );
         self.order.push(id.clone());
         self.active = Some(id.clone());
+        id
+    }
+
+    /// Test-only constructor for a DriveDesktop-backed tab. Used by B5's
+    /// `drive_save_conflict` tests to stand up a tab pointing at a real
+    /// on-disk file and capture the open-time `(mtime, sha256)` snapshot
+    /// via the workspace's internal watcher (`new_for_test` initializes one).
+    /// The returned tab id can then be passed to `save_drive_desktop_tab`
+    /// to exercise the watcher-backed save-conflict path end-to-end.
+    pub fn test_open_drive_desktop_tab(&mut self, path: &std::path::Path) -> String {
+        // Round-trip through open_document so the canonicalization path,
+        // sidecar load, and tab-id minting match the production shape.
+        let outcome = self
+            .open_document(path, OpenOpts::default())
+            .expect("test_open_drive_desktop_tab: open_document failed");
+        let id = match outcome {
+            OpenOutcome::Document(r) => r.tab_id,
+            OpenOutcome::Conflict { .. } => {
+                panic!("test_open_drive_desktop_tab: expected Document, got Conflict")
+            }
+        };
+        // Force the backend to DriveDesktop regardless of detect path —
+        // tests use arbitrary tempdirs that don't match Drive Desktop
+        // mount heuristics.
+        if let Some(tab) = self.tabs.get_mut(&id) {
+            tab.backend = TabBackend::DriveDesktop;
+        }
+        // Capture the open-time snapshot so a subsequent
+        // `save_drive_desktop_tab` can call `compare_for_save` against it.
+        if let Some(w) = self.watcher.as_ref() {
+            w.note_open(path)
+                .expect("test_open_drive_desktop_tab: watcher.note_open failed");
+        }
         id
     }
 }

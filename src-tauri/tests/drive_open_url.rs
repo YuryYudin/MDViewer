@@ -61,11 +61,19 @@ fn open_url_returns_existing_tab_when_file_id_already_open() {
     use mdviewer_lib::workspace::Workspace;
     use std::sync::Arc;
 
+    use std::sync::atomic::{AtomicUsize, Ordering};
     let dir = tempfile::tempdir().unwrap();
     let body = "# hello drive\n";
     let etag = "W/\"abc123\"";
 
+    // Count every request the stub server fields. The second `drive_open_url`
+    // for the same URL must short-circuit on the de-dupe lookup — if it
+    // doesn't, this counter will tick past 2 (one metadata + one download
+    // per call) and the assertion at the bottom catches the regression.
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let counter_for_router = request_count.clone();
     let (base, _h) = stub_server(move |req| {
+        counter_for_router.fetch_add(1, Ordering::SeqCst);
         // The first request hits /drive/v3/files/<id> (metadata, no
         // alt=media query), the second hits the same path with alt=media.
         // For metadata we must return a JSON FileMetadata; for download we
@@ -93,5 +101,81 @@ fn open_url_returns_existing_tab_when_file_id_already_open() {
     assert_eq!(
         first.id, second.id,
         "second open of the same drive URL must reuse the existing tab"
+    );
+    // Exactly two server hits: one files.get metadata + one alt=media
+    // download from the FIRST drive_open_url. The second call must not
+    // touch the network — that's the whole point of the de-dupe branch.
+    assert_eq!(
+        request_count.load(Ordering::SeqCst),
+        2,
+        "second drive_open_url must short-circuit before any network I/O"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn drive_api_tab_path_does_not_collide_with_local_open_of_cache_file() {
+    // Regression: previously `drive_open_url` set `Tab.path` to the cache
+    // file (`<config_dir>/drive_cache/<file_id>`). A subsequent
+    // `Workspace::open_document(<that cache path>)` would then short-circuit
+    // through `find_by_path` and re-emit the existing DriveApi tab as if
+    // it were a Local tab — silently mixing backends. The synthetic
+    // `drive-api://<file_id>` path keeps the two slots disjoint.
+    use mdviewer_lib::drive::api::DriveApi;
+    use mdviewer_lib::workspace::{OpenOutcome, Workspace};
+    use std::sync::Arc;
+
+    let dir = tempfile::tempdir().unwrap();
+    let body = "# regression\n";
+    let etag = "W/\"reg\"";
+
+    let (base, _h) = stub_server(move |req| {
+        let url = req.url().to_string();
+        if url.contains("alt=media") {
+            tiny_http::Response::from_string(body)
+                .with_header(format!("ETag: {}", etag).parse::<tiny_http::Header>().unwrap())
+        } else {
+            let payload = r#"{"id":"FID2","name":"regression.md","modifiedTime":"2026-01-01T00:00:00Z"}"#;
+            tiny_http::Response::from_string(payload)
+                .with_header("Content-Type: application/json".parse::<tiny_http::Header>().unwrap())
+        }
+    });
+    std::env::set_var("MDVIEWER_DRIVE_API_BASE", &base);
+
+    let mut ws = Workspace::new_for_test(dir.path());
+    ws.set_drive_api_for_test(Arc::new(DriveApi::with_token("fake".into())));
+
+    let url = "https://drive.google.com/file/d/FID2/view";
+    let drive_summary = ws.drive_open_url(url).unwrap();
+    // The DriveApi tab's path is the synthetic `drive-api://FID2` shape,
+    // not the cache file path. Verify by grabbing the synthetic path and
+    // ensuring a Local open of the actual cache file lands a DIFFERENT
+    // tab id.
+    assert_eq!(
+        drive_summary.path.to_string_lossy(),
+        "drive-api://FID2",
+        "DriveApi tab.path must use the synthetic drive-api:// URI"
+    );
+
+    // Now open the cache file as a Local document. find_by_path should
+    // NOT return the DriveApi tab; we should get a fresh tab with a
+    // distinct id. Cache layout is `<config_dir>/drive/<file_id>/<name>`
+    // per `drive::files::cache_dir_for`.
+    let cache_path = dir.path().join("drive").join("FID2").join("regression.md");
+    assert!(
+        cache_path.exists(),
+        "cache file should be on disk after drive_open_url: {:?}",
+        cache_path
+    );
+    let local_outcome = ws
+        .open_document(&cache_path, mdviewer_lib::workspace::OpenOpts::default())
+        .unwrap();
+    let local_tab_id = match local_outcome {
+        OpenOutcome::Document(r) => r.tab_id,
+        OpenOutcome::Conflict { .. } => panic!("expected Document, got Conflict"),
+    };
+    assert_ne!(
+        drive_summary.id, local_tab_id,
+        "Local open of the cache file must NOT collide with the DriveApi tab"
     );
 }
