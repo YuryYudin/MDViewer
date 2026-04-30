@@ -18,6 +18,10 @@ use crate::anchor::{self, Anchor, ResolveOutcome};
 use crate::comments::{CommentsStore, Thread};
 use crate::doc_prefs::DocPrefsStore;
 use crate::document::{render_markdown, RenderOptions, RenderResult};
+use crate::drive::api::DriveApi;
+use crate::drive::comments::IdMap;
+use crate::drive::queue::DriveQueue;
+use crate::drive::{DriveCollaborator, DriveStatus, TabBackend};
 use crate::recents::RecentsStore;
 use crate::sidecar::{load_sidecar, sidecar_path};
 use crate::settings::SettingsStore;
@@ -25,6 +29,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 /// Wire-shaped projection of `Tab` for `list_open_documents`. The frontend
 /// needs both the opaque id (for activate/close) and the on-disk path (for
@@ -47,6 +52,47 @@ pub struct Tab {
     /// Used by A8b's open-time conflict detection: when the disk bytes differ
     /// from this snapshot, the IPC layer emits `show-conflict`.
     pub last_saved_snapshot: Option<String>,
+    /// A7: which backend services this tab. Computed at open time via
+    /// `Tab::compute_backend(path, drive_connected)` and recomputed on
+    /// connect/disconnect transitions (Local↔DriveDesktop in place; DriveApi
+    /// is set by B2's `drive_open_url` flow and never downgraded by A7).
+    pub backend: TabBackend,
+    /// A7: Drive file id for tabs whose `backend == DriveApi`. `None` for
+    /// Local and DriveDesktop tabs — the latter resolve their file_id on
+    /// demand via the `file_id` resolver. Populated by B2 once `drive_open_url`
+    /// returns a resolved file_id.
+    pub file_id: Option<String>,
+}
+
+impl Tab {
+    /// Compute the backend for a freshly-opened tab.
+    ///
+    /// Returns `Local` whenever Drive is disconnected (regardless of path
+    /// shape) so the rest of the workspace doesn't have to special-case the
+    /// "feature available but offline" branch. When connected, `Local` paths
+    /// outside any known Drive Desktop mount stay `Local`; paths under a
+    /// recognized mount upgrade to `DriveDesktop`. `DriveApi` is never the
+    /// default — it's exclusively set by B2's `drive_open_url` flow, which
+    /// resolves a Drive URL to a file_id and stamps the backend at construction.
+    pub fn compute_backend(path: &Path, drive_connected: bool) -> TabBackend {
+        if !drive_connected {
+            return TabBackend::Local;
+        }
+        let home = std::env::var("HOME")
+            .ok()
+            .or_else(|| std::env::var("USERPROFILE").ok());
+        if crate::drive::detect::is_drive_desktop_path(
+            path,
+            std::env::consts::OS,
+            home.as_deref(),
+        )
+        .is_some()
+        {
+            TabBackend::DriveDesktop
+        } else {
+            TabBackend::Local
+        }
+    }
 }
 
 #[derive(Default, Clone, Copy)]
@@ -116,6 +162,37 @@ pub struct Workspace {
     /// Without this, closing a tab would erase the snapshot needed for the
     /// reopen-time conflict check.
     closed_snapshots: HashMap<PathBuf, String>,
+    /// A7: captured copy of the `data_dir` argument passed to
+    /// `Workspace::new`, re-exposed under the name `config_dir` to match the
+    /// path-naming used throughout `drive/queue.rs`, `drive/comments.rs`, and
+    /// `drive/cache.rs`. The Workspace constructor previously didn't store
+    /// `data_dir` because A1/A6 tasks open the existing per-store JSON files
+    /// directly. Drive queues + id_maps are created **lazily** at runtime, so
+    /// the path is stashed here for later. Constructor signature is unchanged.
+    /// Reads land in B2 (`drive_open_url` lazy queue + id_map opens); the
+    /// allow(dead_code) keeps A7 builds quiet until B2 ships.
+    #[allow(dead_code)]
+    pub(crate) config_dir: PathBuf,
+    /// A7: `Some` once `drive_connect` succeeds, `None` otherwise. Single
+    /// shared API handle (Arc-wrappable for the polling task) so token
+    /// refresh is visible everywhere without rebuilding the reqwest client.
+    pub(crate) drive_api: Option<Arc<DriveApi>>,
+    /// A7: one queue per open Drive tab, keyed by `file_id`. Created lazily
+    /// on the first offline write; persisted to
+    /// `<config_dir>/drive_queue/<file_id>.json`.
+    pub(crate) drive_queues: HashMap<String, DriveQueue>,
+    /// A7: one id_map per open Drive tab, keyed by `file_id`. Persisted to
+    /// `<config_dir>/drive_id_map/<file_id>.json`. `Arc<Mutex<_>>` so the
+    /// polling task and the IPC writer can both update without holding the
+    /// Workspace lock for the whole API call duration. The Arc lets B6's
+    /// `spawn_replay_all` fan-out clone handles to each per-file replay
+    /// task without re-borrowing Workspace; the accessor `id_maps_arc_clone`
+    /// returns a shallow-cloned `HashMap` of those Arcs.
+    pub(crate) id_maps: HashMap<String, Arc<Mutex<IdMap>>>,
+    /// A7: last status snapshot emitted to the frontend; the polling loop
+    /// diffs the next snapshot against this and only emits on transitions
+    /// (avoids broadcasting a heartbeat on every poll cycle).
+    pub(crate) last_drive_status: Option<DriveStatus>,
 }
 
 impl Workspace {
@@ -129,7 +206,134 @@ impl Workspace {
             order: Vec::new(),
             active: None,
             closed_snapshots: HashMap::new(),
+            // A7: stash data_dir for lazy Drive queue/id_map opens later.
+            config_dir: data_dir.to_path_buf(),
+            drive_api: None,
+            drive_queues: HashMap::new(),
+            id_maps: HashMap::new(),
+            last_drive_status: None,
         })
+    }
+
+    /// A7: read-only accessor for the captured `data_dir`. Used by Drive
+    /// queue / id_map lazy-open call sites to avoid re-passing the path
+    /// through every IPC handler signature. B2 is the first caller — until
+    /// then the allow(dead_code) keeps the warning surface clean.
+    #[allow(dead_code)]
+    pub(crate) fn config_dir(&self) -> &Path {
+        &self.config_dir
+    }
+
+    /// A7: shallow-clone the per-file_id `Arc<Mutex<IdMap>>` handles so
+    /// callers (B6's `spawn_replay_all`) can fan out replay work without
+    /// holding the Workspace lock for the duration of any Drive API
+    /// roundtrip. The Arcs share the underlying `Mutex<IdMap>` with
+    /// `self.id_maps`, so writes the replay task makes are visible to the
+    /// next IPC writer. Public so B6 (which lives in `drive::queue`) and
+    /// integration tests can both consume it.
+    pub fn id_maps_arc_clone(&self) -> HashMap<String, Arc<Mutex<IdMap>>> {
+        self.id_maps.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+    }
+
+    /// A7: collect the `file_id`s of every currently-open tab whose backend
+    /// is Drive (DriveDesktop or DriveApi). Used by the polling loop to
+    /// decide whether to fan out a poll round and to enumerate the targets.
+    /// Tabs without a `file_id` (DriveDesktop tabs whose lazy resolution
+    /// hasn't run yet) are skipped — they'll be picked up on the next poll
+    /// after B2 resolves their id.
+    pub fn drive_tab_file_ids(&self) -> Vec<String> {
+        self.tabs
+            .values()
+            .filter(|t| matches!(t.backend, TabBackend::DriveDesktop | TabBackend::DriveApi))
+            .filter_map(|t| t.file_id.clone())
+            .collect()
+    }
+
+    /// A7: build the current `DriveStatus` snapshot from settings + queue
+    /// totals. The `pending_count` sums the line-count of every drive_queue
+    /// file currently open; an empty / missing queue file contributes zero.
+    /// Caller diffs against `self.last_drive_status` to decide whether to
+    /// emit `drive-status-changed`.
+    pub fn drive_status(&self) -> DriveStatus {
+        let s = self.settings.get();
+        let pending: u32 = self
+            .drive_queues
+            .values()
+            .map(|q| if q.is_empty() { 0u32 } else { 1u32 })
+            .sum();
+        DriveStatus {
+            connected: s.cloud.drive.connected,
+            account_email: s.cloud.drive.account_email.clone(),
+            // `online` is a polling-loop concern (last poll succeeded vs
+            // network failure). Until B6 wires real network-state tracking,
+            // we mirror `connected` so the UI shows a meaningful badge.
+            online: s.cloud.drive.connected,
+            pending_count: pending,
+        }
+    }
+
+    /// A7: walk every open tab and re-pick its `backend` to reflect a
+    /// connect/disconnect transition. `Local` ↔ `DriveDesktop` flip in place
+    /// based on the new `drive_connected` flag (and the cached path —
+    /// disk-shape doesn't change between transitions). `DriveApi` tabs are
+    /// **not** downgraded — they go read-only and prompt the user to
+    /// reconnect rather than re-opening their underlying file_id as Local.
+    pub fn recompute_backends_after_connect_change(&mut self, drive_connected: bool) {
+        for tab in self.tabs.values_mut() {
+            if matches!(tab.backend, TabBackend::DriveApi) {
+                continue;
+            }
+            tab.backend = Tab::compute_backend(&tab.path, drive_connected);
+        }
+    }
+
+    /// A7: stub for B2's `drive_resolve_path` IPC handler. Returns a Drive
+    /// `file_id` for a local path under a Drive Desktop mount; B2 fills in
+    /// the resolver wiring (it needs an authenticated `DriveApi`). The
+    /// placeholder error is intentional — exposing this handler in A7 keeps
+    /// the IPC surface stable so the frontend can compile against it.
+    pub fn drive_resolve_path(&self, _local_path: &str) -> Result<String> {
+        // placeholder error string; B2 fills in the real implementation
+        anyhow::bail!("not yet implemented")
+    }
+
+    /// A7: stub for B2's `drive_get_collaborators` IPC handler. Returns the
+    /// list of `DriveCollaborator`s for `file_id`. B2 calls
+    /// `drive_api.list_permissions(file_id)`.
+    pub fn drive_get_collaborators(&self, _file_id: &str) -> Result<Vec<DriveCollaborator>> {
+        // placeholder error string; B2 fills in the real implementation
+        anyhow::bail!("not yet implemented")
+    }
+
+    /// A7: connect-time stub. B1/B2 fills in the OAuth loopback flow + token
+    /// persistence. The IPC handler in main.rs calls this and emits
+    /// `drive-status-changed`; the body here just flips the settings flag so
+    /// the rest of the IPC surface (drive_status, drive_tab_file_ids) sees a
+    /// consistent connected state from the very first call after B1 lands.
+    pub fn drive_connect(&mut self, _app: &tauri::AppHandle) -> Result<()> {
+        anyhow::bail!("not yet implemented")
+    }
+
+    /// A7: disconnect drops the API handle, recomputes backends so any
+    /// `DriveDesktop` tabs degrade back to `Local`, and clears the cached
+    /// last-status snapshot so the next status check emits a fresh
+    /// `drive-status-changed`. `DriveApi` tabs are not touched here —
+    /// they're held for B2 to surface a reconnect prompt.
+    pub fn drive_disconnect(&mut self) {
+        self.drive_api = None;
+        let connected = self.settings.get().cloud.drive.connected;
+        self.recompute_backends_after_connect_change(connected);
+        self.last_drive_status = None;
+    }
+
+    /// A7: per-file polling step. B6 fills in the actual list_comments call
+    /// and the merge into the local `CommentsStore`. We expose the signature
+    /// here so the polling loop's body in `run_polling_loop` can compile
+    /// against a stable shape.
+    pub fn drive_poll_one(&mut self, _file_id: &str, _api: &DriveApi) -> Result<()> {
+        // B6 wires this — placeholder body just succeeds so the polling loop
+        // doesn't error out on every iteration in A7-only builds.
+        Ok(())
     }
 
     pub fn session_store(&self) -> &crate::session::SessionStore {
@@ -253,6 +457,11 @@ impl Workspace {
             threads: comments.list_threads().to_vec(),
         };
 
+        // A7: pick the initial backend from settings.cloud.drive.connected +
+        // path shape. `file_id` starts None on Local/DriveDesktop tabs; B2's
+        // `drive_open_url` flow stamps it for DriveApi tabs at construction.
+        let drive_connected = s.cloud.drive.connected;
+        let backend = Tab::compute_backend(&canonical, drive_connected);
         self.tabs.insert(
             id.clone(),
             Tab {
@@ -262,6 +471,8 @@ impl Workspace {
                 render,
                 comments,
                 last_saved_snapshot: Some(source),
+                backend,
+                file_id: None,
             },
         );
         self.order.push(id.clone());
@@ -412,5 +623,106 @@ impl Workspace {
             .ok_or_else(|| anyhow::anyhow!("no such tab: {tab_id}"))?;
         let threshold = self.settings.get().comments.reattachment_confidence;
         Ok(anchor::resolve_anchor_with_threshold(&tab.source, a, threshold))
+    }
+}
+
+/// A7: Drive polling loop. Runs as a Tokio task spawned on the first
+/// successful `drive_connect`. Idles when no Drive tab is open (sleeps a
+/// short interval and re-checks) so an offline workspace never burns
+/// battery. Wakes up every `poll_interval_active_secs` (focused) or
+/// `poll_interval_unfocused_secs` (background) and fans out a per-file_id
+/// poll bounded by an 8-permit semaphore. The std-Mutex Workspace lock is
+/// only acquired inside `spawn_blocking` so the async reactor never stalls.
+///
+/// The loop emits `drive-status-changed` only when the new status snapshot
+/// differs from the previous one — heartbeats are filtered out at the
+/// `Workspace::drive_status` accessor level (B6 will tighten this once the
+/// status fields include real online / pending counts).
+pub async fn run_polling_loop(app: tauri::AppHandle) {
+    use std::time::Duration;
+    use tauri::Manager;
+    loop {
+        // Snapshot just the data the loop needs out of the std-mutex on a
+        // blocking thread, then drop the lock immediately. The async body
+        // never holds a std-mutex across an `.await`.
+        let app_for_state = app.clone();
+        let snapshot = tokio::task::spawn_blocking(move || {
+            let state = app_for_state.state::<std::sync::Mutex<Workspace>>();
+            let ws = state.lock().expect("workspace lock poisoned");
+            let s = ws.settings_store().get();
+            let focused = app_for_state
+                .get_webview_window("main")
+                .map(|w| w.is_focused().unwrap_or(false))
+                .unwrap_or(false);
+            let interval = Duration::from_secs(if focused {
+                s.cloud.drive.poll_interval_active_secs
+            } else {
+                s.cloud.drive.poll_interval_unfocused_secs
+            });
+            (interval, ws.drive_tab_file_ids(), ws.drive_api.clone())
+        })
+        .await
+        .expect("spawn_blocking joined");
+        let (interval, drive_tabs, api_opt) = snapshot;
+
+        if drive_tabs.is_empty() {
+            // No work — sleep a short fixed interval so the next opened
+            // Drive tab is picked up promptly without spinning.
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            continue;
+        }
+        let Some(api) = api_opt else {
+            tokio::time::sleep(interval).await;
+            continue;
+        };
+
+        // Cap concurrent in-flight requests at 8 so a workspace with many
+        // Drive tabs doesn't trip Drive's per-second quota.
+        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(8));
+        let mut tasks = Vec::new();
+        for fid in drive_tabs {
+            let app2 = app.clone();
+            let api2 = api.clone();
+            let sem = semaphore.clone();
+            tasks.push(tokio::spawn(async move {
+                let _permit = sem.acquire().await.unwrap();
+                // The per-poll Drive call uses `reqwest::blocking`; wrap it
+                // in spawn_blocking so the async reactor isn't held up.
+                let _ = tokio::task::spawn_blocking(move || {
+                    let state = app2.state::<std::sync::Mutex<Workspace>>();
+                    let mut ws = state.lock().expect("workspace lock poisoned");
+                    if let Err(e) = ws.drive_poll_one(&fid, &api2) {
+                        tracing::debug!("drive poll {} failed: {}", fid, e);
+                    }
+                    // TODO(B6): replay queues here
+                    let snapshot = ws.drive_status();
+                    let changed = ws
+                        .last_drive_status
+                        .as_ref()
+                        .map(|prev| {
+                            // Diff on the wire-relevant fields so a
+                            // pending_count tick or an online ↔ offline flip
+                            // both fire an event, but a pure heartbeat does
+                            // not. The DriveStatus struct doesn't derive
+                            // PartialEq because Option<String> + bool fields
+                            // make a hand-written diff cheaper to read.
+                            prev.connected != snapshot.connected
+                                || prev.online != snapshot.online
+                                || prev.pending_count != snapshot.pending_count
+                                || prev.account_email != snapshot.account_email
+                        })
+                        .unwrap_or(true);
+                    if changed {
+                        ws.last_drive_status = Some(snapshot.clone());
+                        let _ = tauri::Emitter::emit(&app2, "drive-status-changed", &snapshot);
+                    }
+                })
+                .await;
+            }));
+        }
+        for t in tasks {
+            let _ = t.await;
+        }
+        tokio::time::sleep(interval).await;
     }
 }

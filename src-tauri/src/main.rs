@@ -43,6 +43,7 @@ use mdviewer_lib::{
     conflict::{self, Hunk},
     doc_prefs::DocPref,
     document::{self, RenderOptions, RenderResult},
+    drive::{DriveCollaborator, DriveStatus},
     settings::Settings,
     watcher::{ExternalChangeEvent, Watcher},
     cli, menu,
@@ -563,6 +564,95 @@ fn open_external_url(url: String) -> Result<(), String> {
     result.map(|_| ()).map_err(|e| e.to_string())
 }
 
+// ----------------------------------------------------------------------------
+// A7: Drive integration IPC commands.
+//
+// Seven new commands plumb the Drive feature surface into the frontend. All
+// take `State<'_, Ws>` matching the existing convention; mutating handlers
+// `lock().unwrap()` the std-Mutex (consistent with every other command in
+// this file). `drive_open_url` is intentionally a stub here — B2 fills it
+// in once the file_id resolver + tab-creation flow are wired. The other six
+// either delegate to Workspace (drive_status, drive_resolve_path,
+// drive_get_collaborators, drive_connect, drive_disconnect) or are pure
+// helpers (`is_drive_desktop_path`).
+// ----------------------------------------------------------------------------
+
+#[tauri::command]
+async fn drive_connect(
+    state: State<'_, Ws>,
+    app: tauri::AppHandle,
+) -> Result<DriveStatus, String> {
+    let mut ws = state.lock().map_err(|e| e.to_string())?;
+    ws.drive_connect(&app).map_err(|e| e.to_string())?;
+    let st = ws.drive_status();
+    let _ = app.emit("drive-status-changed", &st);
+    // TODO(B6): replay queues here
+    Ok(st)
+}
+
+#[tauri::command]
+async fn drive_disconnect(
+    state: State<'_, Ws>,
+    app: tauri::AppHandle,
+) -> Result<DriveStatus, String> {
+    let mut ws = state.lock().map_err(|e| e.to_string())?;
+    ws.drive_disconnect();
+    let st = ws.drive_status();
+    let _ = app.emit("drive-status-changed", &st);
+    Ok(st)
+}
+
+#[tauri::command]
+fn drive_status(state: State<'_, Ws>) -> DriveStatus {
+    state.lock().unwrap().drive_status()
+}
+
+#[tauri::command]
+async fn drive_open_url(
+    _state: State<'_, Ws>,
+    _url: String,
+) -> Result<TabSummary, String> {
+    // placeholder error string; B2 fills in the real implementation
+    Err("not yet implemented".into())
+}
+
+#[tauri::command]
+fn drive_resolve_path(state: State<'_, Ws>, local_path: String) -> Result<String, String> {
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .drive_resolve_path(&local_path)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn drive_get_collaborators(
+    state: State<'_, Ws>,
+    file_id: String,
+) -> Result<Vec<DriveCollaborator>, String> {
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .drive_get_collaborators(&file_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn is_drive_desktop_path(path: String) -> bool {
+    // Pure helper consumed by C2's DriveDetectToast — no auth, no workspace
+    // state. Lives in main.rs alongside the other Drive IPC commands so all
+    // registration happens in one place.
+    let home = std::env::var("HOME")
+        .ok()
+        .or_else(|| std::env::var("USERPROFILE").ok());
+    mdviewer_lib::drive::detect::is_drive_desktop_path(
+        Path::new(&path),
+        std::env::consts::OS,
+        home.as_deref(),
+    )
+    .is_some()
+}
+
 fn main() {
     // C3: lightweight CLI dispatch before the Tauri runtime spins up. The
     // subcommand intentionally bypasses tauri::Builder so it can be used
@@ -799,6 +889,14 @@ fn main() {
             set_doc_pref,
             delete_doc_pref,
             open_external_url,
+            // A7: Drive integration (seven new commands).
+            drive_connect,
+            drive_disconnect,
+            drive_status,
+            drive_open_url,
+            drive_resolve_path,
+            drive_get_collaborators,
+            is_drive_desktop_path,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

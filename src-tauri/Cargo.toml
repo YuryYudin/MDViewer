@@ -55,6 +55,12 @@ automerge = "0.5"
 base64 = "0.22"
 similar = "2.5"
 walkdir = "2"
+# A7: the polling loop spawns Tokio tasks via `tauri::async_runtime::spawn`,
+# uses `tokio::sync::Semaphore` to bound concurrent in-flight Drive requests
+# at 8, and sleeps between iterations with `tokio::time::sleep`. Tauri 2
+# already pulls Tokio in as a transitive dep; we surface it as a direct
+# dependency here so the explicit `use tokio::*` imports compile.
+tokio = { version = "1", features = ["sync", "time", "rt", "macros"] }
 
 # Google Drive integration (added in A1). HTTP client uses rustls (no
 # OpenSSL system dep). `oauth2` drives the PKCE loopback flow. `tiny_http`
