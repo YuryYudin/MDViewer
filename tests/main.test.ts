@@ -369,3 +369,38 @@ describe('main()', () => {
     await expect(main()).rejects.toThrow(/#app element missing/);
   });
 });
+
+describe('Open from Drive menu action', () => {
+  beforeEach(() => {
+    resetDom(true);
+    Object.values(fakeIpc).forEach((m) => (m as any).mockClear?.());
+    fakeIpc.listOpenDocuments.mockResolvedValue([]);
+    fakeIpc.listRecents.mockResolvedValue([]);
+  });
+
+  it('mounts the OpenFromDrive modal when mdviewer:open-from-drive fires', async () => {
+    // The menu bridge translates the native `open-from-drive` menu id into
+    // the `mdviewer:open-from-drive` CustomEvent. main.ts owns the listener
+    // that mounts the modal — same indirection as `mdviewer:open-settings`.
+    fakeIpc.getSettings.mockResolvedValueOnce(settingsWith());
+    const { main } = await import('../src/main');
+    await main();
+    document.dispatchEvent(new CustomEvent('mdviewer:open-from-drive'));
+    // The handler imports the view dynamically so the modal mounts on the
+    // next tick — wait for any pending microtasks.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(document.querySelector('.drive-modal')).toBeTruthy();
+  });
+
+  it('routes the open-from-drive menu-bridge action to the modal', async () => {
+    // The menu bridge is the public route the OS menu uses; verify the
+    // string `open-from-drive` reaches the same modal as the CustomEvent.
+    fakeIpc.getSettings.mockResolvedValueOnce(settingsWith());
+    const { main } = await import('../src/main');
+    await main();
+    const { dispatchMenuAction } = await import('../src/menuBridge');
+    expect(dispatchMenuAction('open-from-drive')).toBe('mdviewer:open-from-drive');
+    await new Promise((r) => setTimeout(r, 0));
+    expect(document.querySelector('.drive-modal')).toBeTruthy();
+  });
+});
