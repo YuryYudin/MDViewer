@@ -35,6 +35,9 @@ pub fn menu_id_to_action(id: &str) -> Option<&'static str> {
         "menu-save-file" => Some("save-file"),
         "menu-toggle-edit" => Some("toggle-edit"),
         "menu-toggle-sidebar" => Some("toggle-sidebar"),
+        "menu-zoom-in" => Some("zoom-in"),
+        "menu-zoom-out" => Some("zoom-out"),
+        "menu-zoom-reset" => Some("zoom-reset"),
         _ => None,
     }
 }
@@ -127,6 +130,28 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             true,
             Some("CmdOrCtrl+B"),
         )?)
+        .separator()
+        .item(&MenuItem::with_id(
+            app,
+            "menu-zoom-in",
+            "Zoom In",
+            true,
+            Some("CmdOrCtrl+="),
+        )?)
+        .item(&MenuItem::with_id(
+            app,
+            "menu-zoom-out",
+            "Zoom Out",
+            true,
+            Some("CmdOrCtrl+-"),
+        )?)
+        .item(&MenuItem::with_id(
+            app,
+            "menu-zoom-reset",
+            "Reset Zoom",
+            true,
+            Some("CmdOrCtrl+0"),
+        )?)
         .build()?;
 
     let window_menu = SubmenuBuilder::new(app, "Window")
@@ -163,6 +188,17 @@ mod tests {
         assert_eq!(menu_id_to_action("menu-save-file"), Some("save-file"));
         assert_eq!(menu_id_to_action("menu-toggle-edit"), Some("toggle-edit"));
         assert_eq!(menu_id_to_action("menu-toggle-sidebar"), Some("toggle-sidebar"));
+    }
+
+    /// The View-menu zoom items map to kebab-case action strings that the
+    /// frontend's `menuBridge.ts` translates into the
+    /// `mdviewer:font-{increase,decrease,reset}` CustomEvents. Pinning these
+    /// mappings here keeps the Rust ↔ TS contract stable.
+    #[test]
+    fn menu_id_action_mapping_includes_zoom() {
+        assert_eq!(menu_id_to_action("menu-zoom-in"), Some("zoom-in"));
+        assert_eq!(menu_id_to_action("menu-zoom-out"), Some("zoom-out"));
+        assert_eq!(menu_id_to_action("menu-zoom-reset"), Some("zoom-reset"));
     }
 
     #[test]
