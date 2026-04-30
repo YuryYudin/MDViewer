@@ -47,6 +47,13 @@
 
   /* Type */
   --font-size: 14px;
+  /* Per-document font size. Defaults to chrome --font-size; Workspace
+   * overrides this on :root inline-style when the active doc has a
+   * persisted override, and removes the inline value on reset so this
+   * fallback re-applies (Settings changes then propagate without
+   * remount). Scoped to the rendered region and sidebar comments only —
+   * see src/styles/app.css. */
+  --doc-font-size: var(--font-size);
   --line-height: 1.5;
   --density-pad: 12px;
   --sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
