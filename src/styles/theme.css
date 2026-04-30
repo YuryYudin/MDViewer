@@ -63,13 +63,13 @@
 body.theme-dark {
   /* Native UI flips to dark — load-bearing for the scrollbar color. */
   color-scheme: dark;
-  --bg: #161614;
-  --surface: #1f1f1d;
-  --surface-2: #252522;
+  --bg: #0d0d0b;
+  --surface: #151513;
+  --surface-2: #1c1c1a;
   --bg-elev-1: var(--surface-2);
   --bg-elev-2: var(--surface);
-  --border: #34342f;
-  --border-strong: #4b4b44;
+  --border: #2a2a25;
+  --border-strong: #3e3e37;
   --text: #ececea;
   --fg: var(--text);
   --text-dim: #b0b0a8;

@@ -465,6 +465,15 @@ body {
 [data-region='render'] th {
   background: var(--surface-2);
   font-weight: 600;
+  text-align: center;
+}
+/* Zebra striping for body rows — matches GitHub's alternating-row look so
+ * wide tables stay scannable. Even rows pick up --surface-2; odd rows
+ * keep the default --surface (table inherits via td bg). The
+ * tbody-scoped selector means thead's --surface-2 background still wins
+ * for headers regardless of how many rows precede. */
+[data-region='render'] tbody tr:nth-child(even) td {
+  background: var(--surface-2);
 }
 [data-region='render'] blockquote {
   margin: 0 0 12px;

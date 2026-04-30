@@ -170,6 +170,11 @@ pub fn render_markdown(source: &str, opts: &RenderOptions) -> RenderResult {
     // attribute. Wrapping those in <span data-src-offset> would corrupt the
     // attribute string, so we collect them as plain escaped text instead.
     let mut image_depth: usize = 0;
+    // Track whether we're inside the <thead> row so TableCell emits <th>
+    // (semantic header markup, plus the GFM-style centered+bold styling
+    // app.css attaches via the th selector). pulldown-cmark always emits
+    // exactly one TableHead per table; subsequent rows are TableRow.
+    let mut in_table_head = false;
 
     for (event, range) in parser {
         match event {
@@ -218,6 +223,20 @@ pub fn render_markdown(source: &str, opts: &RenderOptions) -> RenderResult {
                     "<code data-src-offset=\"{s}\" data-src-end=\"{e}\">{}</code>",
                     escape_html(&c)
                 );
+            }
+            Event::Start(Tag::TableHead) => {
+                in_table_head = true;
+                html.push_str("<thead><tr>");
+            }
+            Event::End(TagEnd::TableHead) => {
+                in_table_head = false;
+                html.push_str("</tr></thead><tbody>");
+            }
+            Event::Start(Tag::TableCell) => {
+                html.push_str(if in_table_head { "<th>" } else { "<td>" });
+            }
+            Event::End(TagEnd::TableCell) => {
+                html.push_str(if in_table_head { "</th>" } else { "</td>" });
             }
             Event::Start(tag) => emit_open(&mut html, &tag),
             Event::End(tag) => emit_close(&mut html, tag),

@@ -48,6 +48,30 @@ fn renders_gfm_tables_and_tasklists() {
 }
 
 #[test]
+fn table_header_row_uses_th_not_td() {
+    // GitHub-style rendering wants the header row to be <th> so the CSS
+    // (centered, bold, surface-2 background) applies semantically. Body
+    // rows must stay <td> — a regression that emitted <th> for body rows
+    // would lose the zebra striping rule's selector.
+    let src = "| A | B |\n|---|---|\n| 1 | 2 |\n";
+    let html = render_markdown(src, &RenderOptions::default()).html;
+    assert!(html.contains("<thead><tr>"), "missing thead/tr open: {html}");
+    assert!(
+        html.contains("<th>") && html.contains("</th>"),
+        "header cells must be <th>: {html}",
+    );
+    assert!(
+        html.contains("</tr></thead><tbody>"),
+        "missing tbody open: {html}",
+    );
+    // Body cells stay <td>.
+    let body_idx = html.find("<tbody>").unwrap();
+    let body = &html[body_idx..];
+    assert!(body.contains("<td>"), "body row must use <td>: {body}");
+    assert!(!body.contains("<th>"), "body row must not use <th>: {body}");
+}
+
+#[test]
 fn inline_text_carries_data_src_offset() {
     let src = "Hello selectable phrase one.";
     let out = render_markdown(src, &RenderOptions::default());
