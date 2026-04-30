@@ -336,6 +336,38 @@ fn ipc_registration_includes_doc_pref_commands() {
 }
 
 #[test]
+fn drive_ipc_commands_registered() {
+    // A7: source-level smoke that the seven new Drive IPC commands are wired
+    // into main.rs's invoke_handler! list AND have matching `#[tauri::command]`
+    // declarations. Mirrors the existing per-command checks above so an
+    // accidental drop from the macro arm shows up as a unit-test failure
+    // rather than a runtime "command not found" toast.
+    let main_rs = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    )
+    .expect("read main.rs");
+    let names = [
+        "drive_connect",
+        "drive_disconnect",
+        "drive_status",
+        "drive_open_url",
+        "drive_resolve_path",
+        "drive_get_collaborators",
+        "is_drive_desktop_path",
+    ];
+    for n in names {
+        assert!(
+            main_rs.contains(&format!("fn {n}(")),
+            "missing IPC handler declaration: fn {n}(",
+        );
+        assert!(
+            main_rs.contains(&format!("            {n},")),
+            "missing IPC command in invoke_handler!: {n}",
+        );
+    }
+}
+
+#[test]
 fn thread_resolveoutcome_serialize_matches_ts_generated_shape() {
     let r = ResolveOutcome::Resolved { start: 0, end: 5 };
     let v = serde_json::to_value(&r).unwrap();
