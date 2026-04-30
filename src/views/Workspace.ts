@@ -1,10 +1,33 @@
-import type { Ipc, OpenOutcome, Settings, Thread } from '../ipc';
+import type { DocPref, Ipc, OpenOutcome, Settings, Thread } from '../ipc';
 import { mountStartPage } from './StartPage';
 import { mountTabBar } from './TabBar';
 import { mountDocument } from './Document';
 import { mountCommentsSidebar } from './CommentsSidebar';
 import { mountConflict } from './Conflict';
 import { mountShareDialog } from './ShareDialog';
+
+/**
+ * Per-document font-size bounds. Match the Settings panel slider's range
+ * exactly so what the user sees in Settings agrees with what `Cmd+=` does.
+ * The Rust-side validator clamps to the same range as defense-in-depth.
+ */
+const FONT_SIZE_MIN_PX = 10;
+const FONT_SIZE_MAX_PX = 24;
+/**
+ * Debounce window for the IPC persist call. Holding `Cmd+=` fires roughly
+ * 30 events / sec via OS auto-repeat; without this debounce every tick
+ * would round-trip to disk and contend on `doc_prefs.json`.
+ */
+const FONT_DEBOUNCE_MS = 150;
+
+/**
+ * Module-level handle on the previous mount's AbortController. The font-
+ * size listeners attach to `document`, which outlives any individual root
+ * element; a re-mount (rare in production, common in unit tests) needs to
+ * dispose the prior mount's listeners before installing fresh ones so old
+ * closures don't double-respond to a single event.
+ */
+let prevMountAbort: AbortController | undefined;
 
 export interface WorkspaceState {
   tabs: { id: string; path: string; source?: string; threads?: Thread[]; html?: string }[];
@@ -30,6 +53,15 @@ export interface WorkspaceHandle {
  * raised in Phase-B's implementation review.
  */
 export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<WorkspaceHandle> {
+  // Drop any document-level listeners installed by a prior mount before we
+  // install fresh ones. In production this is a no-op (mountWorkspace is
+  // called exactly once at startup); in jsdom unit tests it's what keeps
+  // the font-size listeners from accumulating across `mountWorkspace` calls
+  // and double-incrementing the inline `--doc-font-size` on a single event.
+  prevMountAbort?.abort();
+  const mountAbort = new AbortController();
+  prevMountAbort = mountAbort;
+
   root.replaceChildren();
   const shell = document.createElement('div');
   shell.setAttribute('data-view', 'workspace');
@@ -88,6 +120,16 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
   let pendingConflict: { tabId: string; path: string; local: string; incoming: string } | null = null;
   let settings: Settings | null = null;
 
+  // Font-size feature (A9): the most recent per-doc override for the active
+  // tab (or `null` if the tab has none). Set during the tab-activation hook
+  // and updated when the user changes the size from the toolbar / shortcut.
+  // Used by the `mdviewer:settings-changed` listener to decide whether the
+  // readout should follow the new global default.
+  let activeDocPref: DocPref | null = null;
+  // Single shared timer for the debounced IPC persist call. A new gesture
+  // resets the timer so a burst of presses coalesces to one disk write.
+  let fontPersistTimer: ReturnType<typeof setTimeout> | undefined;
+
   // Subscribe to the watcher's external-change event from B2. tauri's
   // event listener is async-awaitable in setup; loaded lazily so unit
   // tests against this view in jsdom don't need the @tauri-apps/api shim.
@@ -123,6 +165,129 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
   } catch {
     // jsdom / unit tests don't have the Tauri runtime — skip silently.
   }
+
+  /**
+   * Compute the effective font size for the current document. The order of
+   * precedence is: inline `--doc-font-size` on `<html>` (set by either the
+   * tab-activation hook or a recent `applyFontDelta` call) → cached global
+   * default → 14 px hardcoded fallback. Reading from the inline property
+   * (when set) avoids drift between the rendered size and our internal
+   * count after the user holds `Cmd+=` for a moment.
+   */
+  function currentEffectiveSize(): number {
+    const inline = document.documentElement.style.getPropertyValue('--doc-font-size').trim();
+    if (inline) {
+      const px = parseInt(inline, 10);
+      if (!Number.isNaN(px)) return px;
+    }
+    return settings?.appearance?.font_size_px ?? 14;
+  }
+
+  /**
+   * Sync the doc-toolbar's readout text + the `−` / `+` button disabled
+   * states to the current effective size. Called after every applyFontDelta
+   * AND after tab activation. The toolbar elements live inside the body
+   * region; queries against `root` are scoped to the workspace shell so
+   * cross-test pollution can't bleed in.
+   */
+  function updateReadout(): void {
+    const px = currentEffectiveSize();
+    const readout = root.querySelector<HTMLButtonElement>('[data-test="font-readout"]');
+    if (readout) readout.textContent = String(px);
+    const dec = root.querySelector<HTMLButtonElement>('[data-action="font-decrease"]');
+    const inc = root.querySelector<HTMLButtonElement>('[data-action="font-increase"]');
+    if (dec) {
+      const atMin = px <= FONT_SIZE_MIN_PX;
+      dec.disabled = atMin;
+      dec.setAttribute(
+        'title',
+        atMin ? `Already at minimum (${FONT_SIZE_MIN_PX} px)` : 'Decrease font size',
+      );
+    }
+    if (inc) {
+      const atMax = px >= FONT_SIZE_MAX_PX;
+      inc.disabled = atMax;
+      inc.setAttribute(
+        'title',
+        atMax ? `Already at maximum (${FONT_SIZE_MAX_PX} px)` : 'Increase font size',
+      );
+    }
+  }
+
+  /**
+   * Apply a font-size delta against the active tab. `delta = 1` increases by
+   * one pixel (clamped at MAX), `delta = -1` decreases (clamped at MIN), and
+   * `delta = null` is the reset path which REMOVES the inline `--doc-font-size`
+   * so the CSS fallback re-applies — Settings changes propagate to reset
+   * documents without remount. Persistence happens after a 150 ms debounce so
+   * a key-repeat burst coalesces to one disk write; untitled / scratch tabs
+   * (no on-disk path) skip the IPC entirely.
+   */
+  function applyFontDelta(delta: 1 | -1 | null): void {
+    const activePath = activeTab.path;
+    if (delta === null) {
+      // Reset: clear the inline property AND drop our cached override so a
+      // subsequent `mdviewer:settings-changed` event re-renders the readout.
+      document.documentElement.style.removeProperty('--doc-font-size');
+      activeDocPref = null;
+      updateReadout();
+      if (activePath) {
+        clearTimeout(fontPersistTimer);
+        fontPersistTimer = setTimeout(() => {
+          void ipc.deleteDocPref(activePath);
+        }, FONT_DEBOUNCE_MS);
+      }
+      return;
+    }
+    const current = currentEffectiveSize();
+    const next = Math.min(FONT_SIZE_MAX_PX, Math.max(FONT_SIZE_MIN_PX, current + delta));
+    if (next === current) {
+      // No-op at the bound — refresh the disabled state in case the toolbar
+      // was just mounted and hasn't been updated yet.
+      updateReadout();
+      return;
+    }
+    document.documentElement.style.setProperty('--doc-font-size', `${next}px`);
+    activeDocPref = { font_size_px: next };
+    updateReadout();
+    if (activePath) {
+      clearTimeout(fontPersistTimer);
+      fontPersistTimer = setTimeout(() => {
+        void ipc.setDocPref(activePath, { font_size_px: next });
+      }, FONT_DEBOUNCE_MS);
+    }
+  }
+
+  // Three document-level CustomEvent listeners share the same helper. The
+  // events are fired by Document.ts toolbar buttons, by `src/keymap.ts`'s
+  // shortcut dispatcher (Cmd+= / Cmd+- / Cmd+0), and by `src/menuBridge.ts`
+  // when the user picks View → Zoom In/Out/Reset from the native menu. The
+  // `signal` ties their lifetime to this mount so a re-mount tears them
+  // down before installing fresh closures.
+  document.addEventListener('mdviewer:font-increase', () => applyFontDelta(1), {
+    signal: mountAbort.signal,
+  });
+  document.addEventListener('mdviewer:font-decrease', () => applyFontDelta(-1), {
+    signal: mountAbort.signal,
+  });
+  document.addEventListener('mdviewer:font-reset', () => applyFontDelta(null), {
+    signal: mountAbort.signal,
+  });
+
+  // When `setSettings` resolves, `src/ipc.ts` dispatches `mdviewer:settings-
+  // changed` with the new Settings as the event detail. We refresh our cached
+  // copy and, when the active tab has no override, re-render the readout so
+  // it tracks the new global default. Tabs WITH an override keep their
+  // override on display because that's the user's explicit choice.
+  document.addEventListener(
+    'mdviewer:settings-changed',
+    (ev: Event) => {
+      const detail = (ev as CustomEvent<Settings>).detail;
+      if (detail) settings = detail;
+      if (!activeDocPref) updateReadout();
+    },
+    { signal: mountAbort.signal },
+  );
 
   async function refresh(): Promise<void> {
     settings ??= await ipc.getSettings();
@@ -238,6 +403,38 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
       orphans: view.orphanThreads(),
       activeTabId: tab.tabId ?? state.activeId ?? undefined,
     });
+
+    // Tab-activation font-size hook (A9). Untitled / scratch tabs (no
+    // on-disk path) skip the IPC entirely; they get the global default
+    // from the cascade and the readout reflects it. For real paths we
+    // round-trip getDocPref and apply / clear the inline `--doc-font-size`
+    // accordingly so the rendered size and the toolbar number agree.
+    if (tab.path) {
+      try {
+        const pref = await ipc.getDocPref(tab.path);
+        activeDocPref = pref;
+        if (pref) {
+          document.documentElement.style.setProperty(
+            '--doc-font-size',
+            `${pref.font_size_px}px`,
+          );
+        } else {
+          // Removing rather than setting to the default lets a future
+          // Settings change propagate via the CSS fallback without remount.
+          document.documentElement.style.removeProperty('--doc-font-size');
+        }
+      } catch {
+        // The doc-prefs IPC isn't available in some test/dev environments;
+        // fall through with no override so the cascade still produces a
+        // sensible rendered size.
+        activeDocPref = null;
+        document.documentElement.style.removeProperty('--doc-font-size');
+      }
+    } else {
+      activeDocPref = null;
+      document.documentElement.style.removeProperty('--doc-font-size');
+    }
+    updateReadout();
 
     // The external-change listener installed above forwards reload events
     // to the active document. We have to round-trip through the IPC's

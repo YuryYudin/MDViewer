@@ -25,7 +25,9 @@ function ipc(): Ipc {
     listRecents: vi.fn().mockResolvedValue([]),
     getSettings: vi.fn().mockResolvedValue({
       profile: { user_id: 'u', display_name: 'Mira', color: '#888' },
+      appearance: { theme: 'light', font_size_px: 14, line_height: 1.5, density: 'comfortable' },
       comments: { show_resolved: false, sidecar_pattern: '{name}.md.comments.json', reattachment_confidence: 75, auto_merge: 'manual' },
+      editor: {},
     }),
     setSettings: vi.fn(),
     listThreads: vi.fn().mockResolvedValue([]),
@@ -33,7 +35,10 @@ function ipc(): Ipc {
     postReply: vi.fn(),
     resolveThread: vi.fn(),
     renderMarkdown: vi.fn(),
-    resolveAnchor: vi.fn(),
+    resolveAnchor: vi.fn().mockResolvedValue({ kind: 'orphan' }),
+    getDocPref: vi.fn().mockResolvedValue(null),
+    setDocPref: vi.fn().mockResolvedValue(undefined),
+    deleteDocPref: vi.fn().mockResolvedValue(undefined),
   } as unknown as Ipc;
 }
 
@@ -72,5 +77,55 @@ describe('Workspace shell — wireframe layout', () => {
     await new Promise((r) => setTimeout(r, 0));
     const v = root.querySelector('[data-test="version-label"]')!;
     expect(v.textContent).toBe('MDViewer v0.1.0');
+  });
+});
+
+describe('Workspace shell — font-zoom cluster fidelity', () => {
+  /**
+   * Wireframe-fidelity assertions for the font-zoom cluster (per
+   * `docs/wireframes/01-doc-toolbar-with-zoom.html`):
+   *  - The cluster sits between `[data-action="share"]` and the right edge
+   *    of `[data-region="doc-toolbar"]`.
+   *  - It contains exactly three controls in order: decrease, readout/reset,
+   *    increase.
+   */
+  function ipcWithDoc(): Ipc {
+    const i = ipc();
+    (i.listOpenDocuments as any).mockResolvedValue([{ id: 't-1', path: '/docs/x.md' }]);
+    return i;
+  }
+
+  it('renders the three font controls in order between Share and the right edge', async () => {
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    const handle = await mountWorkspace(root, ipcWithDoc());
+    handle.setActive({
+      kind: 'document',
+      tab_id: 't-1',
+      path: '/docs/x.md',
+      html: '<p>hi</p>',
+      threads: [],
+    });
+    await handle.refresh();
+
+    const toolbar = root.querySelector<HTMLElement>('[data-region="doc-toolbar"]')!;
+    const children = Array.from(toolbar.children);
+    const shareIdx = children.findIndex((c) => c.getAttribute('data-action') === 'share');
+    const clusterIdx = children.findIndex((c) => c.getAttribute('data-region') === 'font-zoom');
+    expect(shareIdx).toBeGreaterThanOrEqual(0);
+    expect(clusterIdx).toBeGreaterThan(shareIdx);
+    // The cluster is the LAST child of the toolbar (sits at the right edge).
+    expect(clusterIdx).toBe(children.length - 1);
+
+    // Three controls in order inside the cluster.
+    const cluster = children[clusterIdx]!;
+    const buttons = Array.from(cluster.querySelectorAll('button'));
+    expect(buttons.length).toBe(3);
+    expect(buttons[0]!.getAttribute('data-action')).toBe('font-decrease');
+    expect(buttons[1]!.getAttribute('data-action')).toBe('font-reset');
+    expect(buttons[1]!.getAttribute('data-test')).toBe('font-readout');
+    expect(buttons[2]!.getAttribute('data-action')).toBe('font-increase');
+
+    document.body.removeChild(root);
   });
 });
