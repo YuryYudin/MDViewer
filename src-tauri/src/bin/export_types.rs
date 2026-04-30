@@ -22,6 +22,8 @@ fn export_all() -> Result<String, Box<dyn std::error::Error>> {
     buf.push_str("\n");
     buf.push_str(&mdviewer_lib::settings::StartupMode::export_to_string().unwrap());
     buf.push_str("\n");
+    buf.push_str(&mdviewer_lib::settings::DarkVariant::export_to_string().unwrap());
+    buf.push_str("\n");
     buf.push_str(&mdviewer_lib::settings::ProfileSettings::export_to_string().unwrap());
     buf.push_str("\n");
     buf.push_str(&mdviewer_lib::settings::AppearanceSettings::export_to_string().unwrap());

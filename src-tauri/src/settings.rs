@@ -28,6 +28,24 @@ pub enum Theme {
     FollowSystem,
 }
 
+/// Sub-variant applied on top of the dark theme. `Pure` is the default —
+/// near-black background, warm grey panels (the look the user picked from
+/// the wireframe round). `Cool` shifts the dark palette slightly bluish,
+/// closer to a code-editor feel. Inert when the active theme is `Light`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum DarkVariant {
+    Pure,
+    Cool,
+}
+
+impl Default for DarkVariant {
+    fn default() -> Self {
+        Self::Pure
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
@@ -90,6 +108,11 @@ pub struct AppearanceSettings {
     /// without error and pick up the safe default.
     #[serde(default)]
     pub startup_mode: StartupMode,
+    /// Sub-variant for the dark palette. Defaults to `Pure` (near-black);
+    /// `Cool` is a slightly bluish alternative. `serde(default)` keeps
+    /// older settings.toml files (without this key) loading cleanly.
+    #[serde(default)]
+    pub dark_variant: DarkVariant,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
@@ -146,6 +169,7 @@ impl Default for Settings {
                 line_height: 150,
                 density: "comfortable".into(),
                 startup_mode: StartupMode::default(),
+                dark_variant: DarkVariant::default(),
             },
             editor: EditorSettings {
                 default_open_mode: "view".into(),

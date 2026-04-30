@@ -136,6 +136,79 @@ describe('main()', () => {
     expect(localStorage.getItem('mdviewer.theme')).toBe('dark');
   });
 
+  it('applies theme-cool when settings.appearance.dark_variant === "cool"', async () => {
+    document.body.classList.remove('theme-cool');
+    fakeIpc.getSettings.mockResolvedValueOnce(
+      settingsWith({
+        appearance: {
+          theme: 'dark',
+          font_size_px: 14,
+          line_height: 1.5,
+          density: 'normal',
+          dark_variant: 'cool',
+        },
+      }),
+    );
+    const { main } = await import('../src/main');
+    await main();
+    expect(document.body.classList.contains('theme-dark')).toBe(true);
+    expect(document.body.classList.contains('theme-cool')).toBe(true);
+    expect(localStorage.getItem('mdviewer.darkVariant')).toBe('cool');
+  });
+
+  it('does not apply theme-cool when dark_variant === "pure" (default)', async () => {
+    document.body.classList.add('theme-cool'); // ensure it's cleared
+    fakeIpc.getSettings.mockResolvedValueOnce(
+      settingsWith({
+        appearance: {
+          theme: 'dark',
+          font_size_px: 14,
+          line_height: 1.5,
+          density: 'normal',
+          dark_variant: 'pure',
+        },
+      }),
+    );
+    const { main } = await import('../src/main');
+    await main();
+    expect(document.body.classList.contains('theme-cool')).toBe(false);
+    expect(localStorage.getItem('mdviewer.darkVariant')).toBe('pure');
+  });
+
+  it('mdviewer:settings-changed event re-applies the dark variant live', async () => {
+    document.body.classList.remove('theme-cool');
+    fakeIpc.getSettings.mockResolvedValueOnce(
+      settingsWith({
+        appearance: {
+          theme: 'dark',
+          font_size_px: 14,
+          line_height: 1.5,
+          density: 'normal',
+          dark_variant: 'pure',
+        },
+      }),
+    );
+    const { main } = await import('../src/main');
+    await main();
+    expect(document.body.classList.contains('theme-cool')).toBe(false);
+
+    // Simulate the broadcast that ipc.setSettings emits after a successful save.
+    document.dispatchEvent(
+      new CustomEvent('mdviewer:settings-changed', {
+        detail: settingsWith({
+          appearance: {
+            theme: 'dark',
+            font_size_px: 14,
+            line_height: 1.5,
+            density: 'normal',
+            dark_variant: 'cool',
+          },
+        }),
+      }),
+    );
+    expect(document.body.classList.contains('theme-cool')).toBe(true);
+  });
+
   it('applies the light theme by default', async () => {
     fakeIpc.getSettings.mockResolvedValueOnce(settingsWith());
     const { main } = await import('../src/main');

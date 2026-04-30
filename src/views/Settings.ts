@@ -176,6 +176,27 @@ function buildAppearance(ipc: Ipc, settings: Settings): HTMLElement {
     void ipc.setSettings(settings);
   });
 
+  // Dark variant — inert when Theme is "light", but always visible so
+  // the user can preview the choice. Pure (default) = near-black warm
+  // grey panels; Cool = slightly bluish neutral palette. Body class
+  // `theme-cool` is what activates the override in theme.css.
+  const darkVariant = labeledSelect(
+    'Dark variant ',
+    [
+      ['pure', 'Pure black (default)'],
+      ['cool', 'Cool neutral'],
+    ],
+    settings.appearance.dark_variant,
+    { 'data-test': 'dark-variant' },
+  );
+  s.appendChild(darkVariant.row);
+  darkVariant.select.addEventListener('change', () => {
+    const value = darkVariant.select.value as Settings['appearance']['dark_variant'];
+    settings.appearance.dark_variant = value;
+    document.body.classList.toggle('theme-cool', value === 'cool');
+    void ipc.setSettings(settings);
+  });
+
   const font = labeledInput('Font size ', {
     type: 'range',
     min: '10',

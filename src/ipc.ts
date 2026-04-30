@@ -11,6 +11,7 @@ export type {
   AdvancedSettings,
   Settings,
   Theme,
+  DarkVariant,
   ExternalChangeBehavior,
   AutoMergeMode,
   RenderOptions,

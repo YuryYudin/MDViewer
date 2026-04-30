@@ -5,7 +5,7 @@ import type { Settings } from '../../src/ipc';
 function defaultSettings(): Settings {
   return {
     profile: { user_id: 'u1', display_name: 'Carol', color: '#00aa88' },
-    appearance: { theme: 'light', font_size_px: 14, line_height: 150, density: 'comfortable', startup_mode: 'clean' },
+    appearance: { theme: 'light', font_size_px: 14, line_height: 150, density: 'comfortable', startup_mode: 'clean', dark_variant: 'pure' },
     editor: {
       default_open_mode: 'view',
       auto_save: true,
@@ -153,6 +153,29 @@ describe('Settings', () => {
     const calls = ipc.setSettings.mock.calls;
     expect(calls[calls.length - 1][0].appearance.line_height).toBe(175);
     expect(calls[calls.length - 1][0].appearance.density).toBe('compact');
+  });
+
+  it('dark-variant dropdown defaults to "pure", persists changes, and toggles theme-cool on body', async () => {
+    const root = document.createElement('div');
+    const ipc = makeIpc();
+    document.body.classList.remove('theme-cool');
+    await mountSettings(root, ipc as any);
+    const variant = root.querySelector<HTMLSelectElement>('[data-test="dark-variant"]')!;
+    expect(variant).toBeTruthy();
+    expect(variant.value).toBe('pure');
+    expect(Array.from(variant.options).map((o) => o.value).sort()).toEqual(['cool', 'pure']);
+    expect(document.body.classList.contains('theme-cool')).toBe(false);
+    variant.value = 'cool';
+    variant.dispatchEvent(new Event('change'));
+    await flush();
+    expect(document.body.classList.contains('theme-cool')).toBe(true);
+    const calls = ipc.setSettings.mock.calls;
+    expect(calls[calls.length - 1][0].appearance.dark_variant).toBe('cool');
+    // Flipping back to pure clears the class.
+    variant.value = 'pure';
+    variant.dispatchEvent(new Event('change'));
+    await flush();
+    expect(document.body.classList.contains('theme-cool')).toBe(false);
   });
 
   it('startup-mode dropdown defaults to current setting and persists changes', async () => {

@@ -63,13 +63,13 @@
 body.theme-dark {
   /* Native UI flips to dark — load-bearing for the scrollbar color. */
   color-scheme: dark;
-  --bg: #0d0d0b;
-  --surface: #151513;
-  --surface-2: #1c1c1a;
+  --bg: #000000;
+  --surface: #080807;
+  --surface-2: #121211;
   --bg-elev-1: var(--surface-2);
   --bg-elev-2: var(--surface);
-  --border: #2a2a25;
-  --border-strong: #3e3e37;
+  --border: #1f1f1c;
+  --border-strong: #34342f;
   --text: #ececea;
   --fg: var(--text);
   --text-dim: #b0b0a8;
@@ -90,13 +90,13 @@ body.theme-dark {
 @media (prefers-color-scheme: dark) {
   body.theme-follow-system:not(.theme-light) {
     color-scheme: dark;
-    --bg: #161614;
-    --surface: #1f1f1d;
-    --surface-2: #252522;
+    --bg: #000000;
+    --surface: #080807;
+    --surface-2: #121211;
     --bg-elev-1: var(--surface-2);
     --bg-elev-2: var(--surface);
-    --border: #34342f;
-    --border-strong: #4b4b44;
+    --border: #1f1f1c;
+    --border-strong: #34342f;
     --text: #ececea;
     --fg: var(--text);
     --text-dim: #b0b0a8;
@@ -110,4 +110,19 @@ body.theme-dark {
     --warn-border: #b07a3a;
     --danger: #ff6b5b;
   }
+}
+
+/* Cool Neutral dark variant — opt-in via Settings → Appearance →
+ * Dark variant. Stacked on top of the dark or follow-system blocks
+ * above so only the surface tones shift; text / accent / highlight
+ * colors stay consistent. The selector matches both `body.theme-dark`
+ * (explicit dark) and `body.theme-follow-system` when prefers-color-scheme
+ * is dark (the @media block adds the dark vars there). */
+body.theme-dark.theme-cool,
+body.theme-follow-system.theme-cool {
+  --bg: #0a0a0d;
+  --surface: #131318;
+  --surface-2: #1a1a20;
+  --border: #26262d;
+  --border-strong: #3a3a44;
 }

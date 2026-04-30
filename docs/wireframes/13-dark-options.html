@@ -1,0 +1,526 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Dark Theme Options — MDViewer</title>
+    <style>
+      :root {
+        --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      body {
+        margin: 0;
+        padding: 24px;
+        background: #2a2a28;
+        font-family: var(--sans);
+        color: #fff;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 18px;
+      }
+      p.lede {
+        margin: 0 0 24px;
+        color: #c0c0bc;
+        font-size: 13.5px;
+        max-width: 680px;
+      }
+
+      /* Each variant block — sized to roughly match one MDViewer window. */
+      .variants {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 24px;
+        max-width: 1280px;
+      }
+      .variant {
+        border: 1px solid #444;
+        border-radius: 8px;
+        overflow: hidden;
+        background: var(--bg);
+        color: var(--text);
+        font-family: var(--sans);
+        display: flex;
+        flex-direction: column;
+        height: 460px;
+      }
+      .variant-label {
+        background: #181818;
+        color: #fff;
+        padding: 8px 14px;
+        font-size: 13px;
+        font-weight: 600;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .variant-label .swatches {
+        display: inline-flex;
+        gap: 4px;
+      }
+      .variant-label .swatch {
+        width: 16px;
+        height: 16px;
+        border-radius: 3px;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+      }
+      .variant-label small {
+        font-weight: 400;
+        font-size: 11.5px;
+        color: #b0b0b0;
+        margin-left: 8px;
+      }
+
+      /* Mock workspace shell — one of every region the real app has, so
+       * the variant shows how the colors interact instead of just a
+       * single swatch. */
+      .ws-tabs {
+        background: var(--surface-2);
+        border-bottom: 1px solid var(--border);
+        padding: 6px 8px;
+        display: flex;
+        gap: 4px;
+        font-size: 12px;
+      }
+      .ws-tab {
+        padding: 4px 12px;
+        background: transparent;
+        color: var(--text-dim);
+        border-right: 1px solid var(--border);
+      }
+      .ws-tab.active {
+        background: var(--surface);
+        color: var(--text);
+        border-radius: 3px 3px 0 0;
+      }
+      .ws-body {
+        flex: 1;
+        display: grid;
+        grid-template-columns: 1fr 220px;
+        min-height: 0;
+      }
+      .ws-doc {
+        background: var(--surface);
+        padding: 14px 18px;
+        overflow: auto;
+      }
+      .ws-doc h2 {
+        margin: 0 0 8px;
+        font-size: 16px;
+        color: var(--text);
+      }
+      .ws-doc p {
+        margin: 0 0 10px;
+        font-size: 12px;
+        color: var(--text);
+        line-height: 1.5;
+      }
+      .ws-doc table {
+        border-collapse: collapse;
+        font-size: 11.5px;
+        margin-bottom: 8px;
+        width: 100%;
+      }
+      .ws-doc th {
+        background: var(--surface-2);
+        font-weight: 600;
+        text-align: center;
+        padding: 4px 8px;
+        border: 1px solid var(--border);
+      }
+      .ws-doc td {
+        padding: 4px 8px;
+        border: 1px solid var(--border);
+      }
+      .ws-doc tbody tr:nth-child(even) td {
+        background: var(--surface-2);
+      }
+      .ws-doc a {
+        color: var(--accent);
+        text-decoration: underline;
+      }
+      .ws-doc code {
+        font-family: var(--mono);
+        font-size: 11px;
+        background: var(--surface-2);
+        padding: 1px 4px;
+        border-radius: 2px;
+      }
+      .ws-side {
+        background: var(--surface-2);
+        border-left: 1px solid var(--border);
+        padding: 10px 12px;
+        overflow: auto;
+        font-size: 11px;
+      }
+      .ws-side .head {
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--text-dim);
+        margin-bottom: 8px;
+        padding-bottom: 4px;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .ws-side .head button {
+        background: var(--surface-2);
+        border: 1px solid var(--border-strong);
+        border-radius: 3px;
+        color: var(--text);
+        font-size: 12px;
+        padding: 0 6px;
+        cursor: pointer;
+      }
+      .thread {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 6px 8px;
+        margin-bottom: 6px;
+      }
+      .thread .author {
+        font-weight: 600;
+        color: var(--text-dim);
+        font-size: 10.5px;
+      }
+      .thread .body {
+        margin: 2px 0 0;
+        color: var(--text);
+      }
+      .ws-status {
+        background: var(--surface-2);
+        border-top: 1px solid var(--border);
+        padding: 0 12px;
+        height: 22px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        font-size: 11px;
+        color: var(--text-dim);
+      }
+      .ws-status .chip {
+        background: var(--accent-soft);
+        color: var(--accent);
+        padding: 1px 8px;
+        border-radius: 10px;
+        font-size: 10.5px;
+      }
+      .ws-status .grow {
+        flex: 1;
+      }
+
+      /* ============================================================
+       * Variant A — Charcoal Plus (slightly darker than current)
+       * ============================================================ */
+      .variant.a {
+        --bg: #060605;
+        --surface: #0e0e0d;
+        --surface-2: #161614;
+        --border: #232320;
+        --border-strong: #36362f;
+        --text: #ececea;
+        --text-dim: #a8a8a0;
+        --text-faint: #6a6a62;
+        --accent: #7e9bff;
+        --accent-soft: #1f2a4f;
+      }
+      /* ============================================================
+       * Variant B — Pure Black (OLED)
+       * ============================================================ */
+      .variant.b {
+        --bg: #000000;
+        --surface: #080807;
+        --surface-2: #121211;
+        --border: #1f1f1c;
+        --border-strong: #34342f;
+        --text: #ececea;
+        --text-dim: #a0a098;
+        --text-faint: #66665e;
+        --accent: #7e9bff;
+        --accent-soft: #1c2750;
+      }
+      /* ============================================================
+       * Variant C — VS-Code-like (cool neutral)
+       * ============================================================ */
+      .variant.c {
+        --bg: #0a0a0d;
+        --surface: #131318;
+        --surface-2: #1a1a20;
+        --border: #26262d;
+        --border-strong: #3a3a44;
+        --text: #e8e8ec;
+        --text-dim: #a4a4ac;
+        --text-faint: #6a6a72;
+        --accent: #7e9bff;
+        --accent-soft: #1d2750;
+      }
+      /* ============================================================
+       * Variant D — Inky (true black bg + warm panels)
+       * ============================================================ */
+      .variant.d {
+        --bg: #000000;
+        --surface: #0d0d0b;
+        --surface-2: #1a1a17;
+        --border: #2a2a25;
+        --border-strong: #3e3e37;
+        --text: #ececea;
+        --text-dim: #a8a8a0;
+        --text-faint: #6e6e66;
+        --accent: #7e9bff;
+        --accent-soft: #1f2a4f;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Dark theme — four darker options</h1>
+    <p class="lede">
+      Each card mirrors the actual MDViewer chrome (tabs, doc area, comments
+      sidebar, status bar) with the variant's color palette applied. The
+      three colored squares next to each variant name are the bg / surface /
+      surface-2 swatches in that order — that's the gradient that defines the
+      look.
+    </p>
+
+    <div class="variants">
+      <!-- ============================================================
+           Variant A — Charcoal Plus
+           ============================================================ -->
+      <div class="variant a">
+        <div class="variant-label">
+          <span>
+            A · Charcoal Plus
+            <small>nudges current theme darker by ~6 units</small>
+          </span>
+          <span class="swatches">
+            <span class="swatch" style="background: #060605"></span>
+            <span class="swatch" style="background: #0e0e0d"></span>
+            <span class="swatch" style="background: #161614"></span>
+          </span>
+        </div>
+        <div class="ws-tabs">
+          <span class="ws-tab active">readme.md</span>
+          <span class="ws-tab">notes.md</span>
+        </div>
+        <div class="ws-body">
+          <div class="ws-doc">
+            <h2>Heading</h2>
+            <p>
+              Body prose with an <a href="#">external link</a> and inline
+              <code>monospace</code> for code references.
+            </p>
+            <table>
+              <thead>
+                <tr>
+                  <th>Column</th>
+                  <th>Value</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Alpha</td>
+                  <td>1</td>
+                </tr>
+                <tr>
+                  <td>Beta</td>
+                  <td>2</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="ws-side">
+            <div class="head"><span>Comments</span><button>×</button></div>
+            <div class="thread">
+              <div class="author">Mira</div>
+              <div class="body">First note on the heading.</div>
+            </div>
+          </div>
+        </div>
+        <div class="ws-status">
+          <span class="chip">User</span>
+          <span class="grow"></span>
+          <span>v0.1.1</span>
+        </div>
+      </div>
+
+      <!-- ============================================================
+           Variant B — Pure Black (OLED)
+           ============================================================ -->
+      <div class="variant b">
+        <div class="variant-label">
+          <span>
+            B · Pure Black <small>OLED-friendly, max contrast</small>
+          </span>
+          <span class="swatches">
+            <span class="swatch" style="background: #000000"></span>
+            <span class="swatch" style="background: #080807"></span>
+            <span class="swatch" style="background: #121211"></span>
+          </span>
+        </div>
+        <div class="ws-tabs">
+          <span class="ws-tab active">readme.md</span>
+          <span class="ws-tab">notes.md</span>
+        </div>
+        <div class="ws-body">
+          <div class="ws-doc">
+            <h2>Heading</h2>
+            <p>
+              Body prose with an <a href="#">external link</a> and inline
+              <code>monospace</code> for code references.
+            </p>
+            <table>
+              <thead>
+                <tr>
+                  <th>Column</th>
+                  <th>Value</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Alpha</td>
+                  <td>1</td>
+                </tr>
+                <tr>
+                  <td>Beta</td>
+                  <td>2</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="ws-side">
+            <div class="head"><span>Comments</span><button>×</button></div>
+            <div class="thread">
+              <div class="author">Mira</div>
+              <div class="body">First note on the heading.</div>
+            </div>
+          </div>
+        </div>
+        <div class="ws-status">
+          <span class="chip">User</span>
+          <span class="grow"></span>
+          <span>v0.1.1</span>
+        </div>
+      </div>
+
+      <!-- ============================================================
+           Variant C — VS-Code (cool neutral)
+           ============================================================ -->
+      <div class="variant c">
+        <div class="variant-label">
+          <span>
+            C · Cool Neutral
+            <small>slight blue tint, code-editor feel</small>
+          </span>
+          <span class="swatches">
+            <span class="swatch" style="background: #0a0a0d"></span>
+            <span class="swatch" style="background: #131318"></span>
+            <span class="swatch" style="background: #1a1a20"></span>
+          </span>
+        </div>
+        <div class="ws-tabs">
+          <span class="ws-tab active">readme.md</span>
+          <span class="ws-tab">notes.md</span>
+        </div>
+        <div class="ws-body">
+          <div class="ws-doc">
+            <h2>Heading</h2>
+            <p>
+              Body prose with an <a href="#">external link</a> and inline
+              <code>monospace</code> for code references.
+            </p>
+            <table>
+              <thead>
+                <tr>
+                  <th>Column</th>
+                  <th>Value</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Alpha</td>
+                  <td>1</td>
+                </tr>
+                <tr>
+                  <td>Beta</td>
+                  <td>2</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="ws-side">
+            <div class="head"><span>Comments</span><button>×</button></div>
+            <div class="thread">
+              <div class="author">Mira</div>
+              <div class="body">First note on the heading.</div>
+            </div>
+          </div>
+        </div>
+        <div class="ws-status">
+          <span class="chip">User</span>
+          <span class="grow"></span>
+          <span>v0.1.1</span>
+        </div>
+      </div>
+
+      <!-- ============================================================
+           Variant D — Inky (true black bg + warm panels)
+           ============================================================ -->
+      <div class="variant d">
+        <div class="variant-label">
+          <span>
+            D · Inky <small>black bg, warm panel surfaces</small>
+          </span>
+          <span class="swatches">
+            <span class="swatch" style="background: #000000"></span>
+            <span class="swatch" style="background: #0d0d0b"></span>
+            <span class="swatch" style="background: #1a1a17"></span>
+          </span>
+        </div>
+        <div class="ws-tabs">
+          <span class="ws-tab active">readme.md</span>
+          <span class="ws-tab">notes.md</span>
+        </div>
+        <div class="ws-body">
+          <div class="ws-doc">
+            <h2>Heading</h2>
+            <p>
+              Body prose with an <a href="#">external link</a> and inline
+              <code>monospace</code> for code references.
+            </p>
+            <table>
+              <thead>
+                <tr>
+                  <th>Column</th>
+                  <th>Value</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Alpha</td>
+                  <td>1</td>
+                </tr>
+                <tr>
+                  <td>Beta</td>
+                  <td>2</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="ws-side">
+            <div class="head"><span>Comments</span><button>×</button></div>
+            <div class="thread">
+              <div class="author">Mira</div>
+              <div class="body">First note on the heading.</div>
+            </div>
+          </div>
+        </div>
+        <div class="ws-status">
+          <span class="chip">User</span>
+          <span class="grow"></span>
+          <span>v0.1.1</span>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

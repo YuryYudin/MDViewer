@@ -22,6 +22,10 @@ type AppliedTheme = 'light' | 'dark' | 'follow_system';
 export async function main(): Promise<void> {
   const cachedTheme = (localStorage.getItem('mdviewer.theme') ?? 'light') as 'light' | 'dark';
   document.body.classList.toggle('theme-dark', cachedTheme === 'dark');
+  // Pre-paint the cool variant from cache so the FOUC window doesn't briefly
+  // flash the Pure palette before settings load.
+  const cachedDarkVariant = localStorage.getItem('mdviewer.darkVariant') ?? 'pure';
+  document.body.classList.toggle('theme-cool', cachedDarkVariant === 'cool');
 
   const root = document.getElementById('app');
   if (!root) throw new Error('#app element missing from index.html');
@@ -30,16 +34,30 @@ export async function main(): Promise<void> {
 
   let currentTheme: AppliedTheme = settings.appearance.theme;
 
-  const applyTheme = (theme: AppliedTheme): void => {
+  const applyTheme = (theme: AppliedTheme, darkVariant?: 'pure' | 'cool'): void => {
     currentTheme = theme;
     const dark =
       theme === 'dark' ||
       (theme === 'follow_system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
     document.body.classList.toggle('theme-dark', dark);
     document.body.classList.toggle('theme-follow-system', theme === 'follow_system');
+    if (darkVariant !== undefined) {
+      document.body.classList.toggle('theme-cool', darkVariant === 'cool');
+      localStorage.setItem('mdviewer.darkVariant', darkVariant);
+    }
     localStorage.setItem('mdviewer.theme', dark ? 'dark' : 'light');
   };
-  applyTheme(currentTheme);
+  applyTheme(currentTheme, settings.appearance.dark_variant);
+
+  // Re-apply the dark variant whenever Settings dispatches its post-save
+  // event so flipping Pure ↔ Cool in the Settings panel takes effect
+  // without a reload.
+  document.addEventListener('mdviewer:settings-changed', (ev: Event) => {
+    const next = (ev as CustomEvent<Settings>).detail;
+    if (next?.appearance) {
+      applyTheme(next.appearance.theme, next.appearance.dark_variant);
+    }
+  });
 
   // Settings overlay: mounted on `mdviewer:open-settings` (dispatched by
   // the keymap's `open_settings` action and the StartPage button) and
