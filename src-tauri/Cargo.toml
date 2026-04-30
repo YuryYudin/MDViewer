@@ -68,7 +68,7 @@ walkdir = "2"
 # in only to the per-OS native backends we actually use.
 # `tauri-plugin-stronghold` provides an encrypted at-rest fallback for
 # secrets the keyring can't hold.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "multipart"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "multipart", "blocking"] }
 oauth2 = { version = "4", default-features = false, features = ["reqwest", "rustls-tls"] }
 tauri-plugin-stronghold = "2"
 tiny_http = "0.12"
