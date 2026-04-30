@@ -38,6 +38,28 @@ export function mountCommentsSidebar(
   root.replaceChildren();
   root.setAttribute('data-view', 'sidebar-comments');
 
+  // Header row with a close (×) button. Clicking dispatches the same
+  // `mdviewer:toggle-sidebar` event the View menu / Cmd+Shift+S keymap
+  // fires, so all three input surfaces converge on the Workspace listener.
+  // The `data-test="sidebar-close"` selector is what the unit + e2e specs
+  // assert on.
+  const header = document.createElement('div');
+  header.setAttribute('data-region', 'sidebar-header');
+  const title = document.createElement('span');
+  title.className = 'sidebar-title';
+  title.textContent = 'Comments';
+  const closeBtn = document.createElement('button');
+  closeBtn.setAttribute('data-test', 'sidebar-close');
+  closeBtn.setAttribute('data-action', 'close-sidebar');
+  closeBtn.setAttribute('title', 'Hide comments sidebar');
+  closeBtn.setAttribute('aria-label', 'Hide comments sidebar');
+  closeBtn.textContent = '×';
+  closeBtn.addEventListener('click', () => {
+    document.dispatchEvent(new CustomEvent('mdviewer:toggle-sidebar'));
+  });
+  header.append(title, closeBtn);
+  root.appendChild(header);
+
   // Orphan section sits at the top so it's visible without scrolling, which
   // is the wireframe-09 layout. Suppressed entirely when the list is empty.
   if (opts.orphans && opts.orphans.length > 0) {

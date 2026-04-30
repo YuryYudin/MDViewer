@@ -652,3 +652,139 @@ describe('Workspace — font-size feature (A9)', () => {
     vi.useRealTimers();
   });
 });
+
+describe('Workspace — comments-sidebar toggle', () => {
+  async function mountDoc(ipc: Ipc): Promise<{ root: HTMLElement; body: HTMLElement; handle: any }> {
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    (ipc.listOpenDocuments as any).mockResolvedValue([{ id: 't-1', path: '/docs/x.md' }]);
+    const handle = await mountWorkspace(root, ipc);
+    handle.setActive({
+      kind: 'document',
+      tab_id: 't-1',
+      path: '/docs/x.md',
+      html: '<p>hi</p>',
+      threads: [],
+    });
+    await handle.refresh();
+    const body = root.querySelector<HTMLElement>('[data-region="body"]')!;
+    return { root, body, handle };
+  }
+
+  it('starts visible — body has no data-sidebar attribute and the sidebar element is rendered', async () => {
+    const ipc = makeIpc();
+    const { body } = await mountDoc(ipc);
+    expect(body.hasAttribute('data-sidebar')).toBe(false);
+    expect(body.querySelector('[data-region="sidebar"]')).toBeTruthy();
+    expect(body.querySelector('[data-view="sidebar-comments"]')).toBeTruthy();
+  });
+
+  it('mdviewer:toggle-sidebar flips data-sidebar="hidden" on the body region', async () => {
+    const ipc = makeIpc();
+    const { body } = await mountDoc(ipc);
+    document.dispatchEvent(new CustomEvent('mdviewer:toggle-sidebar'));
+    expect(body.getAttribute('data-sidebar')).toBe('hidden');
+    document.dispatchEvent(new CustomEvent('mdviewer:toggle-sidebar'));
+    expect(body.hasAttribute('data-sidebar')).toBe(false);
+  });
+
+  it('clicking the sidebar close button hides the sidebar', async () => {
+    const ipc = makeIpc();
+    const { root, body } = await mountDoc(ipc);
+    const closeBtn = root.querySelector<HTMLButtonElement>('[data-test="sidebar-close"]');
+    expect(closeBtn).toBeTruthy();
+    closeBtn!.click();
+    expect(body.getAttribute('data-sidebar')).toBe('hidden');
+  });
+
+  it('mounts a floating "Show comments" button inside the body region', async () => {
+    const ipc = makeIpc();
+    const { body } = await mountDoc(ipc);
+    const showBtn = body.querySelector('[data-test="sidebar-show"]');
+    expect(showBtn).toBeTruthy();
+    expect(showBtn!.getAttribute('aria-label')).toBe('Show comments sidebar');
+  });
+
+  it('clicking the floating "Show comments" button toggles the sidebar back open', async () => {
+    const ipc = makeIpc();
+    const { body } = await mountDoc(ipc);
+    document.dispatchEvent(new CustomEvent('mdviewer:toggle-sidebar'));
+    expect(body.getAttribute('data-sidebar')).toBe('hidden');
+    (body.querySelector('[data-test="sidebar-show"]') as HTMLButtonElement).click();
+    expect(body.hasAttribute('data-sidebar')).toBe(false);
+  });
+
+  it('a new thread-created event auto-shows the sidebar even if it was hidden', async () => {
+    const ipc = makeIpc();
+    const { body } = await mountDoc(ipc);
+    // Hide the sidebar first.
+    document.dispatchEvent(new CustomEvent('mdviewer:toggle-sidebar'));
+    expect(body.getAttribute('data-sidebar')).toBe('hidden');
+    // Document.ts dispatches `thread-created` (bubbling) on the docRoot
+    // when a new comment is posted via the SelectionPopover composer.
+    const docRoot = body.querySelector('[data-view="document"]')!;
+    docRoot.dispatchEvent(new CustomEvent('thread-created', { bubbles: true }));
+    // Listener is synchronous; refresh fires async but visibility flag flips
+    // immediately.
+    expect(body.hasAttribute('data-sidebar')).toBe(false);
+  });
+
+  it('sidebar visibility persists across a refresh()', async () => {
+    const ipc = makeIpc();
+    const { body, handle } = await mountDoc(ipc);
+    document.dispatchEvent(new CustomEvent('mdviewer:toggle-sidebar'));
+    expect(body.getAttribute('data-sidebar')).toBe('hidden');
+    await handle.refresh();
+    // After refresh the body is re-built but the sidebar visibility flag
+    // is in-session state on the closure, so it survives.
+    expect(body.getAttribute('data-sidebar')).toBe('hidden');
+  });
+
+  it('sidebar visibility persists across switching tabs', async () => {
+    const ipc = makeIpc();
+    const ids = ['t-a', 't-b'];
+    (ipc.listOpenDocuments as any).mockImplementation(() =>
+      Promise.resolve(ids.map((id) => ({ id, path: `/docs/${id}.md` }))),
+    );
+    (ipc.openDocument as any).mockImplementation(async (path: string) => ({
+      kind: 'document',
+      tab_id: path.endsWith('t-a.md') ? 't-a' : 't-b',
+      path,
+      html: '<p>hi</p>',
+      threads: [],
+    }));
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    const handle = await mountWorkspace(root, ipc);
+    handle.setActive({
+      kind: 'document',
+      tab_id: 't-a',
+      path: '/docs/t-a.md',
+      html: '<p>hi</p>',
+      threads: [],
+    });
+    await handle.refresh();
+    document.dispatchEvent(new CustomEvent('mdviewer:toggle-sidebar'));
+    const body = root.querySelector<HTMLElement>('[data-region="body"]')!;
+    expect(body.getAttribute('data-sidebar')).toBe('hidden');
+
+    // Click the second tab — the body re-mounts but the flag survives.
+    const tabs = root.querySelectorAll<HTMLElement>('[data-test="tab"]');
+    tabs[1].click();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(body.getAttribute('data-sidebar')).toBe('hidden');
+  });
+
+  it('toggle is a no-op when StartPage is mounted (no document, sidebar element absent)', async () => {
+    const ipc = makeIpc();
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    await mountWorkspace(root, ipc);
+    const body = root.querySelector<HTMLElement>('[data-region="body"]')!;
+    expect(body.querySelector('[data-region="sidebar"]')).toBeNull();
+    // Listener still tracks the flag; it just has no visible effect because
+    // there's no sidebar to hide. Toggling should not throw.
+    document.dispatchEvent(new CustomEvent('mdviewer:toggle-sidebar'));
+    expect(body.getAttribute('data-sidebar')).toBe('hidden');
+  });
+});

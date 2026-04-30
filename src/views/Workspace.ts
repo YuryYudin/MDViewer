@@ -111,6 +111,26 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
   const tabbar = shell.querySelector<HTMLElement>('[data-region="tabbar"]')!;
   const body = shell.querySelector<HTMLElement>('[data-region="body"]')!;
 
+  // Comments-sidebar visibility (in-session only — not persisted). Three
+  // input surfaces converge on `mdviewer:toggle-sidebar`: the close button
+  // inside CommentsSidebar, the View → Toggle Comments Sidebar menu item
+  // (via menuBridge), and the Cmd+Shift+S keymap action (via main.ts's
+  // dispatchAction). All three flip `sidebarHidden` here, which the body's
+  // `data-sidebar` attribute reflects so app.css's hide rule applies.
+  let sidebarHidden = false;
+  function applySidebarVisibility(): void {
+    if (sidebarHidden) body.setAttribute('data-sidebar', 'hidden');
+    else body.removeAttribute('data-sidebar');
+  }
+  document.addEventListener(
+    'mdviewer:toggle-sidebar',
+    () => {
+      sidebarHidden = !sidebarHidden;
+      applySidebarVisibility();
+    },
+    { signal: mountAbort.signal },
+  );
+
   // Cache the active tab's data the most recent open_document call gave us
   // so refresh() doesn't have to re-open just to re-render.
   const activeTab: { tabId?: string; path?: string; source?: string; threads?: Thread[]; html?: string } = {};
@@ -418,16 +438,38 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
     // worked on paper but didn't propagate height correctly in WKWebView.
     body.classList.add('with-document');
     body.replaceChildren();
+    // Re-apply the sidebar visibility flag — body.replaceChildren() above
+    // doesn't strip body's own `data-sidebar` attribute, but we re-call
+    // applySidebarVisibility() so the attribute round-trips on every
+    // refresh (matters for the multi-tab case where one refresh might
+    // race with a toggle).
+    applySidebarVisibility();
     const docRoot = document.createElement('div');
     body.appendChild(docRoot);
     const sidebarRoot = document.createElement('div');
     sidebarRoot.setAttribute('data-region', 'sidebar');
     body.appendChild(sidebarRoot);
 
+    // Floating "Show comments" pill — visible only when sidebar is hidden
+    // (CSS rule keys off body[data-sidebar='hidden']). Clicking dispatches
+    // the same toggle event so the listener above flips the flag back.
+    const showSidebarBtn = document.createElement('button');
+    showSidebarBtn.setAttribute('data-test', 'sidebar-show');
+    showSidebarBtn.setAttribute('data-action', 'show-sidebar');
+    showSidebarBtn.setAttribute('title', 'Show comments sidebar');
+    showSidebarBtn.setAttribute('aria-label', 'Show comments sidebar');
+    showSidebarBtn.textContent = '💬 Comments';
+    showSidebarBtn.addEventListener('click', () => {
+      document.dispatchEvent(new CustomEvent('mdviewer:toggle-sidebar'));
+    });
+    body.appendChild(showSidebarBtn);
+
     // SelectionPopover dispatches `thread-created` on the document root
     // when the user posts a new comment; ThreadDetail dispatches
     // `thread-replied` and `thread-resolved`. All three need the same
     // refresh — re-fetch threads, repaint highlights, re-mount sidebar.
+    // `thread-created` ALSO auto-shows the sidebar if it was hidden so the
+    // new comment is immediately visible — matches the spec ask.
     const refreshThreads = (): void => {
       void (async () => {
         const tabId = activeTab.tabId ?? state.activeId;
@@ -442,7 +484,13 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
         });
       })();
     };
-    docRoot.addEventListener('thread-created', refreshThreads);
+    docRoot.addEventListener('thread-created', () => {
+      if (sidebarHidden) {
+        sidebarHidden = false;
+        applySidebarVisibility();
+      }
+      refreshThreads();
+    });
     sidebarRoot.addEventListener('thread-replied', refreshThreads);
     sidebarRoot.addEventListener('thread-resolved', refreshThreads);
 

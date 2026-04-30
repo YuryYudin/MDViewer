@@ -135,6 +135,38 @@ describe('CommentsSidebar', () => {
     expect(root.querySelector('[data-empty="true"]')).toBeTruthy();
   });
 
+  describe('header + close button', () => {
+    it('mounts a sidebar header with title + close button', () => {
+      const root = document.createElement('div');
+      mountCommentsSidebar(root, ipcStub(), [], { showResolved: false });
+      const header = root.querySelector('[data-region="sidebar-header"]');
+      expect(header).toBeTruthy();
+      expect(header!.textContent).toContain('Comments');
+      const close = header!.querySelector<HTMLButtonElement>('[data-test="sidebar-close"]');
+      expect(close).toBeTruthy();
+      expect(close!.getAttribute('aria-label')).toBe('Hide comments sidebar');
+    });
+
+    it('clicking the close button dispatches mdviewer:toggle-sidebar on document', () => {
+      const root = document.createElement('div');
+      mountCommentsSidebar(root, ipcStub(), [], { showResolved: false });
+      const handler = vi.fn();
+      document.addEventListener('mdviewer:toggle-sidebar', handler as EventListener, {
+        once: true,
+      });
+      (root.querySelector('[data-test="sidebar-close"]') as HTMLElement).click();
+      expect(handler).toHaveBeenCalledTimes(1);
+    });
+
+    it('the header survives a re-mount (close button remains reachable)', () => {
+      const root = document.createElement('div');
+      mountCommentsSidebar(root, ipcStub(), [thread({ id: 't-1' })], { showResolved: false });
+      mountCommentsSidebar(root, ipcStub(), [thread({ id: 't-2' })], { showResolved: false });
+      const closeButtons = root.querySelectorAll('[data-test="sidebar-close"]');
+      expect(closeButtons.length).toBe(1);
+    });
+  });
+
   describe('orphan section', () => {
     it('mounts the orphan region above the thread list when orphans is non-empty', () => {
       const root = document.createElement('div');

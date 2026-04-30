@@ -121,6 +121,43 @@ body {
   overflow: hidden;
 }
 
+/* Hide the comments sidebar when the body carries the `data-sidebar="hidden"`
+ * attribute. The toggle-sidebar listener in Workspace.ts flips this flag.
+ * Using `display: none` instead of `width: 0` so the doc reclaims the full
+ * width without leaving a 1px border on the right. */
+.workspace > [data-region='body'].with-document[data-sidebar='hidden'] > [data-region='sidebar'] {
+  display: none;
+}
+
+/* Floating "Show comments" pill that surfaces in the bottom-right corner
+ * while the sidebar is hidden, giving the user a discoverable affordance
+ * to bring it back without hunting through the View menu or remembering
+ * the keyboard shortcut. */
+.workspace > [data-region='body'].with-document [data-test='sidebar-show'] {
+  display: none;
+}
+.workspace > [data-region='body'].with-document[data-sidebar='hidden'] [data-test='sidebar-show'] {
+  display: inline-flex;
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  z-index: 5;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 18px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 12px;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+.workspace > [data-region='body'].with-document [data-test='sidebar-show']:hover {
+  border-color: var(--accent);
+}
+
 /* =====================================================================
  * Tabs
  * ===================================================================== */
@@ -502,6 +539,39 @@ body {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+[data-view='sidebar-comments'] [data-region='sidebar-header'] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 2px 6px;
+  border-bottom: 1px solid var(--border);
+}
+[data-view='sidebar-comments'] [data-region='sidebar-header'] .sidebar-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+[data-view='sidebar-comments'] [data-test='sidebar-close'] {
+  /* Match the dark-mode-friendly chrome the rest of the secondary buttons
+   * use — surface-2 + border-strong stays visible against the sidebar's
+   * own surface-2 background because of the explicit border. */
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  color: var(--text);
+  cursor: pointer;
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 8px;
+  height: 22px;
+}
+[data-view='sidebar-comments'] [data-test='sidebar-close']:hover {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 [data-view='sidebar-comments'] [data-region='thread-counts'] {
   display: flex;
