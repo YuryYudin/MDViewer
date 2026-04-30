@@ -62,6 +62,14 @@ export interface Ipc {
    * was the regression where tab titles rendered the UUID.
    */
   listOpenDocuments(): Promise<TabSummary[]>;
+  /**
+   * Returns the id of the currently-active tab on the Rust side, or null
+   * when no tab is active (StartPage). The WebView's Workspace uses this
+   * on boot — without it, the session-restore path defaults state.activeId
+   * to the first tab even when Rust restored a different active tab from
+   * session.json.
+   */
+  getActiveTabId(): Promise<string | null>;
   listRecents(): Promise<RecentEntry[]>;
   getSettings(): Promise<Settings>;
   setSettings(s: Settings): Promise<void>;
@@ -147,6 +155,7 @@ export const tauriIpc: Ipc = {
   closeTab: (id) => invoke('close_tab', { id }),
   activateTab: (id) => invoke('activate_tab', { id }),
   listOpenDocuments: () => invoke('list_open_documents'),
+  getActiveTabId: () => invoke('get_active_tab_id'),
   listRecents: () => invoke('list_recents'),
   getSettings: () => invoke('get_settings'),
   // Wraps the bare `invoke('set_settings', ...)` so a successful save also

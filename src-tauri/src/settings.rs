@@ -46,6 +46,29 @@ pub enum AutoMergeMode {
     Manual,
 }
 
+/// What MDViewer should do when the app launches.
+///
+/// `Clean` (default) — boot to the StartPage with no tabs open. Most
+/// users expect this; matches the v0.1.0 behavior.
+///
+/// `Restore` — re-open every tab that was open at the previous shutdown,
+/// re-activating the same tab. Backed by `<data_dir>/session.json`,
+/// which Workspace updates eagerly on every open / close so a crash
+/// doesn't lose the state. The Settings.ts dropdown writes this field.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum StartupMode {
+    Clean,
+    Restore,
+}
+
+impl Default for StartupMode {
+    fn default() -> Self {
+        Self::Clean
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
 #[ts(export)]
 pub struct ProfileSettings {
@@ -61,6 +84,12 @@ pub struct AppearanceSettings {
     pub font_size_px: u16,
     pub line_height: u16, // 100..=200 percentage
     pub density: String,  // "compact" | "comfortable" | "spacious"
+    /// Startup behavior — "clean" (boot empty) or "restore" (re-open
+    /// previously open tabs). `serde(default)` so settings.toml files
+    /// written by older app versions (no startup_mode key) deserialize
+    /// without error and pick up the safe default.
+    #[serde(default)]
+    pub startup_mode: StartupMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
@@ -116,6 +145,7 @@ impl Default for Settings {
                 font_size_px: 14,
                 line_height: 150,
                 density: "comfortable".into(),
+                startup_mode: StartupMode::default(),
             },
             editor: EditorSettings {
                 default_open_mode: "view".into(),

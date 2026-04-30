@@ -35,6 +35,7 @@ pub mod doc_prefs;
 pub mod document;
 pub mod menu;
 pub mod recents;
+pub mod session;
 pub mod settings;
 pub mod sidecar;
 pub mod watcher;

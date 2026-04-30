@@ -219,6 +219,25 @@ function buildAppearance(ipc: Ipc, settings: Settings): HTMLElement {
     void ipc.setSettings(settings);
   });
 
+  // On startup: clean (boot empty — current behavior, the safe default)
+  // or restore (re-open the tabs that were open at last shutdown). The
+  // restore path is backed by <data_dir>/session.json which Workspace
+  // updates on every open/close, so the saved state survives crashes.
+  const startup = labeledSelect(
+    'On startup ',
+    [
+      ['clean', 'Start clean'],
+      ['restore', 'Restore previous session'],
+    ],
+    settings.appearance.startup_mode,
+    { 'data-test': 'startup-mode' },
+  );
+  s.appendChild(startup.row);
+  startup.select.addEventListener('change', () => {
+    settings.appearance.startup_mode = startup.select.value as Settings['appearance']['startup_mode'];
+    void ipc.setSettings(settings);
+  });
+
   return s;
 }
 

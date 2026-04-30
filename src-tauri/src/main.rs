@@ -138,6 +138,20 @@ fn list_open_documents(state: State<'_, Ws>) -> Vec<TabSummary> {
         .collect()
 }
 
+/// Return the id of the currently-active tab, or None if no tab is
+/// active (StartPage state). The WebView's Workspace uses this on boot
+/// to align its `state.activeId` with Rust's authoritative active tab —
+/// without it, the session-restore boot path would default to the first
+/// open tab even when Rust restored a different active tab from
+/// session.json.
+#[tauri::command]
+fn get_active_tab_id(state: State<'_, Ws>) -> Option<String> {
+    state
+        .lock()
+        .ok()
+        .and_then(|ws| ws.active_tab_id().map(|s| s.to_string()))
+}
+
 #[tauri::command]
 fn list_recents(state: State<'_, Ws>) -> Vec<mdviewer_lib::recents::RecentEntry> {
     state.lock().unwrap().recents_store().list_with_mtime()
@@ -618,16 +632,54 @@ fn main() {
             let dir = env_override.map(PathBuf::from).unwrap_or(data_dir);
             let mut ws = Workspace::new(&dir)?;
 
-            // CLI positional args → tabs at boot. `cli::parse_positional_args`
-            // strips argv[0], the migrate-sidecars subcommand (already
-            // dispatched above), and `-`-leading flags. A path that fails
-            // to open (typo, missing file) is logged and skipped — we don't
-            // want one bad path on the command line to take down the
-            // whole launch.
-            for path in cli::parse_positional_args(&std::env::args().collect::<Vec<_>>()) {
-                match ws.open_document(&path, OpenOpts::default()) {
-                    Ok(_) => tracing::info!("opened from CLI: {}", path.display()),
-                    Err(e) => tracing::warn!("CLI arg open failed for {}: {e:?}", path.display()),
+            // CLI positional args take precedence over the saved session —
+            // a user invoking `mdviewer notes.md` is expressing intent for
+            // *this* launch and shouldn't have the saved tabs loaded too.
+            // The session restore branch only runs when argv brought no
+            // paths AND the user has opted into restore mode.
+            let cli_paths = cli::parse_positional_args(&std::env::args().collect::<Vec<_>>());
+            if !cli_paths.is_empty() {
+                for path in cli_paths {
+                    match ws.open_document(&path, OpenOpts::default()) {
+                        Ok(_) => tracing::info!("opened from CLI: {}", path.display()),
+                        Err(e) => tracing::warn!("CLI arg open failed for {}: {e:?}", path.display()),
+                    }
+                }
+            } else if matches!(
+                ws.settings_store().get().appearance.startup_mode,
+                mdviewer_lib::settings::StartupMode::Restore
+            ) {
+                // Replay the saved session — open each remembered tab in
+                // order, then re-activate the previously-active tab. A
+                // failure on any single path is logged and skipped (the
+                // file may have moved/been deleted since last launch);
+                // the rest still load. SessionStore::open already pruned
+                // missing paths at load time, so this is defense in depth.
+                let saved = ws.session_store().get();
+                let active_target = saved.active_tab.clone();
+                for path in saved.open_tabs {
+                    match ws.open_document(&path, OpenOpts::default()) {
+                        Ok(_) => tracing::info!("restored from session: {}", path.display()),
+                        Err(e) => tracing::warn!(
+                            "session restore failed for {}: {e:?}",
+                            path.display()
+                        ),
+                    }
+                }
+                // open_document leaves the LAST opened tab active; if the
+                // saved session pinned a different one, switch to it.
+                if let Some(target_path) = active_target {
+                    let canonical = target_path
+                        .canonicalize()
+                        .unwrap_or_else(|_| target_path.clone());
+                    let target_id = ws
+                        .list_open_documents()
+                        .iter()
+                        .find(|t| t.path == canonical)
+                        .map(|t| t.id.clone());
+                    if let Some(id) = target_id {
+                        let _ = ws.activate_tab(&id);
+                    }
                 }
             }
             // Snapshot the initial external-change behavior and grab a
@@ -692,6 +744,7 @@ fn main() {
             close_tab,
             activate_tab,
             list_open_documents,
+            get_active_tab_id,
             list_recents,
             get_settings,
             set_settings,

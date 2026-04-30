@@ -5,7 +5,7 @@ import type { Settings } from '../../src/ipc';
 function defaultSettings(): Settings {
   return {
     profile: { user_id: 'u1', display_name: 'Carol', color: '#00aa88' },
-    appearance: { theme: 'light', font_size_px: 14, line_height: 150, density: 'comfortable' },
+    appearance: { theme: 'light', font_size_px: 14, line_height: 150, density: 'comfortable', startup_mode: 'clean' },
     editor: {
       default_open_mode: 'view',
       auto_save: true,
@@ -153,6 +153,25 @@ describe('Settings', () => {
     const calls = ipc.setSettings.mock.calls;
     expect(calls[calls.length - 1][0].appearance.line_height).toBe(175);
     expect(calls[calls.length - 1][0].appearance.density).toBe('compact');
+  });
+
+  it('startup-mode dropdown defaults to current setting and persists changes', async () => {
+    const root = document.createElement('div');
+    const ipc = makeIpc();
+    // makeIpc seeds settings with startup_mode = 'clean' (the default).
+    await mountSettings(root, ipc as any);
+    const startup = root.querySelector<HTMLSelectElement>('[data-test="startup-mode"]')!;
+    expect(startup).toBeTruthy();
+    expect(startup.value).toBe('clean');
+    // Both options must be present so the user can flip back.
+    const options = Array.from(startup.options).map((o) => o.value).sort();
+    expect(options).toEqual(['clean', 'restore']);
+    // Switch to restore — the change handler writes settings via IPC.
+    startup.value = 'restore';
+    startup.dispatchEvent(new Event('change'));
+    await flush();
+    const calls = ipc.setSettings.mock.calls;
+    expect(calls[calls.length - 1][0].appearance.startup_mode).toBe('restore');
   });
 
   it('editor section toggles persist auto_save and word_wrap', async () => {

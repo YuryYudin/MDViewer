@@ -31,6 +31,7 @@ function makeIpc(openIds: string[] = []): Ipc {
   const summaries = openIds.map((id) => ({ id, path: `/docs/${id}.md` }));
   return {
     listOpenDocuments: vi.fn().mockResolvedValue(summaries),
+    getActiveTabId: vi.fn().mockResolvedValue(null),
     listRecents: vi.fn().mockResolvedValue(recents),
     openDocument: vi
       .fn()

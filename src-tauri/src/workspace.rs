@@ -104,6 +104,10 @@ pub struct Workspace {
     /// single shared store — multiple stores would race on the same JSON
     /// file. See `src/doc_prefs.rs` for the on-disk schema.
     doc_prefs: DocPrefsStore,
+    /// Persists open-tab list + active tab across restarts. Drives the
+    /// "restore previous session" startup mode. Updated eagerly on every
+    /// open/close so a crash doesn't lose the state. See `src/session.rs`.
+    session: crate::session::SessionStore,
     tabs: HashMap<String, Tab>,
     order: Vec<String>,
     active: Option<String>,
@@ -120,11 +124,37 @@ impl Workspace {
             settings: SettingsStore::open(data_dir)?,
             recents: RecentsStore::open(data_dir)?,
             doc_prefs: DocPrefsStore::open(data_dir)?,
+            session: crate::session::SessionStore::open(data_dir)?,
             tabs: HashMap::new(),
             order: Vec::new(),
             active: None,
             closed_snapshots: HashMap::new(),
         })
+    }
+
+    pub fn session_store(&self) -> &crate::session::SessionStore {
+        &self.session
+    }
+
+    /// Snapshot the current open-tab list and active tab into the session
+    /// store. Called by `open_document`, `close_tab`, and `activate_tab`
+    /// so the on-disk session.json always reflects the live state.
+    fn persist_session(&self) {
+        let open_tabs: Vec<PathBuf> = self
+            .order
+            .iter()
+            .filter_map(|id| self.tabs.get(id).map(|t| t.path.clone()))
+            .collect();
+        let active_tab = self
+            .active
+            .as_ref()
+            .and_then(|id| self.tabs.get(id))
+            .map(|t| t.path.clone());
+        if let Err(e) = self.session.save(open_tabs, active_tab) {
+            // Session is best-effort — never let a save failure block
+            // open / close / activate flow. Log and move on.
+            tracing::warn!(?e, "session.json save failed");
+        }
     }
 
     pub fn open_document(&mut self, path: &Path, _opts: OpenOpts) -> Result<OpenOutcome> {
@@ -161,6 +191,7 @@ impl Workspace {
                 }
             }
             self.active = Some(id.clone());
+            self.persist_session();
             return Ok(OpenOutcome::Document(OpenResult {
                 tab_id: id,
                 path: p,
@@ -236,6 +267,7 @@ impl Workspace {
         self.order.push(id.clone());
         self.active = Some(id.clone());
         let _ = self.recents.push(&canonical);
+        self.persist_session();
         Ok(OpenOutcome::Document(result))
     }
 
@@ -283,6 +315,7 @@ impl Workspace {
         if self.active.as_deref() == Some(id) {
             self.active = self.order.last().cloned();
         }
+        self.persist_session();
         Ok(())
     }
 
@@ -303,6 +336,7 @@ impl Workspace {
             anyhow::bail!("no such tab");
         }
         self.active = Some(id.into());
+        self.persist_session();
         Ok(())
     }
 

@@ -301,7 +301,24 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
     }
     const summaries = await ipc.listOpenDocuments();
     state.tabs = summaries.map((s) => ({ id: s.id, path: s.path }));
-    state.activeId = state.tabs.length > 0 ? (state.activeId ?? state.tabs[0].id) : null;
+    // Align state.activeId with Rust's authoritative active tab when the
+    // WebView's local cache is empty. This is the session-restore boot
+    // path: Rust restored open_tabs + active_tab from session.json, and
+    // we need to display the same active tab on the WebView side. After
+    // a tab is clicked or opened from the WebView, state.activeId stays
+    // in sync via setActive — no need to ping Rust on every refresh.
+    if (state.activeId === null && state.tabs.length > 0) {
+      try {
+        const active = await ipc.getActiveTabId();
+        state.activeId = active ?? state.tabs[0].id;
+      } catch {
+        // jsdom unit-test mocks may not stub this — fall back to the old
+        // default rather than wedging refresh.
+        state.activeId = state.tabs[0].id;
+      }
+    } else if (state.tabs.length === 0) {
+      state.activeId = null;
+    }
     // Tab-strip wiring:
     //   - onActivate: a tab click must reload the document (openDocument
     //     re-activates an existing tab on the Rust side AND returns its
@@ -365,6 +382,33 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
         await refresh();
       });
       return;
+    }
+
+    // Session-restore boot path: Rust restored tabs from session.json,
+    // so listOpenDocuments returns them, but the WebView's setActive
+    // cache hasn't been primed yet (no setActive call ran). Without
+    // this, mountDocument below would render with empty html/threads.
+    // Detect "tabs exist but cache is empty" and fetch the active
+    // tab's payload via openDocument (idempotent for already-open
+    // tabs — Rust just re-activates and returns the cached state).
+    // Skip when the active tab has no path (untitled / scratch tabs
+    // can't be re-opened by path; the test for that case asserts no
+    // IPC call fires).
+    if (!activeTab.tabId && state.tabs.length > 0) {
+      const activeTabRecord = state.tabs.find((t) => t.id === state.activeId)
+        ?? state.tabs[0];
+      if (activeTabRecord.path) {
+        try {
+          const outcome = await ipc.openDocument(activeTabRecord.path);
+          setActive(outcome);
+        } catch (e) {
+          // Path may have moved/disappeared between sessions. Log and
+          // fall through — refresh will mount with empty state, which
+          // is at least better than wedging the boot.
+          // eslint-disable-next-line no-console
+          console.warn('session-restore openDocument failed:', e);
+        }
+      }
     }
 
     // Mount a real Document with the cached open-document payload from the

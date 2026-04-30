@@ -38,6 +38,9 @@ writeFileSync(
     'font_size_px = 14',
     'line_height = 150',
     'density = "comfortable"',
+    // startup_mode: clean by default — most specs assume an empty workspace
+    // at session start. The session-restore spec overrides this entry.
+    'startup_mode = "clean"',
     '',
     '[editor]',
     'default_open_mode = "view"',
