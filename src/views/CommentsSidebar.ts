@@ -1,7 +1,25 @@
 import type { Ipc, Thread } from '../ipc';
-import type { TabBackend } from '../types-generated';
+import type { DriveCollaborator, TabBackend } from '../types-generated';
 import { mountOrphanComments } from './OrphanComments';
 import { mountThreadDetail } from './ThreadDetail';
+
+/**
+ * Look up the comment author's collaborator record by email, then return
+ * up-to-two-character initials. Mirrors `CollabChip`'s `initials()` helper
+ * so the avatars in the sidebar header and the per-thread header use the
+ * same formatting. Returns `?` when the author isn't in the collaborator
+ * list (the comment was authored before the user gained access, or the
+ * file's permissions changed since the polling cache was last refreshed).
+ */
+function authorInitials(email: string, collaborators: DriveCollaborator[]): string {
+  const match = collaborators.find((c) => c.email_address === email);
+  if (!match) return '?';
+  const parts = match.display_name.trim().split(/\s+/).filter(Boolean).slice(0, 2);
+  const fromName = parts.map((p) => p[0]?.toUpperCase() ?? '').join('');
+  if (fromName) return fromName;
+  const fromEmail = match.email_address.trim()[0]?.toUpperCase();
+  return fromEmail ?? '?';
+}
 
 /**
  * Mount the comments sidebar (wireframe 05). User-supplied author names and
@@ -39,6 +57,13 @@ export function mountCommentsSidebar(
      *  next to the header. Local-backend tabs never render the pill (they
      *  don't round-trip through Drive). */
     backend?: TabBackend;
+    /** C1: collaborator list for the active Drive-backed tab. When supplied
+     *  alongside a Drive backend, each thread renders an initials author
+     *  avatar (`.author-avatar`) sourced from the matching collaborator
+     *  record. Local-backend tabs ignore this prop (no Drive identity
+     *  layer) and an empty list also suppresses the avatar so we don't
+     *  paint a wall of `?`s while the loader is in flight. */
+    collaborators?: DriveCollaborator[];
   },
 ): void {
   root.replaceChildren();
@@ -156,6 +181,30 @@ export function mountCommentsSidebar(
       pill.setAttribute('data-test', 'pending-pill');
       pill.textContent = 'Pending';
       article.appendChild(pill);
+    }
+
+    // C1: thread-author avatar — initials chip sourced from the active
+    // tab's collaborator list. Drive Comments only carry the author email
+    // on the wire; the matching DriveCollaborator (if any) supplies the
+    // display name we render. We render at most one avatar per thread,
+    // pinned to the first comment's author so the visual affordance lines
+    // up with the wireframe-05 "thread starter" cue. Suppressed entirely
+    // on Local-backend tabs (no Drive identity layer) and when the loader
+    // hasn't yet returned any collaborators (so we don't paint a wall of
+    // `?`s while the chip is still in flight).
+    if (
+      opts.backend &&
+      opts.backend !== 'local' &&
+      opts.collaborators &&
+      opts.collaborators.length > 0
+    ) {
+      const firstAuthor = t.comments[0]?.author_email;
+      if (firstAuthor) {
+        const avatar = document.createElement('span');
+        avatar.className = 'author-avatar';
+        avatar.textContent = authorInitials(firstAuthor, opts.collaborators);
+        article.appendChild(avatar);
+      }
     }
 
     if (opts.activeTabId) {
