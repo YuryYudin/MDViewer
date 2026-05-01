@@ -384,4 +384,111 @@ describe('CommentsSidebar', () => {
       expect(root.querySelector('.thread .pending-pill')).toBeTruthy();
     });
   });
+
+  // C1: thread-author avatars sourced from the active tab's collaborator list.
+  // Drive Comments don't carry rich author metadata — the comment record only
+  // has the email — so we look up the matching DriveCollaborator and render
+  // the same initials chip the CollabChip uses in the sidebar header.
+  describe('thread-author avatars (Drive backend)', () => {
+    it('renders an initials avatar for the first comment author when a matching collaborator exists', () => {
+      const root = document.createElement('div');
+      const t = thread({
+        id: 'T1',
+        comments: [
+          {
+            id: 'C1',
+            author: 'Alice',
+            color: '#000',
+            body: 'hi',
+            created_at: '2026-04-30T00:00:00Z',
+            author_email: 'alice@example.com',
+          },
+        ],
+      });
+      mountCommentsSidebar(root, ipcStub(), [t], {
+        showResolved: false,
+        backend: 'drive_desktop',
+        collaborators: [
+          { display_name: 'Alice Anderson', email_address: 'alice@example.com' },
+        ],
+      });
+      expect(root.querySelector('.thread .author-avatar')?.textContent).toBe('AA');
+    });
+
+    it('omits the avatar on Local-backend tabs even when collaborators is non-empty', () => {
+      const root = document.createElement('div');
+      const t = thread({
+        id: 'T1',
+        comments: [
+          {
+            id: 'C1',
+            author: 'Alice',
+            color: '#000',
+            body: 'hi',
+            created_at: '2026-04-30T00:00:00Z',
+            author_email: 'alice@example.com',
+          },
+        ],
+      });
+      mountCommentsSidebar(root, ipcStub(), [t], {
+        showResolved: false,
+        backend: 'local',
+        collaborators: [
+          { display_name: 'Alice Anderson', email_address: 'alice@example.com' },
+        ],
+      });
+      expect(root.querySelector('.thread .author-avatar')).toBeFalsy();
+    });
+
+    it("falls back to '?' when the comment author isn't in the collaborator list", () => {
+      const root = document.createElement('div');
+      const t = thread({
+        id: 'T1',
+        comments: [
+          {
+            id: 'C1',
+            author: 'Stranger',
+            color: '#000',
+            body: 'hi',
+            created_at: '2026-04-30T00:00:00Z',
+            author_email: 'stranger@example.com',
+          },
+        ],
+      });
+      mountCommentsSidebar(root, ipcStub(), [t], {
+        showResolved: false,
+        backend: 'drive_desktop',
+        collaborators: [
+          { display_name: 'Alice Anderson', email_address: 'alice@example.com' },
+        ],
+      });
+      expect(root.querySelector('.thread .author-avatar')?.textContent).toBe('?');
+    });
+
+    it('omits the avatar entirely when collaborators is empty', () => {
+      // Drive backend but no collaborators loaded yet (the loader hasn't
+      // resolved or the file has zero permissions). Don't render a "?"
+      // chip in that case — wait for collaborators to land.
+      const root = document.createElement('div');
+      const t = thread({
+        id: 'T1',
+        comments: [
+          {
+            id: 'C1',
+            author: 'Alice',
+            color: '#000',
+            body: 'hi',
+            created_at: '2026-04-30T00:00:00Z',
+            author_email: 'alice@example.com',
+          },
+        ],
+      });
+      mountCommentsSidebar(root, ipcStub(), [t], {
+        showResolved: false,
+        backend: 'drive_desktop',
+        collaborators: [],
+      });
+      expect(root.querySelector('.thread .author-avatar')).toBeFalsy();
+    });
+  });
 });
