@@ -19,11 +19,32 @@ export function attachSelectionPopover(
   getOffsets: () => { start: number; end: number; exact: string } | null,
 ): void {
   let popover: HTMLElement | null = null;
+  // The composer (stage 2: textarea + Post + Cancel) intentionally
+  // outlives a collapsed selection — the user clicks Post / Cancel
+  // explicitly. Without this guard, focusing the textarea would clear
+  // the selection and immediately tear the composer down, making it
+  // impossible to type a comment.
+  let composerOpen = false;
 
   const removePopover = (): void => {
     popover?.remove();
     popover = null;
+    composerOpen = false;
   };
+
+  // Close the popover as soon as the user clears the selection ANYWHERE
+  // — clicking in the sidebar, the toolbar, or even inside the document
+  // outside the highlighted range. Without this listener, the popover
+  // only updated on mouseup inside documentRoot, so a click in the
+  // sidebar left a stale floating button cluster behind.
+  document.addEventListener('selectionchange', () => {
+    if (composerOpen) return; // user is mid-comment; don't yank the textarea
+    if (!popover) return;
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) {
+      removePopover();
+    }
+  });
 
   documentRoot.addEventListener('mouseup', () => {
     const sel = window.getSelection();
@@ -63,6 +84,11 @@ export function attachSelectionPopover(
       // replaceChildren() not innerHTML='' to keep the no-innerHTML rule.
       popover!.replaceChildren();
       popover!.classList.add('composer');
+      // Set BEFORE focus(): focusing the textarea collapses the selection
+      // synchronously, which fires selectionchange — without the flag set,
+      // the listener above would tear the composer down before the user
+      // can type a single character.
+      composerOpen = true;
       const ta = document.createElement('textarea');
       ta.setAttribute('data-test', 'comment-body');
       ta.placeholder = 'Comment on selection…';
