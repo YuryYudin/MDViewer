@@ -184,3 +184,98 @@ describe('StartPage', () => {
     }
   });
 });
+
+// Branch-coverage gate (C5): the relativeTime() helper has six arms — just
+// now / minutes / hours / yesterday / days / absolute date — and prior to
+// this gate only the `mtime: null` branch (rendered as "—") was exercised.
+// The C5 trim of dead `if !feature_enabled` branches dropped the global
+// branch denominator just enough to expose this helper's missing arms.
+//
+// The helper isn't exported, so we drive it through the public mountStartPage
+// surface by feeding mtimes computed from `Date.now()`. fake-timers pin the
+// `now` value so each branch is reachable deterministically.
+describe('StartPage — relativeTime branches (C5 branch coverage)', () => {
+  function fakeIpcWithMtimes(
+    entries: { path: string; mtime: number | null }[],
+  ): Ipc {
+    return {
+      listRecents: vi.fn().mockResolvedValue(entries),
+      openDocument: vi.fn(),
+      getSettings: vi.fn().mockResolvedValue({
+        profile: { user_id: 'u', display_name: '', color: '#888' },
+      }),
+      setSettings: vi.fn().mockResolvedValue(undefined),
+      listThreads: vi.fn().mockResolvedValue([]),
+      createThread: vi.fn(),
+      postReply: vi.fn(),
+      resolveThread: vi.fn(),
+      closeTab: vi.fn(),
+      activateTab: vi.fn(),
+      listOpenDocuments: vi.fn().mockResolvedValue([]),
+      appInfo: vi.fn().mockResolvedValue({ version: '0.0.0', commit_hash: 'unit' }),
+      renderMarkdown: vi.fn(),
+      resolveAnchor: vi.fn(),
+    } as unknown as Ipc;
+  }
+
+  function timeOf(item: Element): string {
+    return item.querySelector('[data-test="recent-when"]')?.textContent ?? '';
+  }
+
+  it('renders all five relative-time branches plus the absolute-date fallback', async () => {
+    // Pin "now" so the deltas are reproducible regardless of when the
+    // suite runs. Date.now() inside relativeTime samples the system
+    // clock; fake-timers replace it without leaking into other tests.
+    const NOW_MS = new Date('2026-04-30T12:00:00Z').getTime();
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW_MS);
+    const nowSec = Math.floor(NOW_MS / 1000);
+
+    const entries = [
+      { path: '/docs/justnow.md', mtime: nowSec - 10 },           // < 60s
+      { path: '/docs/minutes.md', mtime: nowSec - 5 * 60 },       // < 3600s
+      { path: '/docs/hours.md', mtime: nowSec - 5 * 3600 },       // < 86400s
+      { path: '/docs/yesterday.md', mtime: nowSec - 30 * 3600 },  // < 86400 * 2
+      { path: '/docs/days.md', mtime: nowSec - 4 * 86400 },       // < 86400 * 7
+      { path: '/docs/old.md', mtime: nowSec - 30 * 86400 },       // absolute
+    ];
+    const root = document.createElement('div');
+    await mountStartPage(root, fakeIpcWithMtimes(entries));
+
+    const items = root.querySelectorAll('[data-test="recent-item"]');
+    expect(items.length).toBe(6);
+    expect(timeOf(items[0])).toBe('just now');
+    expect(timeOf(items[1])).toBe('5 minutes ago');
+    expect(timeOf(items[2])).toBe('5 hours ago');
+    expect(timeOf(items[3])).toBe('Yesterday');
+    expect(timeOf(items[4])).toBe('4 days ago');
+    // Absolute date: locale-formatted "Mar 31" or "31 Mar" depending on
+    // jsdom's ICU. Assert the shape rather than the exact locale-dependent
+    // string. The branch we want covered is the `> 7 days` arm.
+    expect(timeOf(items[5])).toMatch(/^(?:[A-Z][a-z]{2,} \d{1,2}|\d{1,2} [A-Z][a-z]{2,})$/);
+
+    vi.useRealTimers();
+  });
+
+  it('uses singular forms ("1 minute ago") for the boundary deltas', async () => {
+    // The pluralisation ternaries (`m === 1 ? '' : 's'`) are their own
+    // branches; covering only the plural arm leaves them at 50%. Pinning
+    // exactly 60s and 3600s deltas exercises both singular branches.
+    const NOW_MS = new Date('2026-04-30T12:00:00Z').getTime();
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW_MS);
+    const nowSec = Math.floor(NOW_MS / 1000);
+
+    const entries = [
+      { path: '/docs/one-minute.md', mtime: nowSec - 60 },
+      { path: '/docs/one-hour.md', mtime: nowSec - 3600 },
+    ];
+    const root = document.createElement('div');
+    await mountStartPage(root, fakeIpcWithMtimes(entries));
+    const items = root.querySelectorAll('[data-test="recent-item"]');
+    expect(timeOf(items[0])).toBe('1 minute ago');
+    expect(timeOf(items[1])).toBe('1 hour ago');
+
+    vi.useRealTimers();
+  });
+});

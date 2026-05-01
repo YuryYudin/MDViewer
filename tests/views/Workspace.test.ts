@@ -976,3 +976,191 @@ describe('Workspace — Drive status pill (A8)', () => {
     expect(pill.dataset.connected).toBe('false');
   });
 });
+
+// Branch-coverage gate (C5): three branches in Workspace.ts were uncovered
+// after C5 removed the dead `if !feature_enabled` guards, dropping the
+// branch denominator and exposing previously-tolerated low coverage:
+//
+//   - Lines 605-620: the `if (driveBacking)` chip-mount block in
+//     remountSidebar — only fires when the active tab is Drive-backed.
+//   - Lines 687-689: the catch arm of the `getDocPref` round-trip in the
+//     tab-activation font-size hook — only fires when the IPC throws.
+//
+// These tests exercise both arms via the public mountWorkspace surface.
+describe('Workspace — Drive-backed sidebar chip (C5 branch coverage)', () => {
+  it('mounts a CollabChip in the sidebar header when the tab is Drive-backed (drive-api://)', async () => {
+    // The drive-api:// path bypasses driveResolvePath's IPC entirely —
+    // detectDriveBacking decodes the file_id from the URL and returns a
+    // truthy backing, which steers remountSidebar into the chip-mount
+    // branch (lines 605-620 in Workspace.ts).
+    //
+    // driveGetCollaborators still fires through the real ipc module and
+    // throws because @tauri-apps/api/core's invoke isn't shimmed in
+    // jsdom; the catch in detectDriveBacking yields an empty list and
+    // the chip mounts with zero avatars. That's enough to cover the
+    // chipHost insertion + mountCollabChip call branches without needing
+    // a full IPC mock.
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    const ipc = makeIpc();
+    (ipc.listOpenDocuments as any).mockResolvedValue([
+      { id: 't-drive', path: 'drive-api://FID-123' },
+    ]);
+    const handle = await mountWorkspace(root, ipc);
+    handle.setActive({
+      kind: 'document',
+      tab_id: 't-drive',
+      path: 'drive-api://FID-123',
+      html: '<p>hi</p>',
+      threads: [],
+    });
+    await handle.refresh();
+    // Two microtask turns let the CollabChip loader resolve and render.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const sidebarHeader = root.querySelector('[data-region="sidebar-header"]');
+    expect(sidebarHeader).toBeTruthy();
+    // The chipHost <div> is appended by the if-driveBacking branch; the
+    // mounted CollabChip exposes a .collab-chip class on its container.
+    const chip = sidebarHeader!.querySelector('.collab-chip');
+    expect(chip).toBeTruthy();
+
+    document.body.removeChild(root);
+  });
+
+  it('does NOT mount a CollabChip when the tab is Local (no drive-api prefix, no resolve match)', async () => {
+    // Negative branch: detectDriveBacking returns null for a plain on-disk
+    // path because driveResolvePath rejects (no real Drive runtime), so
+    // remountSidebar skips the chip block entirely. Pairing this against
+    // the positive case above proves the if (driveBacking) gate flips both
+    // ways under test rather than always-truthy / always-falsy.
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    const ipc = makeIpc();
+    (ipc.listOpenDocuments as any).mockResolvedValue([
+      { id: 't-local', path: '/docs/local.md' },
+    ]);
+    const handle = await mountWorkspace(root, ipc);
+    handle.setActive({
+      kind: 'document',
+      tab_id: 't-local',
+      path: '/docs/local.md',
+      html: '<p>hi</p>',
+      threads: [],
+    });
+    await handle.refresh();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const sidebarHeader = root.querySelector('[data-region="sidebar-header"]');
+    expect(sidebarHeader).toBeTruthy();
+    expect(sidebarHeader!.querySelector('.collab-chip')).toBeNull();
+
+    document.body.removeChild(root);
+  });
+
+  it('does NOT duplicate the CollabChip across multiple refresh() calls', async () => {
+    // The branch guard inside the chip block also checks
+    // `!sidebarHeader.querySelector('.collab-chip')` to avoid stacking
+    // multiple chips when remountSidebar runs more than once. Two
+    // back-to-back refreshes should leave exactly one chip behind.
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    const ipc = makeIpc();
+    (ipc.listOpenDocuments as any).mockResolvedValue([
+      { id: 't-drive', path: 'drive-api://FID-DUP' },
+    ]);
+    const handle = await mountWorkspace(root, ipc);
+    handle.setActive({
+      kind: 'document',
+      tab_id: 't-drive',
+      path: 'drive-api://FID-DUP',
+      html: '<p>hi</p>',
+      threads: [],
+    });
+    await handle.refresh();
+    await Promise.resolve();
+    await Promise.resolve();
+    await handle.refresh();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const chips = root.querySelectorAll('.collab-chip');
+    expect(chips.length).toBe(1);
+
+    document.body.removeChild(root);
+  });
+});
+
+describe('Workspace — getDocPref failure path (C5 branch coverage)', () => {
+  it('catches a getDocPref rejection on tab activation and clears the inline font override', async () => {
+    // The font-size hook tries to read the per-doc preference and apply it
+    // as `--doc-font-size`. When the IPC rejects (test/dev builds without
+    // the doc-prefs handler, or a transient store error) the catch arm at
+    // lines 687-689 wipes activeDocPref and removes any stale inline
+    // property so the cascade falls back to the global default.
+    document.documentElement.style.setProperty('--doc-font-size', '20px');
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    const ipc = makeIpc();
+    (ipc.listOpenDocuments as any).mockResolvedValue([
+      { id: 't-1', path: '/docs/x.md' },
+    ]);
+    (ipc.getDocPref as any).mockRejectedValue(new Error('store unavailable'));
+    const handle = await mountWorkspace(root, ipc);
+    handle.setActive({
+      kind: 'document',
+      tab_id: 't-1',
+      path: '/docs/x.md',
+      html: '<p>hi</p>',
+      threads: [],
+    });
+    await handle.refresh();
+
+    expect(ipc.getDocPref).toHaveBeenCalledWith('/docs/x.md');
+    // The catch path removes the inline property regardless of what was
+    // set before, so the readout falls back to the global default (14).
+    expect(document.documentElement.style.getPropertyValue('--doc-font-size')).toBe('');
+    const readout = root.querySelector<HTMLButtonElement>('[data-test="font-readout"]')!;
+    expect(readout.textContent).toBe('14');
+
+    document.body.removeChild(root);
+  });
+
+  it('after a getDocPref failure, font-increase still mutates the inline override (no persisted pref to clamp against)', async () => {
+    // Regression guard: when activeDocPref is null after the catch arm,
+    // applyFontDelta should still operate on the cascade-default value
+    // rather than no-op. Without this, a transient IPC error on tab
+    // activation would freeze the font controls until the next reload.
+    vi.useFakeTimers();
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    const ipc = makeIpc();
+    (ipc.listOpenDocuments as any).mockResolvedValue([
+      { id: 't-1', path: '/docs/x.md' },
+    ]);
+    (ipc.getDocPref as any).mockRejectedValue(new Error('store unavailable'));
+    const handle = await mountWorkspace(root, ipc);
+    handle.setActive({
+      kind: 'document',
+      tab_id: 't-1',
+      path: '/docs/x.md',
+      html: '<p>hi</p>',
+      threads: [],
+    });
+    await handle.refresh();
+    expect(document.documentElement.style.getPropertyValue('--doc-font-size')).toBe('');
+
+    document.dispatchEvent(new CustomEvent('mdviewer:font-increase'));
+    expect(document.documentElement.style.getPropertyValue('--doc-font-size')).toBe('15px');
+    // Persist still attempts (per-doc path is valid), confirming the
+    // post-catch state is workable rather than "stuck".
+    vi.advanceTimersByTime(200);
+    expect(ipc.setDocPref).toHaveBeenCalledTimes(1);
+
+    document.documentElement.style.removeProperty('--doc-font-size');
+    document.body.removeChild(root);
+    vi.useRealTimers();
+  });
+});
