@@ -527,6 +527,16 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
         try {
           const outcome = await ipc.openDocument(activeTabRecord.path);
           setActive(outcome);
+          // Bug fix (2025-05-01): the session-restore path never evaluated
+          // the Drive-detect toast gate, so users with a previously-opened
+          // Drive document never saw the "Connect to Drive?" prompt. Fire
+          // a CustomEvent that main.ts subscribes to (avoids importing
+          // main.ts from a view module — that would create a cycle).
+          document.dispatchEvent(
+            new CustomEvent('mdviewer:session-tab-restored', {
+              detail: { path: activeTabRecord.path },
+            }),
+          );
         } catch (e) {
           // Path may have moved/disappeared between sessions. Log and
           // fall through — refresh will mount with empty state, which

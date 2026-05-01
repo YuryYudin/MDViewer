@@ -95,18 +95,40 @@ export function mountDriveSettings(
   card.appendChild(text);
 
   const actionBtn = document.createElement('button');
+  // Bug fix (2025-05-01): Settings.ts didn't pass `notify`, so connect/
+  // disconnect failures (including Bug-1's PLACEHOLDER client_id error)
+  // were silently swallowed by `notify?.()`. Render an always-present
+  // inline error element next to the button — visible without DevTools.
+  const errorEl = document.createElement('div');
+  errorEl.className = 'drive-error';
+  errorEl.setAttribute('data-testid', 'drive-error');
+  errorEl.setAttribute('role', 'alert');
+  errorEl.style.color = 'var(--danger)';
+  errorEl.style.marginTop = '8px';
+  errorEl.style.fontSize = '13px';
+  errorEl.hidden = true;
+  const showError = (msg: string): void => {
+    errorEl.textContent = msg;
+    errorEl.hidden = false;
+    deps.notify?.(msg, 'error'); // keep the optional toast hook for tests
+  };
+  const clearError = (): void => {
+    errorEl.textContent = '';
+    errorEl.hidden = true;
+  };
   if (drive.connected) {
     actionBtn.className = 'danger';
     actionBtn.textContent = 'Disconnect';
     actionBtn.setAttribute('data-testid', 'drive-disconnect-btn');
     actionBtn.addEventListener('click', () => {
+      clearError();
       void (async () => {
         try {
           await driveDisconnect();
           // The Rust handler emits `drive-status-changed`; the status pill
           // and any future re-render will pick up the new state from there.
         } catch (e) {
-          deps.notify?.(`Failed to disconnect: ${(e as Error).message}`, 'error');
+          showError(`Failed to disconnect: ${(e as Error).message}`);
         }
       })();
     });
@@ -115,16 +137,18 @@ export function mountDriveSettings(
     actionBtn.textContent = 'Connect to Drive…'; // …
     actionBtn.setAttribute('data-testid', 'drive-connect-btn');
     actionBtn.addEventListener('click', () => {
+      clearError();
       void (async () => {
         try {
           await driveConnect();
         } catch (e) {
-          deps.notify?.(`Failed to connect: ${(e as Error).message}`, 'error');
+          showError(`Failed to connect: ${(e as Error).message}`);
         }
       })();
     });
   }
   card.appendChild(actionBtn);
+  card.appendChild(errorEl);
   section.appendChild(card);
 
   // ── Advanced (BYO OAuth client) ──────────────────────────────────────

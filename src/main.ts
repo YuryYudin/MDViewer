@@ -200,6 +200,24 @@ export async function main(): Promise<void> {
     workspace = await mountWorkspace(root!, tauriIpc);
   }
 
+  // Bug fix (2025-05-01): Workspace.ts dispatches this when the
+  // session-restore boot path opens the previously-active tab. Without
+  // this listener, users who quit the app while viewing a Drive document
+  // never saw the "Connect to Drive?" toast on the next start because
+  // session restore bypassed the runOpenFileFlow path that fires the gate.
+  document.addEventListener('mdviewer:session-tab-restored', (ev) => {
+    const path = (ev as CustomEvent<{ path: string }>).detail?.path;
+    if (!path) return;
+    void (async () => {
+      try {
+        const settings = await tauriIpc.getSettings();
+        await maybeShowDriveDetectToast(document.body, path, settings);
+      } catch (err) {
+        console.warn('drive-detect toast gate (session-restore) failed:', err);
+      }
+    })();
+  });
+
   // Open-from-Drive entry point. The native menu bridge translates the
   // `open-from-drive` menu id into this CustomEvent (see menuBridge.ts).
   // The view is loaded dynamically so unit tests that don't exercise the
