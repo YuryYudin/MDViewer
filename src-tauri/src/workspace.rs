@@ -228,6 +228,13 @@ pub struct Workspace {
     /// through); `Some` after `new_for_test` so integration tests can
     /// exercise the save path without a Tauri handle.
     pub(crate) watcher: Option<crate::watcher::Watcher>,
+    /// D2: cancel signal for the polling task spawned by `drive_connect`.
+    /// `Some(tx)` while polling is active; `drive_disconnect` calls
+    /// `.take()` on this and drops the sender, which wakes the
+    /// polling-loop's `cancel_rx.changed()` await with an `Err`. The watch
+    /// channel is initialized with `true` so `*cancel_rx.borrow()` reads as
+    /// "still alive" until disconnect drops the sender.
+    pub(crate) polling_cancel: Option<tokio::sync::watch::Sender<bool>>,
 }
 
 impl Workspace {
@@ -251,6 +258,9 @@ impl Workspace {
             // workspace-internal slot stays None until B5 plumbs an instance
             // in for the DriveDesktop save-conflict flow.
             watcher: None,
+            // D2: no polling task exists until drive_connect spawns one;
+            // drive_disconnect takes() this back to None.
+            polling_cancel: None,
         })
     }
 
@@ -340,14 +350,55 @@ impl Workspace {
         }
     }
 
-    /// A7: stub for B2's `drive_resolve_path` IPC handler. Returns a Drive
-    /// `file_id` for a local path under a Drive Desktop mount; B2 fills in
-    /// the resolver wiring (it needs an authenticated `DriveApi`). The
-    /// placeholder error is intentional — exposing this handler in A7 keeps
-    /// the IPC surface stable so the frontend can compile against it.
-    pub fn drive_resolve_path(&self, _local_path: &str) -> Result<String> {
-        // placeholder error string; B2 fills in the real implementation
-        anyhow::bail!("not yet implemented")
+    /// D2: resolve a local Drive Desktop path → Drive `file_id` by routing
+    /// through the `file_id::resolve_file_id` helper, which queries
+    /// `files.list?q="name='<basename>' and trashed=false"` against the
+    /// authenticated `DriveApi`. Returns `DriveError::NotConnected` when
+    /// no API is populated, `DriveError::Ambiguous(n)` when the name
+    /// matches multiple files (the caller surfaces a disambiguation
+    /// picker), and `DriveError::Api(_)` when the path doesn't live under
+    /// a known Drive Desktop mount.
+    pub fn drive_resolve_path(
+        &self,
+        local_path: &str,
+    ) -> Result<String, crate::drive::DriveError> {
+        let api = self
+            .drive_api
+            .as_ref()
+            .ok_or(crate::drive::DriveError::NotConnected)?
+            .clone();
+        // The file_id resolver is generic over a `FileIdBackend` trait;
+        // wrap the live DriveApi in a thin adapter that calls
+        // `files.list?q=...` and returns the raw JSON body.
+        struct ApiBackend(std::sync::Arc<crate::drive::api::DriveApi>);
+        impl crate::drive::file_id::FileIdBackend for ApiBackend {
+            fn files_list(
+                &self,
+                q: &str,
+            ) -> Result<String, crate::drive::DriveError> {
+                self.0.files_list_raw(q)
+            }
+        }
+        let backend = ApiBackend(api);
+        let home = std::env::var("HOME")
+            .ok()
+            .or_else(|| std::env::var("USERPROFILE").ok());
+        let path = std::path::Path::new(local_path);
+        match crate::drive::file_id::resolve_file_id(
+            path,
+            std::env::consts::OS,
+            home.as_deref(),
+            &backend,
+        )? {
+            crate::drive::file_id::FileIdResolution::Resolved(id) => Ok(id),
+            crate::drive::file_id::FileIdResolution::Ambiguous(matches) => {
+                Err(crate::drive::DriveError::Ambiguous(matches.len()))
+            }
+            crate::drive::file_id::FileIdResolution::TooManyMatches {
+                total_estimate,
+                ..
+            } => Err(crate::drive::DriveError::Ambiguous(total_estimate)),
+        }
     }
 
     /// B2: open a Drive markdown document by URL paste. Parses the URL into
@@ -534,29 +585,152 @@ impl Workspace {
         }
     }
 
-    /// A7: stub for B2's `drive_get_collaborators` IPC handler. Returns the
-    /// list of `DriveCollaborator`s for `file_id`. B2 calls
-    /// `drive_api.list_permissions(file_id)`.
-    pub fn drive_get_collaborators(&self, _file_id: &str) -> Result<Vec<DriveCollaborator>> {
-        // placeholder error string; B2 fills in the real implementation
-        anyhow::bail!("not yet implemented")
+    /// D2: list current Drive collaborators for `file_id` by routing
+    /// through `DriveApi::list_permissions`. Returns
+    /// `DriveError::NotConnected` when the API is not populated;
+    /// `DriveError::Api(_)` when the underlying HTTP call fails.
+    pub fn drive_get_collaborators(
+        &self,
+        file_id: &str,
+    ) -> Result<Vec<DriveCollaborator>, crate::drive::DriveError> {
+        let api = self
+            .drive_api
+            .as_ref()
+            .ok_or(crate::drive::DriveError::NotConnected)?;
+        api.list_permissions(file_id)
     }
 
-    /// A7: connect-time stub. B1/B2 fills in the OAuth loopback flow + token
-    /// persistence. The IPC handler in main.rs calls this and emits
-    /// `drive-status-changed`; the body here just flips the settings flag so
-    /// the rest of the IPC surface (drive_status, drive_tab_file_ids) sees a
-    /// consistent connected state from the very first call after B1 lands.
-    pub fn drive_connect(&mut self, _app: &tauri::AppHandle) -> Result<()> {
-        anyhow::bail!("not yet implemented")
+    /// D2: drive_connect end-to-end.
+    ///
+    /// 1. Build the OAuth `AuthBuilder` from settings (BYO client_id wins
+    ///    over the shipped default).
+    /// 2. Run the loopback PKCE flow — production opens the system browser
+    ///    via `default_open_url`; the test seam (`drive_connect_for_test`)
+    ///    swaps in a worker thread that fires the consent redirect back at
+    ///    the loopback listener.
+    /// 3. Persist the refresh token under `<config_dir>/drive_tokens.bin`
+    ///    using the in-process facade in `drive::tokens` (production swaps
+    ///    in Stronghold; the public API is identical so this code path
+    ///    doesn't change when the swap lands).
+    /// 4. Initialize a shared `DriveApi` with the access token and stash
+    ///    it in `self.drive_api`.
+    /// 5. Flip `settings.cloud.drive.connected` + `account_email`.
+    /// 6. Recompute every open tab's backend so Local→DriveDesktop in-place
+    ///    upgrades take effect (DriveApi tabs are not downgraded).
+    /// 7. Initialize the `polling_cancel` watch channel and spawn the
+    ///    polling task with a cancel handle.
+    ///
+    /// The caller must NOT hold the workspace mutex across this method —
+    /// `run_loopback_flow` blocks for up to 5 minutes while the user
+    /// clicks through OAuth. The IPC handler in main.rs already drops the
+    /// state lock around the call (it's the `&mut self` borrow that holds
+    /// the lock; the IPC handler scope ends after the borrow returns).
+    pub fn drive_connect(&mut self, app: &tauri::AppHandle) -> Result<()> {
+        self.drive_connect_inner(default_open_url)?;
+        // Spawn the polling task with a cancel handle. The watch channel
+        // initial value is `true` so `*cancel_rx.borrow()` reads as "still
+        // alive"; drive_disconnect drops the sender to signal cancellation.
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(true);
+        self.polling_cancel = Some(cancel_tx);
+        tauri::async_runtime::spawn(run_polling_loop_with_cancel(
+            app.clone(),
+            cancel_rx,
+        ));
+        Ok(())
     }
 
-    /// A7: disconnect drops the API handle, recomputes backends so any
-    /// `DriveDesktop` tabs degrade back to `Local`, and clears the cached
-    /// last-status snapshot so the next status check emits a fresh
-    /// `drive-status-changed`. `DriveApi` tabs are not touched here —
-    /// they're held for B2 to surface a reconnect prompt.
+    /// D2: shared OAuth + token-persist + DriveApi-populate pipeline.
+    /// Production callers go through `drive_connect`; tests use
+    /// `drive_connect_for_test` which supplies a worker-thread opener that
+    /// simulates the user-consent redirect.
+    fn drive_connect_inner(
+        &mut self,
+        open_url: impl FnOnce(&str) + Send + 'static,
+    ) -> Result<()> {
+        let settings_snapshot = self.settings.get();
+        let mut builder = crate::drive::auth::AuthBuilder::new();
+        if let Some(byo) = settings_snapshot.cloud.drive.custom_oauth_client_id.as_ref() {
+            builder = builder.with_byo_client_id(Some(byo));
+        }
+
+        // 5-minute timeout matches Google's default consent window. The
+        // closure synchronously opens the browser; the loopback listener
+        // recv-loops until the redirect arrives or the timeout elapses.
+        let token = crate::drive::auth::run_loopback_flow(
+            builder,
+            std::time::Duration::from_secs(300),
+            open_url,
+        )
+        .map_err(|e| anyhow::anyhow!("OAuth failed: {}", e))?;
+
+        // Extract the email claim from the id_token. Falls back to a
+        // sentinel string when the id_token is missing or malformed —
+        // production always receives an id_token because the consent URL
+        // includes the `openid email` scopes.
+        let email = token
+            .id_token
+            .as_deref()
+            .and_then(crate::drive::auth::extract_email_from_id_token)
+            .unwrap_or_else(|| "unknown@drive.local".into());
+
+        // Persist the refresh token (when present — Google only returns it
+        // on the first consent for a given client_id).
+        if let Some(refresh) = token.refresh_token.as_ref() {
+            // The Stronghold plugin's path lives in the production binary;
+            // for the in-process facade we derive the snapshot path from
+            // self.config_dir (mirrors the test harness in
+            // `drive_tokens.rs`). Failures here are NOT fatal — connect
+            // should still succeed against the live API even if disk
+            // persistence drops the token.
+            let key = crate::drive::keyring::vault_key();
+            if let Ok(store) = crate::drive::tokens::TokenStore::open_for_test(
+                self.config_dir.join("drive_tokens.bin"),
+                &key,
+            ) {
+                if let Err(e) =
+                    crate::drive::tokens::save_refresh_token(&store, &email, refresh)
+                {
+                    tracing::warn!(?e, "drive: refresh token persist failed");
+                }
+            }
+        }
+
+        // Initialize the shared DriveApi BEFORE recomputing backends — A7's
+        // recompute writes Local→DriveDesktop in place but doesn't touch
+        // DriveApi, so it doesn't actually need the API populated; the
+        // ordering is defensive (and matches the spec's `Avoid` note).
+        let api = std::sync::Arc::new(
+            crate::drive::api::DriveApi::with_token(token.access_token),
+        );
+        self.drive_api = Some(api);
+
+        self.settings.update(|s| {
+            s.cloud.drive.connected = true;
+            s.cloud.drive.account_email = Some(email);
+        })?;
+
+        self.recompute_backends_after_connect_change(true);
+        Ok(())
+    }
+
+    /// A7+D2: disconnect drops the API handle, signals the polling task to
+    /// cancel, recomputes backends so any `DriveDesktop` tabs degrade back
+    /// to `Local`, and clears the cached last-status snapshot so the next
+    /// status check emits a fresh `drive-status-changed`. `DriveApi` tabs
+    /// are not touched here — they're held so the user can be prompted to
+    /// reconnect (D-task TBD).
     pub fn drive_disconnect(&mut self) {
+        // D2: drop the cancel sender so the polling task's
+        // `cancel_rx.changed().await` resolves with Err and the loop exits.
+        // `.take()` rather than `.send(false)` because dropping the sender
+        // signals cancellation to every clone of the Receiver — sending
+        // false is redundant and can race against an already-dropped rx.
+        if let Some(tx) = self.polling_cancel.take() {
+            // Best-effort flip-then-drop: subscribers awaiting `.changed()`
+            // wake on either the value transition or the sender drop.
+            let _ = tx.send(false);
+            drop(tx);
+        }
         self.drive_api = None;
         // Pass `false` explicitly: the disconnect intent is unambiguous and
         // we must not depend on a settings round-trip (the settings flag may
@@ -566,13 +740,81 @@ impl Workspace {
         self.last_drive_status = None;
     }
 
-    /// A7: per-file polling step. B6 fills in the actual list_comments call
-    /// and the merge into the local `CommentsStore`. We expose the signature
-    /// here so the polling loop's body in `run_polling_loop` can compile
-    /// against a stable shape.
-    pub fn drive_poll_one(&mut self, _file_id: &str, _api: &DriveApi) -> Result<()> {
-        // B6 wires this — placeholder body just succeeds so the polling loop
-        // doesn't error out on every iteration in A7-only builds.
+    /// D2: per-file polling step. Fetches Drive's comment list for
+    /// `file_id` (with the `If-None-Match` etag from `cache_meta` so 304s
+    /// short-circuit cleanly), translates each Drive comment into a local
+    /// `Thread`, and merges the threads into the matching tab's
+    /// `CommentsStore`.
+    ///
+    /// Errors:
+    ///   - `DriveError::NotConnected` when `self.drive_api` is None.
+    ///   - `DriveError::Api(_)` for any underlying HTTP failure surfaced
+    ///     by `list_comments`.
+    ///
+    /// 304 responses surface as an empty `comments` Vec (the
+    /// `drive::api::list_comments` mapper handles the status code), in
+    /// which case the merge is a no-op.
+    pub fn drive_poll_one(
+        &mut self,
+        file_id: &str,
+    ) -> Result<(), crate::drive::DriveError> {
+        let api = self
+            .drive_api
+            .as_ref()
+            .ok_or(crate::drive::DriveError::NotConnected)?
+            .clone();
+
+        let cache_meta =
+            crate::drive::cache::load_cache_meta(self.config_dir(), file_id);
+        let etag_owned = cache_meta.as_ref().map(|m| m.etag.clone());
+
+        let resp = api.list_comments(&crate::drive::api::ListCommentsArgs {
+            file_id,
+            start_modified_time: None,
+            if_none_match: etag_owned.as_deref(),
+        })?;
+
+        if resp.comments.is_empty() {
+            return Ok(());
+        }
+
+        // Find the matching tab and merge each translated thread into its
+        // CommentsStore. Threads with the same id replace existing entries
+        // so a re-poll with updated content (new replies, resolved flag)
+        // overwrites cleanly.
+        let tab_id = self
+            .tabs
+            .values()
+            .find(|t| t.file_id.as_deref() == Some(file_id))
+            .map(|t| t.id.clone());
+        let Some(tab_id) = tab_id else {
+            // No matching open tab — drop the merge silently. The next
+            // open of this file_id will see the comments via a fresh poll.
+            return Ok(());
+        };
+
+        if let Some(tab) = self.tabs.get_mut(&tab_id) {
+            // Build a new threads vec with the existing entries first,
+            // then overlay each fetched thread by id (replace if present,
+            // append otherwise). This preserves any local-only threads
+            // while honoring server state for shared ones.
+            let mut threads = tab.comments.list_threads().to_vec();
+            for drive_comment in &resp.comments {
+                if let Some(new_thread) =
+                    crate::drive::comments::from_drive_comment(drive_comment)
+                {
+                    if let Some(slot) =
+                        threads.iter_mut().find(|t| t.id == new_thread.id)
+                    {
+                        *slot = new_thread;
+                    } else {
+                        threads.push(new_thread);
+                    }
+                }
+            }
+            tab.comments.replace_all(threads);
+        }
+
         Ok(())
     }
 
@@ -878,6 +1120,67 @@ impl Workspace {
     }
 }
 
+/// D2: production browser-opener used by `drive_connect`. Fires the
+/// platform-default URL handler asynchronously so the OAuth-loopback
+/// thread doesn't block on the spawn. Errors are swallowed: the loopback
+/// listener will time out (5 minutes) and surface the original "OAuth
+/// failed" error if the browser never came up.
+fn default_open_url(url: &str) {
+    #[cfg(target_os = "macos")]
+    let res = std::process::Command::new("open").arg(url).spawn();
+    #[cfg(target_os = "linux")]
+    let res = std::process::Command::new("xdg-open").arg(url).spawn();
+    #[cfg(target_os = "windows")]
+    let res = std::process::Command::new("cmd")
+        .args(["/C", "start", "", url])
+        .spawn();
+    if let Err(e) = res {
+        tracing::warn!(?e, "drive: failed to open browser for OAuth");
+    }
+}
+
+/// D2 test helper: build an `open_url` closure that, instead of opening a
+/// browser, parses the authorize URL it receives and fires the consent
+/// redirect back at the loopback listener as a worker-thread HTTP GET.
+/// The returned closure also stashes the authorize URL into `captured` so
+/// the BYO-client-id flow can assert on the `client_id` query parameter.
+///
+/// Lives in workspace.rs (rather than a `#[cfg(test)]` module) so the
+/// integration test crates under `src-tauri/tests/` can drive
+/// `drive_connect_for_test` without copy-pasting the redirect-firing
+/// boilerplate into every test.
+pub(crate) fn make_test_opener(
+    captured: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+) -> impl FnOnce(&str) + Send + 'static {
+    move |auth_url: &str| {
+        *captured.lock().unwrap() = Some(auth_url.to_string());
+        let url_owned = auth_url.to_string();
+        std::thread::spawn(move || {
+            // Brief delay so the loopback listener's recv-loop is parked
+            // when the redirect arrives — without it the thread can race
+            // ahead and the listener's first `recv_timeout` returns Ok(None)
+            // before the GET is even queued.
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let parsed = match url::Url::parse(&url_owned) {
+                Ok(u) => u,
+                Err(_) => return,
+            };
+            let q: std::collections::HashMap<_, _> =
+                parsed.query_pairs().into_owned().collect();
+            let redirect = match q.get("redirect_uri").cloned() {
+                Some(r) => r,
+                None => return,
+            };
+            let state = q.get("state").cloned().unwrap_or_default();
+            let target = format!("{}/?code=test-code&state={}", redirect, state);
+            let _ = reqwest::blocking::Client::new()
+                .get(&target)
+                .timeout(std::time::Duration::from_secs(2))
+                .send();
+        });
+    }
+}
+
 /// B2 (groundwork for B5): typed save-path error. The dispatch in main.rs
 /// matches on this and turns `DriveConflict` into a `SaveOutcome::Conflict`
 /// payload that the existing diff-merge view can render. `Io` and `Drive`
@@ -958,6 +1261,51 @@ impl Workspace {
     /// stub server) without going through the full OAuth flow.
     pub fn set_drive_api_for_test(&mut self, api: std::sync::Arc<crate::drive::api::DriveApi>) {
         self.drive_api = Some(api);
+    }
+
+    /// D2 test seam: run the full `drive_connect` OAuth + token-persist +
+    /// DriveApi-populate pipeline without spawning the polling task (the
+    /// production path needs a real `tauri::AppHandle` for that). The
+    /// internal opener is a worker thread that simulates the user-consent
+    /// redirect by parsing the authorize URL it receives, extracting the
+    /// `redirect_uri` + `state` query parameters, and firing an HTTP GET
+    /// at the loopback listener with `?code=test-code&state=<state>`.
+    /// `polling_cancel` is initialized so `drive_disconnect` can still
+    /// exercise the cancel-signal path without an active polling task.
+    pub fn drive_connect_for_test(&mut self) -> anyhow::Result<()> {
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+        self.drive_connect_inner(make_test_opener(captured.clone()))?;
+        // Initialize polling_cancel so drive_disconnect's cancel-signal
+        // path is observable from tests. Production goes through
+        // drive_connect which spawns the polling task; the test seam keeps
+        // the channel but skips the spawn.
+        let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(true);
+        self.polling_cancel = Some(cancel_tx);
+        Ok(())
+    }
+
+    /// D2 test seam: like `drive_connect_for_test`, but additionally
+    /// returns the captured authorize URL so tests can assert on the
+    /// `client_id` query parameter (the BYO-client-id wiring contract).
+    pub fn drive_connect_capture_auth_url_for_test(
+        &mut self,
+    ) -> anyhow::Result<Option<String>> {
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+        self.drive_connect_inner(make_test_opener(captured.clone()))?;
+        let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(true);
+        self.polling_cancel = Some(cancel_tx);
+        let url = captured.lock().unwrap().clone();
+        Ok(url)
+    }
+
+    /// D2 test seam: subscribe to the polling-cancel watch channel so
+    /// tests can observe the signal sent by `drive_disconnect`. Returns
+    /// `None` when no polling task is registered (i.e., `drive_connect`
+    /// has not been called).
+    pub fn polling_cancel_rx_for_test(
+        &self,
+    ) -> Option<tokio::sync::watch::Receiver<bool>> {
+        self.polling_cancel.as_ref().map(|tx| tx.subscribe())
     }
 
     /// Test-only constructor for a DriveApi-backed tab. Used by B5's
@@ -1105,7 +1453,11 @@ pub async fn run_polling_loop(app: tauri::AppHandle) {
                 let _ = tokio::task::spawn_blocking(move || {
                     let state = app2.state::<std::sync::Mutex<Workspace>>();
                     let mut ws = state.lock().expect("workspace lock poisoned");
-                    let poll_ok = match ws.drive_poll_one(&fid, &api2) {
+                    // D2: drive_poll_one now reads `self.drive_api` rather
+                    // than taking a passed-in `&DriveApi`. The api2 clone is
+                    // still used below for the offline-queue replay path.
+                    let _api_keepalive = &api2;
+                    let poll_ok = match ws.drive_poll_one(&fid) {
                         Ok(()) => true,
                         Err(e) => {
                             tracing::debug!("drive poll {} failed: {}", fid, e);
@@ -1176,6 +1528,39 @@ pub async fn run_polling_loop(app: tauri::AppHandle) {
             let _ = t.await;
         }
         tokio::time::sleep(interval).await;
+    }
+}
+
+/// D2: cancel-aware wrapper around `run_polling_loop`. Runs the loop and
+/// the cancel-watcher in a `tokio::select!` — when `cancel_rx.changed()`
+/// resolves (either because the value flipped or because the sender was
+/// dropped by `drive_disconnect`), the loop is aborted at the next
+/// suspension point.
+pub async fn run_polling_loop_with_cancel(
+    app: tauri::AppHandle,
+    mut cancel_rx: tokio::sync::watch::Receiver<bool>,
+) {
+    tokio::select! {
+        _ = run_polling_loop(app) => {
+            // run_polling_loop never returns naturally — it's an infinite
+            // loop. Reaching this branch means the inner task was somehow
+            // cancelled (e.g. runtime shutdown).
+        }
+        _ = async move {
+            // Wait for cancellation: either the value flips off, or the
+            // sender is dropped. Both surface as the next .changed() call
+            // resolving (the latter as Err, which we just exit on).
+            loop {
+                if cancel_rx.changed().await.is_err() {
+                    break;
+                }
+                if !*cancel_rx.borrow() {
+                    break;
+                }
+            }
+        } => {
+            tracing::debug!("drive: polling loop cancelled");
+        }
     }
 }
 

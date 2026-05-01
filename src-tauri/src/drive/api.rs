@@ -227,6 +227,21 @@ impl DriveApi {
             .map_err(|e| super::DriveError::Api(e.to_string()))
     }
 
+    /// D2: raw `files.list?q=...&fields=files(id,name,parents)` round-trip
+    /// returning the response body as a JSON string. Used by
+    /// `Workspace::drive_resolve_path` — the file_id resolver already knows
+    /// how to parse the `FilesList` shape.
+    pub fn files_list_raw(&self, q: &str) -> Result<String, super::DriveError> {
+        let path = "/drive/v3/files";
+        let resp = self.send_with_retry(|| {
+            self.client
+                .get(format!("{}{}", self.base, path))
+                .query(&[("q", q), ("fields", "files(id,name,parents)")])
+        })?;
+        resp.text()
+            .map_err(|e| super::DriveError::Api(e.to_string()))
+    }
+
     pub fn list_permissions(
         &self,
         file_id: &str,
