@@ -34,12 +34,12 @@ function defaultSettings(): Settings {
     },
     advanced: { sync_provider: null, verbose_logs: false },
     shortcuts: { open_file: 'CmdOrCtrl+O', save_file: 'CmdOrCtrl+S' },
-    // A8 baseline: feature_enabled = false matches the production default
-    // (C5 flips it on). Tests that exercise the Drive section build the
-    // settings with feature_enabled = true explicitly.
+    // C5 baseline: feature_enabled = true matches the new Phase-3
+    // production default. Tests that exercise the kill-switch path
+    // (the user-facing opt-out) override it back to `false` explicitly.
     cloud: {
       drive: {
-        feature_enabled: false,
+        feature_enabled: true,
         connected: false,
         account_email: null,
         backend_mode: 'auto',
@@ -493,21 +493,35 @@ describe('Drive section', () => {
     vi.useRealTimers();
   });
 
-  it('omits the Drive section entirely when feature_enabled=false', async () => {
+  it('renders the Drive section unconditionally under the Phase-3 default', async () => {
+    // C5 removed the `if (settings.cloud?.drive?.feature_enabled)` guard
+    // around mountDriveSettings — every fresh install lands on the new
+    // `true` default and sees the Drive section. The frontend no longer
+    // hides any UI based on the flag; the kill-switch lives in
+    // src-tauri/src/main.rs (drive_connect / drive_open_url short-circuit
+    // when the user has explicitly written `feature_enabled = false`).
     const root = document.createElement('div');
-    // defaultSettings() seeds feature_enabled=false (production default).
     await mountSettings(root, makeIpc() as any);
-    expect(root.querySelector('[data-section="drive"]')).toBeFalsy();
-    expect(root.querySelector('[data-testid="drive-section"]')).toBeFalsy();
-  });
-
-  it('renders the Drive section under feature_enabled=true', async () => {
-    const root = document.createElement('div');
-    const ipc = makeIpc({ getSettings: vi.fn().mockResolvedValue(settingsWithDrive()) });
-    await mountSettings(root, ipc as any);
     const section = root.querySelector('[data-testid="drive-section"]');
     expect(section).toBeTruthy();
     expect(section!.textContent).toMatch(/Drive integration/i);
+  });
+
+  it('still renders the Drive section when the user has set feature_enabled=false (kill-switch is server-side)', async () => {
+    // The kill-switch is a Rust-side guard on the IPC commands, not a
+    // frontend gate. The Settings UI keeps the section visible so the
+    // user can flip it back on / inspect Connect state, mirroring how
+    // the Drive Settings group renders for connected and disconnected
+    // accounts alike. The Connect button itself will surface the
+    // kill-switch error from the IPC if the user clicks it.
+    const root = document.createElement('div');
+    const ipc = makeIpc({
+      getSettings: vi
+        .fn()
+        .mockResolvedValue(settingsWithDrive({ feature_enabled: false })),
+    });
+    await mountSettings(root, ipc as any);
+    expect(root.querySelector('[data-testid="drive-section"]')).toBeTruthy();
   });
 
   it('renders Connect button when not connected', async () => {

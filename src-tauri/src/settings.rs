@@ -194,7 +194,17 @@ fn default_unfocused_poll() -> u64 {
 impl Default for DriveSettings {
     fn default() -> Self {
         Self {
-            feature_enabled: false,
+            // C5 (Phase 3): the Drive integration ships on by default.
+            // Phase 2 kept this `false` so the half-built UI surface stayed
+            // hidden behind the flag while we built out OAuth, the file-id
+            // resolver, the conflict diff, the CollabChip, and the detect
+            // toast. With A1–C4 landed, every fresh install now sees the
+            // feature. Users who want the pre-Phase-3 behavior back can
+            // set `cloud.drive.feature_enabled = false` in settings.toml —
+            // the kill-switch path in `src-tauri/src/main.rs` honors that
+            // explicit opt-out by short-circuiting `drive_connect` and
+            // `drive_open_url`.
+            feature_enabled: true,
             connected: false,
             account_email: None,
             backend_mode: BackendMode::Auto,
@@ -211,6 +221,21 @@ impl Default for DriveSettings {
 pub struct CloudSettings {
     #[serde(default)]
     pub drive: DriveSettings,
+}
+
+/// C5: user-facing kill-switch predicate. The IPC layer in
+/// `src-tauri/src/main.rs` consults this at the top of `drive_connect` and
+/// `drive_open_url`; a `true` return short-circuits those handlers with a
+/// human-readable error so users can disable the Drive surface from their
+/// `settings.toml` without us shipping a dedicated UI toggle.
+///
+/// Phase 3 flipped `feature_enabled` to `true` by default — the predicate
+/// is purely for the explicit-opt-out path. Anything we read here must
+/// survive `serde(default)` (covered by
+/// `explicit_user_override_to_false_is_preserved_through_round_trip` in
+/// the dedicated `drive_feature_flag.rs` integration test).
+pub fn drive_kill_switch_active(s: &Settings) -> bool {
+    !s.cloud.drive.feature_enabled
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]

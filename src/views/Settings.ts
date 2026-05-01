@@ -42,17 +42,20 @@ export async function mountSettings(root: HTMLElement, ipc: Ipc): Promise<void> 
   view.appendChild(buildComments(ipc, settings));
   view.appendChild(buildShortcuts(settings));
   view.appendChild(buildAdvanced(ipc, settings));
-  // A8: Drive sub-section is gated on the feature flag. The flag flips to
-  // `true` in Phase 3 (C5); until then the entire UI surface is hidden so
-  // users can't reach a half-built feature. Defensive optional access —
-  // older settings.toml files (written before A1 added the cloud branch)
-  // can deserialize without the cloud key when serde defaults are used,
-  // and the test fixtures sometimes omit it.
-  if (settings.cloud?.drive?.feature_enabled) {
-    mountDriveSettings(view, settings, {
-      saveSettings: (next) => ipc.setSettings(next),
-    });
-  }
+  // C5 (Phase 3): the Drive sub-section is now mounted unconditionally.
+  // Phase 2's `if (settings.cloud?.drive?.feature_enabled)` guard kept
+  // the half-built UI surface hidden while we built out OAuth, the
+  // file-id resolver, the conflict diff, the CollabChip, and the detect
+  // toast (A1–C4). With those landed and the default flipped to `true`
+  // in `DriveSettings::default`, every fresh install sees the section.
+  // The user-facing kill-switch lives in `src-tauri/src/main.rs` —
+  // `drive_connect` and `drive_open_url` short-circuit when the user has
+  // explicitly written `cloud.drive.feature_enabled = false` to their
+  // settings.toml. The Settings UI stays visible in either state so the
+  // user can flip the kill-switch back without hand-editing TOML.
+  mountDriveSettings(view, settings, {
+    saveSettings: (next) => ipc.setSettings(next),
+  });
   view.appendChild(buildAbout(info));
   root.appendChild(view);
 }

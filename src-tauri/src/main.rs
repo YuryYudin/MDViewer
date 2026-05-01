@@ -47,7 +47,7 @@ use mdviewer_lib::{
     doc_prefs::DocPref,
     document::{self, RenderOptions, RenderResult},
     drive::{DriveCollaborator, DriveStatus},
-    settings::Settings,
+    settings::{drive_kill_switch_active, Settings},
     watcher::{ExternalChangeEvent, Watcher},
     cli, menu,
     workspace::{ExportResult, OpenOpts, OpenOutcome, TabSummary, Workspace},
@@ -692,12 +692,29 @@ fn open_external_url(url: String) -> Result<(), String> {
 // helpers (`is_drive_desktop_path`).
 // ----------------------------------------------------------------------------
 
+/// C5: human-readable error returned when the user has explicitly opted
+/// out of the Drive surface via `cloud.drive.feature_enabled = false` in
+/// their settings.toml. Surfaced on `drive_connect` and `drive_open_url`
+/// so the kill-switch is felt at the user-visible boundaries — the
+/// frontend's notify hook turns this into a toast on the Connect button
+/// and on a pasted Drive URL.
+const DRIVE_KILL_SWITCH_MSG: &str =
+    "Drive integration is disabled in your settings (cloud.drive.feature_enabled = false). \
+     Re-enable it from Settings → Drive integration to use Connect or Open from Drive.";
+
 #[tauri::command]
 async fn drive_connect(
     state: State<'_, Ws>,
     app: tauri::AppHandle,
 ) -> Result<DriveStatus, String> {
     let mut ws = state.lock().map_err(|e| e.to_string())?;
+    // C5 kill-switch: short-circuit before any OAuth round-trip so the
+    // user-facing opt-out is honored. The settings snapshot is the source
+    // of truth — `serde(default)` round-trip preservation is pinned by
+    // `drive_feature_flag.rs::explicit_user_override_to_false_is_preserved...`.
+    if drive_kill_switch_active(&ws.settings_store().get()) {
+        return Err(DRIVE_KILL_SWITCH_MSG.to_string());
+    }
     ws.drive_connect(&app).map_err(|e| e.to_string())?;
     let st = ws.drive_status();
     let _ = app.emit("drive-status-changed", &st);
@@ -748,11 +765,15 @@ async fn drive_open_url(
     app: tauri::AppHandle,
     url: String,
 ) -> Result<TabSummary, String> {
-    let summary = state
-        .lock()
-        .map_err(|e| e.to_string())?
-        .drive_open_url(&url)
-        .map_err(|e| e.to_string())?;
+    let mut ws = state.lock().map_err(|e| e.to_string())?;
+    // C5 kill-switch: short-circuit before parsing or hitting Drive so a
+    // user who has explicitly opted out gets the same friendly error here
+    // as they do on Connect. Mirrors the guard at the top of drive_connect.
+    if drive_kill_switch_active(&ws.settings_store().get()) {
+        return Err(DRIVE_KILL_SWITCH_MSG.to_string());
+    }
+    let summary = ws.drive_open_url(&url).map_err(|e| e.to_string())?;
+    drop(ws);
     // Phase B implementation review fix #3: emit `workspace-changed` so
     // main.ts's tab list / document body refresh path runs after a Drive
     // tab opens. Mirrors the pattern used by `open_document` (and the

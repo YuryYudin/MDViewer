@@ -19,9 +19,15 @@
  *     handlers also emit `drive-status-changed`, so the status pill updates
  *     without a follow-up read here.
  *
- * The view is intentionally feature-flag-gated by the *caller*
- * (`Settings.ts` only mounts us when `cloud.drive.feature_enabled` is true).
- * Defense-in-depth: we still no-op when the slice is missing entirely.
+ * C5 (Phase 3): the caller (`Settings.ts`) now mounts us unconditionally —
+ * the `feature_enabled` UI gate was removed when the default flipped to
+ * `true`. The user-facing kill-switch lives in `src-tauri/src/main.rs`
+ * (`drive_connect` / `drive_open_url` short-circuit when
+ * `cloud.drive.feature_enabled = false`), so the Settings panel keeps
+ * showing the section in either state — it's how the user flips the
+ * kill-switch back on without hand-editing TOML. Defense-in-depth: we
+ * still no-op when the slice is missing entirely (e.g. a synthetic
+ * settings object that omits `cloud`).
  */
 import type { Settings } from '../ipc';
 import { driveConnect, driveDisconnect } from '../ipc';

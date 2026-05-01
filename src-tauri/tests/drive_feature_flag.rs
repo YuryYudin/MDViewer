@@ -19,7 +19,7 @@
 //      have nothing to read — `serde(default)` would silently overwrite
 //      the user's opt-out on next load.
 
-use mdviewer_lib::settings::Settings;
+use mdviewer_lib::settings::{drive_kill_switch_active, Settings};
 
 #[test]
 fn feature_enabled_default_true() {
@@ -80,5 +80,35 @@ feature_enabled = false
     assert!(
         !s.cloud.drive.feature_enabled,
         "explicit user `feature_enabled = false` must be preserved as the kill-switch input",
+    );
+}
+
+// The kill-switch helper is the predicate the IPC layer in
+// `src-tauri/src/main.rs` consults at the top of `drive_connect` and
+// `drive_open_url`. Returning `true` short-circuits those handlers with a
+// user-friendly error — letting users disable the Drive surface from their
+// settings.toml without us having to ship a UI toggle for it.
+//
+// The contract:
+//   - Default settings → kill-switch inactive (Phase 3 default is `true`).
+//   - Explicit `feature_enabled = false` → kill-switch ACTIVE; IPC handlers
+//     refuse to launch the OAuth flow or open a Drive URL until the user
+//     flips the flag back on.
+#[test]
+fn kill_switch_inactive_under_default_settings() {
+    let s = Settings::default();
+    assert!(
+        !drive_kill_switch_active(&s),
+        "fresh install must NOT trip the kill-switch — Drive surface is on by default",
+    );
+}
+
+#[test]
+fn kill_switch_active_when_user_opts_out() {
+    let mut s = Settings::default();
+    s.cloud.drive.feature_enabled = false;
+    assert!(
+        drive_kill_switch_active(&s),
+        "explicit user opt-out must trip the kill-switch so drive_connect / drive_open_url can short-circuit",
     );
 }
