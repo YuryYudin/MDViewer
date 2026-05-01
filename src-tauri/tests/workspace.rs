@@ -379,9 +379,9 @@ fn workspace_owns_doc_prefs_store_round_trip() {
 
     // Save through the mutable accessor; read back via the immutable one.
     ws.doc_prefs_mut()
-        .save(&doc, DocPref { font_size_px: 18 })
+        .save(&doc, DocPref { font_size_px: 18, ..Default::default() })
         .unwrap();
-    assert_eq!(ws.doc_prefs().load(&doc), Some(DocPref { font_size_px: 18 }));
+    assert_eq!(ws.doc_prefs().load(&doc), Some(DocPref { font_size_px: 18, ..Default::default() }));
 
     // Delete clears the entry.
     ws.doc_prefs_mut().delete(&doc).unwrap();
@@ -401,12 +401,12 @@ fn workspace_doc_prefs_persists_across_reopens() {
     {
         let mut ws = Workspace::new(tmp.path()).unwrap();
         ws.doc_prefs_mut()
-            .save(&doc, DocPref { font_size_px: 20 })
+            .save(&doc, DocPref { font_size_px: 20, ..Default::default() })
             .unwrap();
     }
 
     let ws2 = Workspace::new(tmp.path()).unwrap();
-    assert_eq!(ws2.doc_prefs().load(&doc), Some(DocPref { font_size_px: 20 }));
+    assert_eq!(ws2.doc_prefs().load(&doc), Some(DocPref { font_size_px: 20, ..Default::default() }));
 }
 
 #[test]

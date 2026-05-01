@@ -316,12 +316,19 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
       return;
     }
     document.documentElement.style.setProperty('--doc-font-size', `${next}px`);
-    activeDocPref = { font_size_px: next };
+    // Preserve the existing per-file Drive-detect dismissal (C2) when
+    // overwriting the doc-pref entry — the font-size flow must not silently
+    // re-enable the toast on a file the user already dismissed for.
+    const preservedDismiss = activeDocPref?.drive_detect_dismissed ?? false;
+    activeDocPref = { font_size_px: next, drive_detect_dismissed: preservedDismiss };
     updateReadout();
     if (activePath) {
       clearTimeout(fontPersistTimer);
       fontPersistTimer = setTimeout(() => {
-        void ipc.setDocPref(activePath, { font_size_px: next });
+        void ipc.setDocPref(activePath, {
+          font_size_px: next,
+          drive_detect_dismissed: preservedDismiss,
+        });
       }, FONT_DEBOUNCE_MS);
     }
   }

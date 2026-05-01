@@ -21,12 +21,29 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// Per-document font-size override. Crosses the IPC boundary — see
+/// Per-document override carried across the IPC boundary — see
 /// `src/bin/export_types.rs::export_all` for the type-export wiring.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+///
+/// Originally hosted only the per-document font-size override; C2 adds
+/// `drive_detect_dismissed` so the Drive-detect toast (wireframe 08) can
+/// remember a per-file "Not now" without rolling its own JSON file. Both
+/// fields are `#[serde(default)]` so legacy on-disk entries written before
+/// either field existed deserialise cleanly with the missing field at its
+/// type default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, ts_rs::TS)]
 #[ts(export)]
 pub struct DocPref {
+    #[serde(default)]
     pub font_size_px: u16,
+    /// C2: once the user clicks "Not now" on the Drive-detect toast for
+    /// this file, the flag flips to `true` so the toast never re-appears
+    /// for the same file. Per-file (not global) by design — a user who
+    /// dismisses for `notes.md` should still see the toast on
+    /// `tax-2024.md` if it also lives under the Drive Desktop mount.
+    /// Defaults `false` and is `#[serde(default)]` so doc_prefs.json
+    /// files written by older app versions parse without error.
+    #[serde(default)]
+    pub drive_detect_dismissed: bool,
 }
 
 const MIN_FONT_PX: u16 = 10;
@@ -145,13 +162,13 @@ mod tests {
         assert_eq!(store.load(&doc), None);
 
         store
-            .save(&doc, DocPref { font_size_px: 18 })
+            .save(&doc, DocPref { font_size_px: 18, ..Default::default() })
             .unwrap();
-        assert_eq!(store.load(&doc), Some(DocPref { font_size_px: 18 }));
+        assert_eq!(store.load(&doc), Some(DocPref { font_size_px: 18, ..Default::default() }));
 
         // Reopen — verify persistence across instances.
         let store2 = DocPrefsStore::open(dir.path()).unwrap();
-        assert_eq!(store2.load(&doc), Some(DocPref { font_size_px: 18 }));
+        assert_eq!(store2.load(&doc), Some(DocPref { font_size_px: 18, ..Default::default() }));
 
         // Delete clears the entry and persists.
         let mut store3 = DocPrefsStore::open(dir.path()).unwrap();
@@ -178,13 +195,13 @@ mod tests {
 
         let mut store = DocPrefsStore::open(dir.path()).unwrap();
         store
-            .save(&doc, DocPref { font_size_px: 16 })
+            .save(&doc, DocPref { font_size_px: 16, ..Default::default() })
             .unwrap();
 
         // The absolute (canonical) path must hit the same entry.
         assert_eq!(
             store.load(&absolute),
-            Some(DocPref { font_size_px: 16 })
+            Some(DocPref { font_size_px: 16, ..Default::default() })
         );
     }
 
@@ -219,11 +236,11 @@ mod tests {
 
         let mut store = DocPrefsStore::open(dir.path()).unwrap();
         store
-            .save(&doc, DocPref { font_size_px: 1000 })
+            .save(&doc, DocPref { font_size_px: 1000, ..Default::default() })
             .unwrap();
         assert_eq!(
             store.load(&doc),
-            Some(DocPref { font_size_px: 24 }),
+            Some(DocPref { font_size_px: 24, ..Default::default() }),
             "save must clamp font_size_px to MAX (24)"
         );
     }
@@ -235,10 +252,10 @@ mod tests {
         std::fs::write(&doc, "").unwrap();
 
         let mut store = DocPrefsStore::open(dir.path()).unwrap();
-        store.save(&doc, DocPref { font_size_px: 4 }).unwrap();
+        store.save(&doc, DocPref { font_size_px: 4, ..Default::default() }).unwrap();
         assert_eq!(
             store.load(&doc),
-            Some(DocPref { font_size_px: 10 }),
+            Some(DocPref { font_size_px: 10, ..Default::default() }),
             "save must clamp font_size_px to MIN (10)"
         );
     }
@@ -262,7 +279,7 @@ mod tests {
         let store = DocPrefsStore::open(dir.path()).unwrap();
         assert_eq!(
             store.load(&doc),
-            Some(DocPref { font_size_px: 10 }),
+            Some(DocPref { font_size_px: 10, ..Default::default() }),
             "load must clamp out-of-range disk value to MIN (10)"
         );
     }
@@ -284,7 +301,7 @@ mod tests {
         let store = DocPrefsStore::open(dir.path()).unwrap();
         assert_eq!(
             store.load(&doc),
-            Some(DocPref { font_size_px: 24 }),
+            Some(DocPref { font_size_px: 24, ..Default::default() }),
             "load must clamp out-of-range disk value to MAX (24)"
         );
     }
@@ -312,11 +329,11 @@ mod tests {
 
         let mut store = DocPrefsStore::open(dir.path()).unwrap();
         store
-            .save(&doc, DocPref { font_size_px: 12 })
+            .save(&doc, DocPref { font_size_px: 12, ..Default::default() })
             .unwrap();
 
         let body = std::fs::read_to_string(dir.path().join("doc_prefs.json")).unwrap();
         let parsed: HashMap<String, DocPref> = serde_json::from_str(&body).unwrap();
-        assert_eq!(parsed.get(&canonical), Some(&DocPref { font_size_px: 12 }));
+        assert_eq!(parsed.get(&canonical), Some(&DocPref { font_size_px: 12, ..Default::default() }));
     }
 }

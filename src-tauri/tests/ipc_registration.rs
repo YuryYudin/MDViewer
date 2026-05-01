@@ -223,10 +223,10 @@ fn doc_pref_round_trip_through_handler_logic() {
 
     assert_eq!(get_doc_pref_handler_logic(&state, &doc), None);
 
-    set_doc_pref_handler_logic(&state, &doc, DocPref { font_size_px: 17 });
+    set_doc_pref_handler_logic(&state, &doc, DocPref { font_size_px: 17, ..Default::default() });
     assert_eq!(
         get_doc_pref_handler_logic(&state, &doc),
-        Some(DocPref { font_size_px: 17 })
+        Some(DocPref { font_size_px: 17, ..Default::default() })
     );
 
     delete_doc_pref_handler_logic(&state, &doc);
@@ -241,17 +241,17 @@ fn set_doc_pref_silently_coerces_out_of_range() {
     let doc = tmp.path().join("clamp.md");
     std::fs::write(&doc, "").unwrap();
 
-    set_doc_pref_handler_logic(&state, &doc, DocPref { font_size_px: 9999 });
+    set_doc_pref_handler_logic(&state, &doc, DocPref { font_size_px: 9999, ..Default::default() });
     assert_eq!(
         get_doc_pref_handler_logic(&state, &doc),
-        Some(DocPref { font_size_px: 24 }),
+        Some(DocPref { font_size_px: 24, ..Default::default() }),
         "above-max coerced to 24"
     );
 
-    set_doc_pref_handler_logic(&state, &doc, DocPref { font_size_px: 1 });
+    set_doc_pref_handler_logic(&state, &doc, DocPref { font_size_px: 1, ..Default::default() });
     assert_eq!(
         get_doc_pref_handler_logic(&state, &doc),
-        Some(DocPref { font_size_px: 10 }),
+        Some(DocPref { font_size_px: 10, ..Default::default() }),
         "below-min coerced to 10"
     );
 }
@@ -262,7 +262,7 @@ fn doc_pref_serializes_with_snake_case_payload() {
     // snake_case shape that ts-rs emits for the frontend wrapper. Pin the
     // wire shape here so an accidental rename (e.g. via #[serde(rename)])
     // would fail the build.
-    let pref = DocPref { font_size_px: 14 };
+    let pref = DocPref { font_size_px: 14, ..Default::default() };
     let v = serde_json::to_value(&pref).unwrap();
     assert_eq!(v["font_size_px"], 14);
 

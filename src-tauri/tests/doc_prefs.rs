@@ -25,13 +25,13 @@ fn round_trip_save_load_delete_through_disk() {
     let mut store = DocPrefsStore::open(dir.path()).expect("open");
     assert_eq!(store.load(&doc), None, "fresh store has no entries");
 
-    store.save(&doc, DocPref { font_size_px: 18 }).expect("save");
-    assert_eq!(store.load(&doc), Some(DocPref { font_size_px: 18 }));
+    store.save(&doc, DocPref { font_size_px: 18, ..Default::default() }).expect("save");
+    assert_eq!(store.load(&doc), Some(DocPref { font_size_px: 18, ..Default::default() }));
 
     // Reopen — confirms persistence really hit disk and survives
     // dropping the in-memory snapshot.
     let store2 = DocPrefsStore::open(dir.path()).expect("reopen");
-    assert_eq!(store2.load(&doc), Some(DocPref { font_size_px: 18 }));
+    assert_eq!(store2.load(&doc), Some(DocPref { font_size_px: 18, ..Default::default() }));
 
     let mut store3 = DocPrefsStore::open(dir.path()).expect("reopen3");
     store3.delete(&doc).expect("delete");
@@ -53,7 +53,7 @@ fn on_disk_schema_is_canonical_path_keyed_object() {
 
     let mut store = DocPrefsStore::open(dir.path()).expect("open");
     store
-        .save(&doc, DocPref { font_size_px: 16 })
+        .save(&doc, DocPref { font_size_px: 16, ..Default::default() })
         .expect("save");
 
     let raw = fs::read_to_string(dir.path().join("doc_prefs.json")).expect("read file");
@@ -73,7 +73,7 @@ fn on_disk_schema_is_canonical_path_keyed_object() {
     // Round-trip via the typed shape too — the IPC consumer (next task) will
     // deserialize through `HashMap<String, DocPref>` so prove that works.
     let typed: HashMap<String, DocPref> = serde_json::from_str(&raw).expect("typed parse");
-    assert_eq!(typed.get(&canonical), Some(&DocPref { font_size_px: 16 }));
+    assert_eq!(typed.get(&canonical), Some(&DocPref { font_size_px: 16, ..Default::default() }));
 }
 
 #[test]
@@ -85,13 +85,13 @@ fn save_clamps_out_of_range_input_silently() {
     let mut store = DocPrefsStore::open(dir.path()).expect("open");
     // 1000 px is well beyond the 24-px upper bound.
     store
-        .save(&doc, DocPref { font_size_px: 1000 })
+        .save(&doc, DocPref { font_size_px: 1000, ..Default::default() })
         .expect("save coerces silently");
-    assert_eq!(store.load(&doc), Some(DocPref { font_size_px: 24 }));
+    assert_eq!(store.load(&doc), Some(DocPref { font_size_px: 24, ..Default::default() }));
 
     // And below the lower bound:
-    store.save(&doc, DocPref { font_size_px: 1 }).expect("save");
-    assert_eq!(store.load(&doc), Some(DocPref { font_size_px: 10 }));
+    store.save(&doc, DocPref { font_size_px: 1, ..Default::default() }).expect("save");
+    assert_eq!(store.load(&doc), Some(DocPref { font_size_px: 10, ..Default::default() }));
 }
 
 #[test]
