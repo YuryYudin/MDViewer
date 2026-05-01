@@ -33,6 +33,25 @@ pub fn is_drive_desktop_path(
     target_os: &str,
     home: Option<&str>,
 ) -> Option<DriveDesktopRoot> {
+    // Test-only override: if `MDVIEWER_DRIVE_DESKTOP_ROOT` is set and the
+    // probed path lies under that root, return a synthetic match. The C3
+    // e2e spec uses this to exercise scenario 6 (Drive Desktop detection)
+    // against a temp dir on a CI host that has no real Drive mount. The
+    // env var is unset in production, so this branch is invisible unless
+    // a test or e2e harness explicitly sets it; if set but the path is
+    // outside the override root, we fall through to normal OS detection.
+    if let Ok(override_root) = std::env::var("MDVIEWER_DRIVE_DESKTOP_ROOT") {
+        if !override_root.is_empty() {
+            let root = Path::new(&override_root);
+            if path.starts_with(root) {
+                return Some(DriveDesktopRoot {
+                    root: root.to_path_buf(),
+                    mount_kind: MountKind::new("test-override"),
+                });
+            }
+        }
+    }
+
     let s = path.to_string_lossy().to_string();
     match target_os {
         "macos" => {
