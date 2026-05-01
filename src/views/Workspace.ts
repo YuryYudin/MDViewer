@@ -151,19 +151,31 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
   // on the right side of the status bar. mountDriveStatus subscribes to
   // `drive-status-changed` events from the Rust side; the host element
   // owns its own data-connected/data-online attributes for theming.
+  //
+  // Opt-in (2025-05-01): only mount the pill content when the user has
+  // explicitly enabled the Drive API integration via Settings → Drive →
+  // Advanced. Default users see an empty pill host (which CSS hides via
+  // `.drive-status-pill:empty`). The host element itself is appended
+  // SYNCHRONOUSLY so DOM order remains stable for layout tests; the
+  // listener subscription happens async after getSettings resolves.
   const driveStatusHost = document.createElement('span');
   status.appendChild(driveStatusHost);
-  const unmountDriveStatus = mountDriveStatus(driveStatusHost);
-  // Tie the unsubscribe to mountAbort so a re-mount (production no-op,
-  // common in jsdom) doesn't leak the listener. AbortController has no
-  // direct callback API; piggyback on the abort event.
-  mountAbort.signal.addEventListener('abort', () => {
+  void (async () => {
     try {
-      unmountDriveStatus();
+      const s = await ipc.getSettings();
+      if (!s.cloud?.drive?.feature_enabled) return;
+      const unmountDriveStatus = mountDriveStatus(driveStatusHost);
+      mountAbort.signal.addEventListener('abort', () => {
+        try {
+          unmountDriveStatus();
+        } catch {
+          // best-effort cleanup; never let a stale unsub crash a re-mount.
+        }
+      });
     } catch {
-      // best-effort cleanup; never let a stale unsub crash a re-mount.
+      // jsdom / unit tests without IPC — no pill subscription.
     }
-  });
+  })();
   const versionText = document.createElement('span');
   versionText.setAttribute('data-test', 'version-label');
   versionText.className = 'version-label';
@@ -204,6 +216,34 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
     () => {
       sidebarHidden = !sidebarHidden;
       applySidebarVisibility();
+    },
+    { signal: mountAbort.signal },
+  );
+
+  // Manual reload-comments button (2025-05-01): the sidebar's ↻ button
+  // dispatches `mdviewer:reload-comments` and we delegate to the existing
+  // reload_document IPC. That handler re-reads the .md AND its sidecar,
+  // then refresh() repaints the sidebar with the fresh thread list.
+  // Useful when Drive Desktop has just synced down a collaborator's edit
+  // but the watcher hasn't yet picked it up (rare on macOS, more common
+  // on network filesystems). The watcher already auto-reloads sidecar
+  // changes when it sees them — this is a "kick it now" escape hatch.
+  document.addEventListener(
+    'mdviewer:reload-comments',
+    () => {
+      const path = activeTab.path;
+      if (!path) return;
+      void (async () => {
+        try {
+          const fresh = await ipc.reloadDocument(path);
+          activeTab.threads = fresh.threads;
+          activeTab.source = fresh.source;
+          activeTab.html = fresh.html;
+          await refresh();
+        } catch (e) {
+          console.warn('reload-comments failed:', e);
+        }
+      })();
     },
     { signal: mountAbort.signal },
   );

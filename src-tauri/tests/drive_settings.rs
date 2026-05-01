@@ -4,13 +4,14 @@ use tempfile::TempDir;
 
 #[test]
 fn cloud_drive_defaults_are_quiet() {
-    // C5: `feature_enabled` flipped to `true` for Phase 3. The other defaults
-    // remain quiet — `connected = false` until the user runs Connect, polling
-    // intervals at the conservative 5s/10s, no account email or BYO client_id.
-    // Keeping this assertion bundle pinned guards against an accidental flip
-    // of one of the *other* fields while we're touching DriveSettings::default.
+    // 2025-05-01: reverted to opt-in. `feature_enabled` defaults to false
+    // again; the user has to expand Settings → Drive → Advanced and click
+    // Enable to see the Connect surface. Most users (including those who
+    // can't get a Google Cloud OAuth client_id from their corporate IT)
+    // never see the Drive API surface at all and rely on the local
+    // sidecar with watcher-driven auto-reload.
     let s = Settings::default();
-    assert!(s.cloud.drive.feature_enabled);
+    assert!(!s.cloud.drive.feature_enabled);
     assert!(!s.cloud.drive.connected);
     assert_eq!(s.cloud.drive.backend_mode, BackendMode::Auto);
     assert_eq!(s.cloud.drive.poll_interval_active_secs, 5);
@@ -76,12 +77,10 @@ verbose_logs = false
 [shortcuts]
 "##;
     let parsed: Settings = toml::from_str(legacy).expect("legacy TOML must still parse");
-    // A pre-Phase-3 settings.toml with no `[cloud.drive]` section now picks
-    // up the new `true` default via `serde(default)` on the field — these
-    // users get the Drive surface unhidden on next launch without any TOML
-    // edit. Users who had explicitly written `feature_enabled = false` keep
-    // that opt-out (covered by the dedicated drive_feature_flag.rs tests).
-    assert!(parsed.cloud.drive.feature_enabled);
+    // 2025-05-01: with the opt-in revert, a legacy settings.toml without
+    // `[cloud.drive]` picks up the new `false` default — users who never
+    // touched the Drive integration stay on the local-sidecar default.
+    assert!(!parsed.cloud.drive.feature_enabled);
 }
 
 // Mutating ONLY a `cloud.drive.*` field must produce `Some(ChangeEvent::Cloud)`
@@ -96,12 +95,12 @@ fn cloud_only_change_emits_cloud_event() {
     let store = SettingsStore::open(tmp.path()).unwrap();
     let rx = store.subscribe();
 
-    // C5 flipped the default to `true`, so flipping the kill-switch to
-    // `false` is now the meaningful state change. Either direction exercises
-    // the same `diff_event` path; we choose `false` so this stays a real
-    // mutation post-flip.
+    // 2025-05-01: opt-in revert flipped default back to `false`, so the
+    // meaningful state change is now flipping to `true` (user opting in
+    // via Settings → Drive → Advanced → Enable). Either direction
+    // exercises the same `diff_event` path.
     store
-        .update(|s| s.cloud.drive.feature_enabled = false)
+        .update(|s| s.cloud.drive.feature_enabled = true)
         .unwrap();
     let event = rx.try_recv().expect("cloud-only change must emit an event");
     assert!(matches!(event, ChangeEvent::Cloud));

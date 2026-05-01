@@ -76,6 +76,21 @@ export function mountCommentsSidebar(
   const title = document.createElement('span');
   title.className = 'sidebar-title';
   title.textContent = 'Comments';
+  // Manual reload button (2025-05-01): force a re-read of the sidecar
+  // file from disk. Useful when Drive Desktop has just synced down a
+  // collaborator's edit but the watcher hasn't picked up the change yet
+  // (rare on macOS, more common on network filesystems). The watcher
+  // already auto-reloads sidecar changes when it sees them — this button
+  // is a "kick it now" escape hatch.
+  const reloadBtn = document.createElement('button');
+  reloadBtn.setAttribute('data-test', 'sidebar-reload');
+  reloadBtn.setAttribute('data-action', 'reload-comments');
+  reloadBtn.setAttribute('title', 'Reload comments from disk');
+  reloadBtn.setAttribute('aria-label', 'Reload comments from disk');
+  reloadBtn.textContent = '↻';
+  reloadBtn.addEventListener('click', () => {
+    document.dispatchEvent(new CustomEvent('mdviewer:reload-comments'));
+  });
   const closeBtn = document.createElement('button');
   closeBtn.setAttribute('data-test', 'sidebar-close');
   closeBtn.setAttribute('data-action', 'close-sidebar');
@@ -85,7 +100,7 @@ export function mountCommentsSidebar(
   closeBtn.addEventListener('click', () => {
     document.dispatchEvent(new CustomEvent('mdviewer:toggle-sidebar'));
   });
-  header.append(title, closeBtn);
+  header.append(title, reloadBtn, closeBtn);
   root.appendChild(header);
 
   // Orphan section sits at the top so it's visible without scrolling, which

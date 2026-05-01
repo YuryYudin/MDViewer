@@ -28,6 +28,8 @@ function ipc(): Ipc {
       appearance: { theme: 'light', font_size_px: 14, line_height: 1.5, density: 'comfortable' },
       comments: { show_resolved: false, sidecar_pattern: '{name}.md.comments.json', reattachment_confidence: 75, auto_merge: 'manual' },
       editor: {},
+      // 2025-05-01: opt-in Drive; this fidelity test asserts pill ordering so opt in.
+      cloud: { drive: { feature_enabled: true, connected: false, account_email: null, backend_mode: 'auto', poll_interval_active_secs: 5, poll_interval_unfocused_secs: 10, custom_oauth_client_id: null, detect_toast_suppressed: false } },
     }),
     setSettings: vi.fn(),
     listThreads: vi.fn().mockResolvedValue([]),
@@ -65,6 +67,9 @@ describe('Workspace shell — wireframe layout', () => {
     // A8 inserted the Drive status pill between the spacer and the version
     // label so it sits on the right side of the bar, mirroring the
     // wireframe-05 status row.
+    // 2025-05-01: the pill HOST is appended synchronously to preserve DOM
+    // order; the listener subscription happens async after the
+    // feature_enabled check.
     const root = document.createElement('div');
     await mountWorkspace(root, ipc());
     const status = root.querySelector<HTMLElement>('[data-region="status"]')!;

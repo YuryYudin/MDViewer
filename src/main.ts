@@ -63,11 +63,16 @@ export async function maybeShowDriveDetectToast(
   host: HTMLElement,
   filePath: string,
   settings: {
-    cloud?: { drive?: { connected?: boolean; detect_toast_suppressed?: boolean } };
+    cloud?: { drive?: { connected?: boolean; detect_toast_suppressed?: boolean; feature_enabled?: boolean } };
   } | null,
   deps: DriveDetectTriggerDeps = {},
 ): Promise<void> {
   const drive = settings?.cloud?.drive;
+  // Opt-in (2025-05-01): the toast is part of the Drive API integration
+  // surface. When the user has not opted in (the default), we don't
+  // prompt them to connect — they'd just see a Connect button that
+  // requires a Google Cloud OAuth client ID they probably can't get.
+  if (!drive?.feature_enabled) return;
   // Cheap gates first — both are in-memory reads from the cached settings
   // snapshot. Either one being true means the toast must NOT mount AND we
   // must skip the IPC roundtrips entirely (opening any local file should

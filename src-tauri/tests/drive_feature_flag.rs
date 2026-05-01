@@ -22,11 +22,14 @@
 use mdviewer_lib::settings::{drive_kill_switch_active, Settings};
 
 #[test]
-fn feature_enabled_default_true() {
+fn feature_enabled_default_false() {
+    // 2025-05-01: reverted from C5's true → false. Drive API integration
+    // requires a Google Cloud OAuth client_id which many corporate users
+    // can't get; default is now opt-in via Settings → Drive → Advanced.
     let s = Settings::default();
     assert!(
-        s.cloud.drive.feature_enabled,
-        "Phase 3 flips this to true — the Drive surface ships on by default",
+        !s.cloud.drive.feature_enabled,
+        "Drive integration is opt-in (defaults to false); user enables it via Settings",
     );
 }
 
@@ -95,20 +98,24 @@ feature_enabled = false
 //     refuse to launch the OAuth flow or open a Drive URL until the user
 //     flips the flag back on.
 #[test]
-fn kill_switch_inactive_under_default_settings() {
+fn kill_switch_active_under_default_settings() {
+    // 2025-05-01: opt-in revert means default settings DO trip the
+    // kill-switch — the IPC handler short-circuits drive_connect with a
+    // friendly error. The user has to opt in via Settings → Drive →
+    // Advanced before the OAuth flow is reachable.
     let s = Settings::default();
     assert!(
-        !drive_kill_switch_active(&s),
-        "fresh install must NOT trip the kill-switch — Drive surface is on by default",
+        drive_kill_switch_active(&s),
+        "fresh install trips the kill-switch — Drive surface is opt-in",
     );
 }
 
 #[test]
-fn kill_switch_active_when_user_opts_out() {
+fn kill_switch_inactive_after_opt_in() {
     let mut s = Settings::default();
-    s.cloud.drive.feature_enabled = false;
+    s.cloud.drive.feature_enabled = true;
     assert!(
-        drive_kill_switch_active(&s),
-        "explicit user opt-out must trip the kill-switch so drive_connect / drive_open_url can short-circuit",
+        !drive_kill_switch_active(&s),
+        "explicit opt-in must clear the kill-switch so drive_connect / drive_open_url can run",
     );
 }

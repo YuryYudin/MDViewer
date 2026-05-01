@@ -42,6 +42,9 @@ function makeIpc(openIds: string[] = []): Ipc {
       appearance: { theme: 'light', font_size_px: 14, line_height: 1.5, density: 'comfortable' },
       comments: { show_resolved: false, sidecar_pattern: '{name}.md.comments.json', reattachment_confidence: 75, auto_merge: 'manual' },
       editor: {},
+      // 2025-05-01: Drive integration is opt-in; the legacy A8 pill tests
+      // assume an enabled feature, so wire it true in the fixture.
+      cloud: { drive: { feature_enabled: true, connected: false, account_email: null, backend_mode: 'auto', poll_interval_active_secs: 5, poll_interval_unfocused_secs: 10, custom_oauth_client_id: null, detect_toast_suppressed: false } },
     }),
     setSettings: vi.fn(),
     listThreads: vi.fn().mockResolvedValue([]),

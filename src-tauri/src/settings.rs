@@ -195,16 +195,14 @@ impl Default for DriveSettings {
     fn default() -> Self {
         Self {
             // C5 (Phase 3): the Drive integration ships on by default.
-            // Phase 2 kept this `false` so the half-built UI surface stayed
-            // hidden behind the flag while we built out OAuth, the file-id
-            // resolver, the conflict diff, the CollabChip, and the detect
-            // toast. With A1–C4 landed, every fresh install now sees the
-            // feature. Users who want the pre-Phase-3 behavior back can
-            // set `cloud.drive.feature_enabled = false` in settings.toml —
-            // the kill-switch path in `src-tauri/src/main.rs` honors that
-            // explicit opt-out by short-circuiting `drive_connect` and
-            // `drive_open_url`.
-            feature_enabled: true,
+            // Reverted to opt-in (2025-05-01): Drive API integration
+            // requires the user to obtain a Google Cloud OAuth client_id
+            // (Console project, Drive API enable, OAuth consent screen
+            // setup, etc.) which many corporate users can't do without IT
+            // approval. Default behavior is now: local sidecar (.md.comments.json)
+            // with auto-reload-on-external-change. The user can opt in to
+            // the full Drive API integration via Settings → Drive → Advanced.
+            feature_enabled: false,
             connected: false,
             account_email: None,
             backend_mode: BackendMode::Auto,

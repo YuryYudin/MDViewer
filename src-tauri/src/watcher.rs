@@ -191,7 +191,18 @@ impl Watcher {
                     }
 
                     let dirty = *s.unsaved.get(&path).unwrap_or(&false);
-                    let action = if dirty {
+                    // Sidecar always auto-reload (2025-05-01): comment
+                    // sidecars are Automerge CRDTs that merge concurrent
+                    // edits losslessly, so silently re-reading is always
+                    // safe. The Ask/Reload/Ignore setting only governs the
+                    // .md file (where unsaved edits could collide). This
+                    // makes the local-sidecar-only Drive workflow seamless:
+                    // Drive Desktop syncs `<doc>.md.comments.json`, the
+                    // watcher fires, and the sidebar refreshes without the
+                    // user having to click anything.
+                    let action = if matches!(kind, WatchedKind::Sidecar) {
+                        ExternalChange::Reload
+                    } else if dirty {
                         // Unsaved-edits override: always Ask, regardless of
                         // the configured behavior. Never silently overwrite
                         // unsaved work.

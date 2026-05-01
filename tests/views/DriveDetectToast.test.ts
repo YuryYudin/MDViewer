@@ -224,7 +224,8 @@ describe('Drive-detect toast trigger gating (main.ts)', () => {
 
   it('first-show: mounts when path is on Drive Desktop, not connected, no dismissal, no global suppression', async () => {
     const { mounted, calls } = await runTrigger('/Users/alice/GoogleDrive/notes.md', {
-      cloud: { drive: { connected: false, detect_toast_suppressed: false } },
+      // 2025-05-01: opt-in Drive — toast only fires when feature_enabled.
+      cloud: { drive: { feature_enabled: true, connected: false, detect_toast_suppressed: false } },
     });
     expect(mounted).toBe(true);
     // Order matters for early-return correctness: we must not invoke

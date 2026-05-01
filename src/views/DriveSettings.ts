@@ -62,6 +62,18 @@ export function mountDriveSettings(
   heading.textContent = 'Drive integration';
   section.appendChild(heading);
 
+  // Opt-in (2025-05-01): when feature_enabled is false (the new default),
+  // hide the Connect/Disconnect surface entirely and show an opt-in panel
+  // that explains the setup process. The Drive API integration requires a
+  // Google Cloud OAuth client_id which most corporate users can't get
+  // without IT approval — making it the default would put a broken
+  // Connect button in everyone's face.
+  if (!drive.feature_enabled) {
+    renderOptInPanel(section, settings, deps);
+    root.appendChild(section);
+    return;
+  }
+
   // ── Status card ──────────────────────────────────────────────────────
   // The card shape (icon + 2-line text + action button) matches wireframes
   // 01 and 02. The icon and copy flip based on `connected`.
@@ -219,4 +231,131 @@ export function mountDriveSettings(
   section.appendChild(advanced);
 
   root.appendChild(section);
+}
+
+/**
+ * Opt-in panel shown when `cloud.drive.feature_enabled === false` (the
+ * default). Explains the setup process and the trade-offs, then offers
+ * an "Enable" button that flips the flag so the user sees the full
+ * Connect UI on the next render.
+ *
+ * Default behavior (without enabling): comments live in the local
+ * sidecar (.md.comments.json), Drive Desktop syncs the sidecar like
+ * any other file, the watcher auto-reloads on external changes, and
+ * the sidebar's Reload button forces a re-read.
+ */
+function renderOptInPanel(
+  section: HTMLElement,
+  settings: Settings,
+  deps: DriveSettingsDeps,
+): void {
+  const intro = document.createElement('p');
+  intro.className = 'help';
+  intro.style.marginTop = '8px';
+  intro.textContent =
+    'Comments live in a sidecar file (<name>.md.comments.json) next to your document. ' +
+    'When the file lives in a Google Drive Desktop folder, the sidecar is synced like any ' +
+    'other file — collaborators see your comments after Drive Desktop pulls them down. ' +
+    'The sidebar has a Reload button to force a re-read on demand.';
+  section.appendChild(intro);
+
+  const advanced = document.createElement('details');
+  advanced.className = 'drive-advanced';
+  advanced.setAttribute('data-testid', 'drive-optin-advanced');
+  const summary = document.createElement('summary');
+  summary.textContent = 'Advanced: enable Drive API integration';
+  advanced.appendChild(summary);
+
+  const explainer = document.createElement('div');
+  explainer.style.marginTop = '12px';
+
+  const buildParagraph = (strongText: string, body: string): HTMLParagraphElement => {
+    const p = document.createElement('p');
+    const strong = document.createElement('strong');
+    strong.textContent = strongText;
+    p.appendChild(strong);
+    if (body) p.appendChild(document.createTextNode(' ' + body));
+    return p;
+  };
+
+  explainer.appendChild(buildParagraph(
+    'What it adds:',
+    "sub-10-second comment sync via Google's Comments API (instead of waiting for " +
+      'Drive Desktop filesystem sync), plus the ability to open Drive-stored docs by ' +
+      "URL (no Drive Desktop required), plus Drive's native collaborator avatars in the sidebar.",
+  ));
+  explainer.appendChild(buildParagraph(
+    'What it requires:',
+    'a Google Cloud OAuth client ID. Many corporate users cannot get one without IT ' +
+      "approval — that's the main reason this integration is opt-in.",
+  ));
+
+  const howHeading = document.createElement('p');
+  const howStrong = document.createElement('strong');
+  howStrong.textContent = 'How to get a client ID';
+  howHeading.appendChild(howStrong);
+  howHeading.appendChild(document.createTextNode(' (5 minutes if your account allows it):'));
+  explainer.appendChild(howHeading);
+
+  const ol = document.createElement('ol');
+  ol.style.paddingLeft = '20px';
+  for (const step of [
+    'Open console.cloud.google.com and create a project (or use an existing one).',
+    'APIs & Services → Library → enable Google Drive API.',
+    'APIs & Services → OAuth consent screen → User Type: External (or Internal if you have a Google Workspace tenant). Fill in app name, support email, developer contact. On the Test users step, add your own Google account.',
+    'APIs & Services → Credentials → Create Credentials → OAuth client ID. Application type: Desktop app. Copy the resulting Client ID.',
+    'Click Enable Drive integration below, then paste the Client ID into the Custom OAuth client ID field that appears.',
+  ]) {
+    const li = document.createElement('li');
+    li.textContent = step;
+    ol.appendChild(li);
+  }
+  explainer.appendChild(ol);
+
+  explainer.appendChild(buildParagraph('Trade-offs:', ''));
+  const ul = document.createElement('ul');
+  ul.style.paddingLeft = '20px';
+  for (const item of [
+    'OAuth refresh tokens persist on disk (XOR-obfuscated for now; future version will use OS keychain via Stronghold).',
+    "External consent screen apps in Testing mode work indefinitely for listed test users without Google verification. Going Production with the drive.file scope requires Google's verification process (weeks of back-and-forth).",
+    'The Connect button opens a browser tab. The OAuth callback uses a localhost loopback per RFC 8252 (no firewall changes needed).',
+    'You can disable this at any time — your sidecar comments are not affected.',
+  ]) {
+    const li = document.createElement('li');
+    li.textContent = item;
+    ul.appendChild(li);
+  }
+  explainer.appendChild(ul);
+  advanced.appendChild(explainer);
+
+  const enableBtn = document.createElement('button');
+  enableBtn.className = 'primary';
+  enableBtn.type = 'button';
+  enableBtn.textContent = 'Enable Drive integration';
+  enableBtn.setAttribute('data-testid', 'drive-enable-btn');
+  enableBtn.style.marginTop = '8px';
+  enableBtn.addEventListener('click', () => {
+    void (async () => {
+      try {
+        settings.cloud.drive.feature_enabled = true;
+        await deps.saveSettings(settings);
+        const note = document.createElement('p');
+        note.className = 'help';
+        note.style.color = 'var(--accent)';
+        note.style.marginTop = '8px';
+        note.textContent =
+          'Drive integration enabled. Close and reopen Settings to see the Connect UI.';
+        advanced.appendChild(note);
+        enableBtn.disabled = true;
+      } catch (e) {
+        const msg = (e && typeof e === 'object' && 'message' in e && typeof (e as { message: unknown }).message === 'string')
+          ? (e as { message: string }).message
+          : String(e);
+        deps.notify?.(`Failed to enable Drive integration: ${msg}`, 'error');
+      }
+    })();
+  });
+  advanced.appendChild(enableBtn);
+
+  section.appendChild(advanced);
 }
