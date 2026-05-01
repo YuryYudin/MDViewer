@@ -8,6 +8,7 @@
 
 use mdviewer_lib::drive::detect::{is_drive_desktop_path, DriveDesktopRoot};
 use mdviewer_lib::drive::file_id::{resolve_file_id, FileIdResolution, FileIdResolver};
+use serial_test::serial;
 
 // ---------- detect.rs ---------------------------------------------------
 
@@ -86,6 +87,64 @@ fn detect_windows_userprofile_is_case_insensitive() {
         r_canonical.as_ref().map(|d| d.mount_kind.as_str()),
         "lowercase and canonical-cased Windows userprofile paths must produce same mount_kind"
     );
+}
+
+// D3: MDVIEWER_DRIVE_DESKTOP_ROOT env var override. The C3 e2e spec sets
+// this to a synthesized temp dir so scenario 6 (Drive Desktop detection)
+// can run without a real Google Drive mount on CI. Tests mutate a
+// process-global env var so they must be `#[serial]`.
+
+#[test]
+#[serial]
+fn detect_honors_mdviewer_drive_desktop_root_env_override() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let root = tmp.path().to_path_buf();
+    let test_file = root.join("subdir/doc.md");
+    std::fs::create_dir_all(test_file.parent().unwrap()).unwrap();
+    std::fs::write(&test_file, "hello").unwrap();
+
+    std::env::set_var("MDVIEWER_DRIVE_DESKTOP_ROOT", root.to_str().unwrap());
+
+    // Use linux so the OS-specific branch returns None — proves the
+    // override fires before falling through.
+    let result = is_drive_desktop_path(&test_file, "linux", Some("/home/test"));
+
+    std::env::remove_var("MDVIEWER_DRIVE_DESKTOP_ROOT");
+
+    let detected = result.expect("env var override must produce a Some result");
+    assert_eq!(detected.mount_kind.as_str(), "test-override");
+}
+
+#[test]
+#[serial]
+fn detect_env_var_does_not_match_unrelated_paths() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let root = tmp.path().to_path_buf();
+    let unrelated = std::path::PathBuf::from("/tmp/somewhere/else/doc.md");
+
+    std::env::set_var("MDVIEWER_DRIVE_DESKTOP_ROOT", root.to_str().unwrap());
+    let result = is_drive_desktop_path(&unrelated, "linux", Some("/home/test"));
+    std::env::remove_var("MDVIEWER_DRIVE_DESKTOP_ROOT");
+
+    assert!(
+        result.is_none(),
+        "paths outside the override root must not match"
+    );
+}
+
+#[test]
+#[serial]
+fn detect_without_env_var_uses_os_branches() {
+    // Sanity: with no env var, linux returns None (no Drive Desktop on
+    // Linux per spec). Guards against the override leaking into normal
+    // detection.
+    std::env::remove_var("MDVIEWER_DRIVE_DESKTOP_ROOT");
+    let result = is_drive_desktop_path(
+        std::path::Path::new("/home/test/foo.md"),
+        "linux",
+        Some("/home/test"),
+    );
+    assert!(result.is_none());
 }
 
 // ---------- file_id.rs --------------------------------------------------
