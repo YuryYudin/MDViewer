@@ -290,3 +290,27 @@ describe('Drive-detect toast trigger gating (main.ts)', () => {
     expect(calls.map((c) => c.cmd)).not.toContain('get_doc_pref');
   });
 });
+
+/**
+ * Phase C cleanup: the canonical default DocPref is exported by main.ts so
+ * the Drive-detect dismissal write-back doesn't hardcode a duplicate of the
+ * global appearance.font_size_px default. If the global default ever moves
+ * away from 14, the dismissal path picks up the new value via this helper
+ * instead of silently writing a stale `14` per-file.
+ */
+describe('defaultDocPref()', () => {
+  it('returns the canonical default DocPref (font_size_px = 14, drive_detect_dismissed = false)', async () => {
+    const { defaultDocPref } = await import('../../src/main');
+    expect(defaultDocPref()).toEqual({
+      font_size_px: 14,
+      drive_detect_dismissed: false,
+    });
+  });
+
+  it('returns a fresh object each call so callers can spread-mutate without aliasing', async () => {
+    const { defaultDocPref } = await import('../../src/main');
+    const a = defaultDocPref();
+    const b = defaultDocPref();
+    expect(a).not.toBe(b);
+  });
+});

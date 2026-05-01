@@ -1,24 +1,21 @@
 import type { Ipc, Thread } from '../ipc';
 import type { DriveCollaborator, TabBackend } from '../types-generated';
+import { initials } from './collabInitials';
 import { mountOrphanComments } from './OrphanComments';
 import { mountThreadDetail } from './ThreadDetail';
 
 /**
  * Look up the comment author's collaborator record by email, then return
- * up-to-two-character initials. Mirrors `CollabChip`'s `initials()` helper
- * so the avatars in the sidebar header and the per-thread header use the
- * same formatting. Returns `?` when the author isn't in the collaborator
- * list (the comment was authored before the user gained access, or the
- * file's permissions changed since the polling cache was last refreshed).
+ * up-to-two-character initials via the shared `initials()` helper so the
+ * avatars in the sidebar header and the per-thread header use the same
+ * formatting. Returns `?` when the author isn't in the collaborator list
+ * (the comment was authored before the user gained access, or the file's
+ * permissions changed since the polling cache was last refreshed).
  */
 function authorInitials(email: string, collaborators: DriveCollaborator[]): string {
   const match = collaborators.find((c) => c.email_address === email);
   if (!match) return '?';
-  const parts = match.display_name.trim().split(/\s+/).filter(Boolean).slice(0, 2);
-  const fromName = parts.map((p) => p[0]?.toUpperCase() ?? '').join('');
-  if (fromName) return fromName;
-  const fromEmail = match.email_address.trim()[0]?.toUpperCase();
-  return fromEmail ?? '?';
+  return initials(match.display_name, match.email_address);
 }
 
 /**

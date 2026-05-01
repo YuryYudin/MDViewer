@@ -28,6 +28,18 @@ export interface DriveDetectTriggerDeps {
 }
 
 /**
+ * Canonical default `DocPref` used when a fresh entry has to be written
+ * before any prior pref exists for that file. Centralised so the value
+ * tracks `Settings.appearance.font_size_px`'s default rather than drifting
+ * apart from a hardcoded literal in the Drive-detect-dismissal write-back.
+ * Returns a fresh object on every call so callers can spread-mutate
+ * without aliasing the shared default.
+ */
+export function defaultDocPref(): DocPref {
+  return { font_size_px: 14, drive_detect_dismissed: false };
+}
+
+/**
  * Decide whether to mount the Drive-detect toast for the just-opened
  * `filePath` and, if so, mount it under `host`. Predicate (all four must
  * hold):
@@ -86,11 +98,12 @@ export async function maybeShowDriveDetectToast(
     onDismiss: async (p) => {
       // Read-merge-write: preserve the existing font-size override (the
       // other field on DocPref) so a dismissal doesn't accidentally reset
-      // the user's per-document font size to its default.
-      const existing = (await doInvoke<DocPref | null>('get_doc_pref', { path: p })) ?? {
-        font_size_px: 14,
-        drive_detect_dismissed: false,
-      };
+      // the user's per-document font size to its default. When no prior
+      // pref exists we seed from `defaultDocPref()` so the canonical
+      // default lives in one place and tracks future changes to the
+      // global Settings.appearance.font_size_px default.
+      const existing =
+        (await doInvoke<DocPref | null>('get_doc_pref', { path: p })) ?? defaultDocPref();
       await doInvoke<void>('set_doc_pref', {
         path: p,
         pref: { ...existing, drive_detect_dismissed: true },
