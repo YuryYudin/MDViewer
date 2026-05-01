@@ -121,3 +121,166 @@ impl DriveQueue {
             .unwrap_or(true)
     }
 }
+
+/// Drain the queue and forward every op to Drive in FIFO order. New Drive
+/// ids returned by the server are written into `id_map` so subsequent polls
+/// don't re-import the same comment as a fresh thread.
+///
+/// **Failure semantics.** If any op fails (network error, 4xx/5xx after
+/// retries) we re-append the failed op AND every op that came after it back
+/// onto the queue, in original order, then return the error to the caller.
+/// The caller (the polling loop or `spawn_replay_all`) treats the error as a
+/// "try again next poll" signal — it must NOT mark the queue drained. The
+/// alternative (drop the failed op, keep going) would silently lose user
+/// comments, which is the worst possible failure mode for an offline-first
+/// feature: the user wrote text, saw it appear, and then it vanished. Better
+/// to leave the op on disk forever than to drop it once.
+///
+/// **Why not retry inside this function?** `DriveApi::send_with_retry`
+/// already handles 5xx/429 with exponential backoff (4 attempts). A second
+/// retry layer here would multiply the backoff window and stall the polling
+/// loop for minutes when the network is genuinely down. Re-queueing instead
+/// hands the next attempt to the next poll cycle — which the user can also
+/// trigger manually by toggling reconnect.
+pub fn replay(
+    q: &DriveQueue,
+    api: &crate::drive::api::DriveApi,
+    file_id: &str,
+    id_map: &std::sync::Mutex<crate::drive::comments::IdMap>,
+) -> Result<(), crate::drive::DriveError> {
+    let ops = q
+        .drain()
+        .map_err(|e| crate::drive::DriveError::Api(e.to_string()))?;
+    let mut iter = ops.into_iter();
+    while let Some(op) = iter.next() {
+        // On any failure we must re-append the current op + every remaining
+        // op (collected via `iter` consuming the rest) before returning.
+        // Inlined so each match arm can return early without duplicating the
+        // requeue helper's borrows.
+        let result: Result<(), crate::drive::DriveError> = match &op {
+            QueueOp::CreateThread {
+                local_id,
+                content,
+                quoted,
+            } => {
+                let body = crate::drive::api::DriveCommentResource {
+                    id: None,
+                    content: content.clone(),
+                    quoted_file_content: Some(crate::drive::api::QuotedFileContent {
+                        value: quoted.clone(),
+                    }),
+                    modified_time: None,
+                    replies: vec![],
+                    resolved: false,
+                    author: None,
+                };
+                match api.create_comment(file_id, &body) {
+                    Ok(resp) => {
+                        if let Some(drive_id) = resp.id {
+                            id_map
+                                .lock()
+                                .unwrap()
+                                .map
+                                .insert(local_id.clone(), drive_id);
+                        }
+                        Ok(())
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+            QueueOp::DeleteComment { drive_id } => api.delete_comment(file_id, drive_id),
+            QueueOp::CreateReply {
+                parent_drive_id,
+                content,
+                local_reply_id,
+            } => {
+                let body = crate::drive::api::DriveReplyResource {
+                    id: None,
+                    content: content.clone(),
+                    modified_time: None,
+                    author: None,
+                };
+                match api.create_reply(file_id, parent_drive_id, &body) {
+                    Ok(resp) => {
+                        if let Some(drive_id) = resp.id {
+                            id_map
+                                .lock()
+                                .unwrap()
+                                .map
+                                .insert(local_reply_id.clone(), drive_id);
+                        }
+                        Ok(())
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+        };
+
+        if let Err(e) = result {
+            // Re-queue the failed op and every op behind it so the next
+            // replay attempt picks them up. Order is preserved so a
+            // create-then-reply pair stays adjacent.
+            let mut remaining: Vec<QueueOp> = Vec::new();
+            remaining.push(op);
+            remaining.extend(iter);
+            for r in remaining {
+                q.append(r)
+                    .map_err(|e| crate::drive::DriveError::Api(e.to_string()))?;
+            }
+            return Err(e);
+        }
+    }
+    Ok(())
+}
+
+/// Async fan-out wrapper used by `drive_connect` (B6) and any other caller
+/// that wants to drain every open Drive tab's queue without blocking the
+/// IPC thread. Spawns a single Tokio task that walks each `(file_id,
+/// config_dir)` pair, opens the queue, and runs `replay()` against the
+/// shared `id_map` for that file. Emits a bare `drive-status-changed` nudge
+/// after each file_id finishes so the UI status pill counts down live as
+/// the queue drains.
+///
+/// The caller passes a *cloned* HashMap of `Arc<Mutex<IdMap>>` (see
+/// `Workspace::id_maps_arc_clone`) so the spawned task never holds the
+/// outer Workspace lock through a Drive API roundtrip — long-running
+/// network calls would otherwise block every other IPC handler.
+///
+/// Errors are logged at `debug` level rather than surfaced — the
+/// re-queue-on-failure semantics inside `replay()` already preserve the
+/// user's data, and the next poll cycle will retry. A loud error log on
+/// every offline blip would create noise for no actionable signal.
+pub fn spawn_replay_all(
+    app: tauri::AppHandle,
+    api: std::sync::Arc<crate::drive::api::DriveApi>,
+    queues: Vec<(String, std::path::PathBuf)>,
+    id_maps: std::collections::HashMap<
+        String,
+        std::sync::Arc<std::sync::Mutex<crate::drive::comments::IdMap>>,
+    >,
+) {
+    tauri::async_runtime::spawn(async move {
+        for (file_id, cfg) in queues {
+            // Run the (blocking) replay on a blocking-pool thread so the
+            // async reactor isn't held up by reqwest::blocking calls.
+            let api_c = api.clone();
+            let id_maps_c = id_maps.clone();
+            let file_id_c = file_id.clone();
+            let cfg_c = cfg.clone();
+            let _ = tauri::async_runtime::spawn_blocking(move || {
+                let q = DriveQueue::open(&cfg_c, &file_id_c);
+                if let Some(map) = id_maps_c.get(&file_id_c) {
+                    if let Err(e) = replay(&q, &api_c, &file_id_c, map) {
+                        tracing::debug!("replay {} pending: {:?}", file_id_c, e);
+                    }
+                }
+            })
+            .await;
+            // Nudge the status pill so the per-file pending count counts
+            // down as each queue drains. The full DriveStatus snapshot is
+            // assembled by the polling loop's diff path; we only signal
+            // that *something* changed.
+            let _ = tauri::Emitter::emit(&app, "drive-status-changed", ());
+        }
+    });
+}
