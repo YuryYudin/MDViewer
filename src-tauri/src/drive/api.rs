@@ -29,6 +29,14 @@ pub struct CommentList {
     pub comments: Vec<DriveCommentResource>,
     #[serde(default, rename = "nextPageToken")]
     pub next_page_token: Option<String>,
+    /// HTTP `ETag` response header captured from `list_comments`. Set by
+    /// the API wrapper (not by serde — Drive's JSON body has no top-level
+    /// etag field). The poller stores this in `cache_meta` so the next
+    /// round can replay it via `If-None-Match` and trust a 304 to mean
+    /// "skip". `None` when the response had no ETag header (304 paths,
+    /// some test stubs) — callers must guard before persisting.
+    #[serde(skip)]
+    pub response_etag: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -160,10 +168,23 @@ impl DriveApi {
             return Ok(CommentList {
                 comments: Vec::new(),
                 next_page_token: None,
+                response_etag: None,
             });
         }
-        resp.json::<CommentList>()
-            .map_err(|e| super::DriveError::Api(e.to_string()))
+        // Capture the HTTP `ETag` header BEFORE consuming the body — once
+        // `resp.json()` is called the response is gone. Drive's JSON body
+        // has no top-level etag field; the conditional-GET token lives in
+        // the response header alongside `Cache-Control` etc.
+        let response_etag = resp
+            .headers()
+            .get(reqwest::header::ETAG)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+        let mut parsed: CommentList = resp
+            .json()
+            .map_err(|e| super::DriveError::Api(e.to_string()))?;
+        parsed.response_etag = response_etag;
+        Ok(parsed)
     }
 
     pub fn create_comment(

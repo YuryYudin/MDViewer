@@ -113,7 +113,10 @@ fn cache_dir_for(config_dir: &Path, file_id: &str) -> PathBuf {
 
 /// RFC3339 timestamp without pulling `chrono` — we already use the same
 /// civil-date trick in `comments::now_rfc3339` to keep the binary small.
-fn now_rfc3339() -> String {
+/// Exposed `pub(crate)` so other Drive modules (e.g. the poller in
+/// `workspace::drive_poll_one`) can stamp `cache_meta.last_fetched`
+/// without duplicating the implementation.
+pub(crate) fn now_rfc3339() -> String {
     let n = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or(Duration::ZERO);

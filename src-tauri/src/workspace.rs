@@ -767,12 +767,43 @@ impl Workspace {
         let cache_meta =
             crate::drive::cache::load_cache_meta(self.config_dir(), file_id);
         let etag_owned = cache_meta.as_ref().map(|m| m.etag.clone());
+        let prior_sha = cache_meta
+            .as_ref()
+            .map(|m| m.content_sha256.clone())
+            .unwrap_or_default();
 
         let resp = api.list_comments(&crate::drive::api::ListCommentsArgs {
             file_id,
             start_modified_time: None,
             if_none_match: etag_owned.as_deref(),
         })?;
+
+        // D2 review fix: persist cache_meta with the response's ETag and a
+        // fresh `last_fetched` BEFORE the empty-comments early return so the
+        // next poll can replay `If-None-Match` and trust the 304 fast path.
+        // Skipped when the response had no ETag header — that covers both
+        // `list_comments`'s synthetic 304 short-circuit (it returns
+        // `response_etag: None`) and stub servers that omit the header. We
+        // preserve `content_sha256` from the prior cache_meta because the
+        // poller never touches the file body — only the file-download path
+        // (`drive::files::download_into_cache`) computes that hash.
+        if let Some(new_etag) = resp.response_etag.as_deref() {
+            let new_meta = crate::drive::cache::CacheMeta {
+                etag: new_etag.to_string(),
+                last_fetched: crate::drive::files::now_rfc3339(),
+                content_sha256: prior_sha,
+            };
+            if let Err(e) = crate::drive::cache::save_cache_meta(
+                self.config_dir(),
+                file_id,
+                &new_meta,
+            ) {
+                // cache_meta is a best-effort optimization — a write
+                // failure shouldn't block the merge or surface to the
+                // caller. The next poll will simply re-fetch unconditionally.
+                tracing::warn!(?e, file_id, "drive_poll_one cache_meta save failed");
+            }
+        }
 
         if resp.comments.is_empty() {
             return Ok(());
