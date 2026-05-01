@@ -591,7 +591,13 @@ describe('Workspace — font-size feature (A9)', () => {
     vi.advanceTimersByTime(150);
     // Exactly one IPC call with the final value.
     expect(ipc.setDocPref).toHaveBeenCalledTimes(1);
-    expect(ipc.setDocPref).toHaveBeenCalledWith('/docs/x.md', { font_size_px: 19 });
+    // C2 added drive_detect_dismissed to DocPref; the font-size persist
+     // path preserves whatever the existing flag value was (false here, no
+     // prior dismissal in this test).
+    expect(ipc.setDocPref).toHaveBeenCalledWith('/docs/x.md', {
+      font_size_px: 19,
+      drive_detect_dismissed: false,
+    });
     const readout = root.querySelector<HTMLButtonElement>('[data-test="font-readout"]')!;
     expect(readout.textContent).toBe('19');
     vi.useRealTimers();

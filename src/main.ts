@@ -1,4 +1,5 @@
-import { tauriIpc, type Settings } from './ipc';
+import { invoke } from '@tauri-apps/api/core';
+import { tauriIpc, type DocPref, type Settings } from './ipc';
 import { mountWorkspace } from './views/Workspace';
 import { mountProfileSetup } from './views/ProfileSetup';
 import { installKeymap, type Action } from './keymap';
@@ -7,6 +8,109 @@ import './styles/theme.css';
 import './styles/app.css';
 
 type AppliedTheme = 'light' | 'dark' | 'follow_system';
+
+/**
+ * C2: Shape of the dependencies `maybeShowDriveDetectToast` injects so the
+ * unit test can run the predicate without a Tauri runtime AND without
+ * dynamic-importing the toast view. Production callers leave both fields
+ * undefined; the defaults call `invoke` from `@tauri-apps/api/core` and
+ * dynamically import `./views/DriveDetectToast`. This is the same DI shape
+ * `runOpenFileFlow` would have used if it had needed test isolation; we
+ * only formalise it for this gate because the four-predicate logic has
+ * boundary cases (early return order, IPC-skip optimisations) worth
+ * covering by themselves.
+ */
+export interface DriveDetectTriggerDeps {
+  invoke?: <T = unknown>(cmd: string, args?: unknown) => Promise<T>;
+  /** Replaces the dynamic-import + mountDriveDetectToast call so the unit
+   *  test can assert "would-have-mounted" without rendering anything. */
+  mount?: (host: HTMLElement, filePath: string) => void;
+}
+
+/**
+ * Decide whether to mount the Drive-detect toast for the just-opened
+ * `filePath` and, if so, mount it under `host`. Predicate (all four must
+ * hold):
+ *
+ *   1. The user is not already connected to Drive
+ *      (`settings.cloud.drive.connected === false`)
+ *   2. The global suppression flag from a prior successful connect is off
+ *      (`settings.cloud.drive.detect_toast_suppressed === false`)
+ *   3. The file's per-doc-pref dismissal flag is off
+ *      (`get_doc_pref(path).drive_detect_dismissed === false`)
+ *   4. The file's path resolves to a Drive Desktop mount
+ *      (`is_drive_desktop_path(path) === true`)
+ *
+ * Order matters for cost: the two settings checks are pure in-memory and
+ * run first; the IPC roundtrips run only when the cheap gates haven't
+ * already disqualified the toast. The `is_drive_desktop_path` IPC is the
+ * cheapest of the two (pure path classification, no auth) so it runs
+ * before `get_doc_pref` (which hits the JSON store).
+ */
+export async function maybeShowDriveDetectToast(
+  host: HTMLElement,
+  filePath: string,
+  settings: {
+    cloud?: { drive?: { connected?: boolean; detect_toast_suppressed?: boolean } };
+  } | null,
+  deps: DriveDetectTriggerDeps = {},
+): Promise<void> {
+  const drive = settings?.cloud?.drive;
+  // Cheap gates first — both are in-memory reads from the cached settings
+  // snapshot. Either one being true means the toast must NOT mount AND we
+  // must skip the IPC roundtrips entirely (opening any local file should
+  // not pay the cost of two cross-process calls when we already know the
+  // toast is suppressed).
+  if (drive?.connected) return;
+  if (drive?.detect_toast_suppressed) return;
+
+  const doInvoke =
+    deps.invoke ??
+    (<T>(cmd: string, args?: unknown): Promise<T> => invoke<T>(cmd, args as Record<string, unknown>));
+
+  // Path classifier first (cheap, no auth). When the file isn't on a
+  // Drive mount we skip the doc-prefs roundtrip too.
+  const onDriveMount = await doInvoke<boolean>('is_drive_desktop_path', { path: filePath });
+  if (!onDriveMount) return;
+
+  const docPref = await doInvoke<DocPref | null>('get_doc_pref', { path: filePath });
+  if (docPref?.drive_detect_dismissed) return;
+
+  if (deps.mount) {
+    deps.mount(host, filePath);
+    return;
+  }
+  const { mountDriveDetectToast } = await import('./views/DriveDetectToast');
+  mountDriveDetectToast(host, {
+    filePath,
+    onDismiss: async (p) => {
+      // Read-merge-write: preserve the existing font-size override (the
+      // other field on DocPref) so a dismissal doesn't accidentally reset
+      // the user's per-document font size to its default.
+      const existing = (await doInvoke<DocPref | null>('get_doc_pref', { path: p })) ?? {
+        font_size_px: 14,
+        drive_detect_dismissed: false,
+      };
+      await doInvoke<void>('set_doc_pref', {
+        path: p,
+        pref: { ...existing, drive_detect_dismissed: true },
+      });
+    },
+    onConnected: async () => {
+      // Read-modify-write the full settings snapshot — set_settings takes
+      // the whole struct (see Ipc.setSettings in src/ipc.ts), not a patch.
+      const current = await doInvoke<Settings>('get_settings');
+      const next: Settings = {
+        ...current,
+        cloud: {
+          ...current.cloud,
+          drive: { ...current.cloud.drive, detect_toast_suppressed: true },
+        },
+      };
+      await doInvoke<void>('set_settings', { settings: next });
+    },
+  });
+}
 
 /**
  * Bootstrap the WebView shell.
@@ -144,6 +248,14 @@ export async function main(): Promise<void> {
     }).__mdv_setActive;
     if (setActive) setActive(outcome);
     if (workspace) await workspace.refresh();
+    // C2: after the document is mounted, evaluate the four-predicate gate
+    // and (if all four pass) prompt the user to connect to Drive. Fire-
+    // and-forget so a failure in the gate IPCs (`is_drive_desktop_path` or
+    // `get_doc_pref`) doesn't break the open flow itself — the toast is a
+    // suggestion, not a requirement.
+    void maybeShowDriveDetectToast(document.body, picked, await tauriIpc.getSettings()).catch(
+      (err) => console.warn('drive-detect toast gate failed:', err),
+    );
   }
   if (!settings.profile.display_name) {
     await mountProfileSetup(root, tauriIpc);
@@ -191,6 +303,15 @@ export async function main(): Promise<void> {
         }).__mdv_setActive;
         if (setActive) setActive(outcome);
         if (workspace) await workspace.refresh();
+        // Mirror the production runOpenFileFlow path (C2): evaluate the
+        // Drive-detect toast gate after the e2e harness opens a document
+        // so specs that exercise the toast surface see the same trigger
+        // logic as a real `+`-button open.
+        void maybeShowDriveDetectToast(
+          document.body,
+          absPath,
+          await tauriIpc.getSettings(),
+        ).catch((err) => console.warn('drive-detect toast gate failed:', err));
       },
       async importComments(tabId: string, incomingPath: string): Promise<void> {
         await tauriIpc.importComments({ tabId, incomingPath });

@@ -1170,3 +1170,52 @@ body {
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* C2: Drive-detect toast (wireframe 08).
+   Persistent (no auto-dismiss) status surface anchored to the bottom-right
+   corner of the viewport. Uses surface-2 + the standard text colour so the
+   light/dark theme variants both render legible chrome without per-theme
+   overrides. The connect button picks up the accent variable to match the
+   primary action style across the app. */
+.drive-toast {
+  position: fixed;
+  right: 12px;
+  bottom: 12px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 12px;
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+  z-index: 1000;
+  font-family: var(--sans);
+  font-size: 13px;
+  max-width: 480px;
+}
+.drive-toast .drive-toast-message {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.drive-toast button {
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  border-radius: 5px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text);
+  cursor: pointer;
+  font-family: var(--sans);
+  font-size: 12px;
+}
+.drive-toast .drive-toast-connect:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.drive-toast button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
