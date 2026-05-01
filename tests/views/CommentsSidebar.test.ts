@@ -245,4 +245,143 @@ describe('CommentsSidebar', () => {
       expect(onKeepOrphan).toHaveBeenCalledWith('t-k');
     });
   });
+
+  // B6: Pending pill — thread-level state derived from comments without a
+  // drive_id. We render once per thread (next to the header), not per
+  // comment, so a multi-comment thread with one pending comment shows a
+  // single pill. The pill is only rendered when the active backend is a
+  // Drive backend; pure local docs never have Drive ids and a "Pending"
+  // chip there would be nonsense.
+  describe('Pending pill', () => {
+    it('renders on a thread whose only comment lacks a drive_id (drive backend)', () => {
+      const root = document.createElement('div');
+      const t = thread({
+        id: 'L1',
+        comments: [
+          {
+            id: 'L1-c1',
+            author: 'Mira',
+            color: '#000',
+            body: 'first',
+            created_at: '2026-04-30T00:00:00Z',
+            drive_id: null,
+          },
+        ],
+      });
+      mountCommentsSidebar(root, ipcStub(), [t], {
+        showResolved: false,
+        backend: 'drive_desktop',
+      });
+      expect(root.querySelector('.thread .pending-pill')).toBeTruthy();
+    });
+
+    it('omits the pill once every comment has a drive_id', () => {
+      const root = document.createElement('div');
+      const t = thread({
+        id: 'L1',
+        comments: [
+          {
+            id: 'L1-c1',
+            author: 'Mira',
+            color: '#000',
+            body: 'first',
+            created_at: '2026-04-30T00:00:00Z',
+            drive_id: 'DID-1',
+          },
+        ],
+      });
+      mountCommentsSidebar(root, ipcStub(), [t], {
+        showResolved: false,
+        backend: 'drive_desktop',
+      });
+      expect(root.querySelector('.thread .pending-pill')).toBeFalsy();
+    });
+
+    it('omits the pill on Local-backend tabs even when drive_id is null', () => {
+      // Local docs never round-trip through Drive — a "Pending" chip there
+      // would be nonsense. The pill is opt-in via the backend prop.
+      const root = document.createElement('div');
+      const t = thread({
+        id: 'L1',
+        comments: [
+          {
+            id: 'L1-c1',
+            author: 'Mira',
+            color: '#000',
+            body: 'first',
+            created_at: '2026-04-30T00:00:00Z',
+            drive_id: null,
+          },
+        ],
+      });
+      mountCommentsSidebar(root, ipcStub(), [t], {
+        showResolved: false,
+        backend: 'local',
+      });
+      expect(root.querySelector('.thread .pending-pill')).toBeFalsy();
+    });
+
+    it('renders one pill per thread, not one per pending comment', () => {
+      const root = document.createElement('div');
+      const t = thread({
+        id: 'L1',
+        comments: [
+          {
+            id: 'L1-c1',
+            author: 'Mira',
+            color: '#000',
+            body: 'first',
+            created_at: '2026-04-30T00:00:00Z',
+            drive_id: null,
+          },
+          {
+            id: 'L1-c2',
+            author: 'Iris',
+            color: '#111',
+            body: 'reply',
+            created_at: '2026-04-30T00:01:00Z',
+            drive_id: null,
+          },
+        ],
+      });
+      mountCommentsSidebar(root, ipcStub(), [t], {
+        showResolved: false,
+        backend: 'drive_api',
+      });
+      const pills = root.querySelectorAll('.thread .pending-pill');
+      expect(pills.length).toBe(1);
+    });
+
+    it('renders the pill when at least one comment in the thread is pending (mixed)', () => {
+      // A thread where the parent comment landed but a reply hasn't yet
+      // is still "Pending" — the pill reflects thread-level state.
+      const root = document.createElement('div');
+      const t = thread({
+        id: 'L1',
+        comments: [
+          {
+            id: 'L1-c1',
+            author: 'Mira',
+            color: '#000',
+            body: 'parent',
+            created_at: '2026-04-30T00:00:00Z',
+            drive_id: 'DID-1',
+          },
+          {
+            id: 'L1-c2',
+            author: 'Iris',
+            color: '#111',
+            body: 'reply',
+            created_at: '2026-04-30T00:01:00Z',
+            drive_id: null,
+          },
+        ],
+      });
+      mountCommentsSidebar(root, ipcStub(), [t], {
+        showResolved: false,
+        backend: 'drive_desktop',
+      });
+      expect(root.querySelector('.thread .pending-pill')).toBeTruthy();
+    });
+  });
 });

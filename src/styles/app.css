@@ -648,6 +648,22 @@ body {
 [data-view='sidebar-comments'] [data-test='thread'].resolved {
   opacity: 0.55;
 }
+/* B6: Pending pill — sits inline next to the thread header for any thread
+ * with at least one comment lacking a Drive id. We reuse the warn palette
+ * (background + border) the existing offline status pill uses so the same
+ * "needs sync" affordance reads consistently across the status bar and
+ * the sidebar. The chip is small (10px font, 1-6px padding) so it doesn't
+ * crowd the thread author line on narrow sidebars. */
+[data-view='sidebar-comments'] [data-test='thread'] .pending-pill {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  font-size: 10px;
+  border-radius: 999px;
+  background: var(--warn-bg);
+  color: var(--warn-border);
+  vertical-align: middle;
+}
 [data-view='sidebar-comments'] [data-test='thread-author'] {
   font-size: 12px;
   color: var(--text-dim);

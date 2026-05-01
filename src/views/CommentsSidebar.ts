@@ -1,4 +1,5 @@
 import type { Ipc, Thread } from '../ipc';
+import type { TabBackend } from '../types-generated';
 import { mountOrphanComments } from './OrphanComments';
 import { mountThreadDetail } from './ThreadDetail';
 
@@ -33,6 +34,11 @@ export function mountCommentsSidebar(
      *  (the test-mode call sites for CommentsSidebar in unit tests don't
      *  always supply a tabId). */
     activeTabId?: string;
+    /** B6: backend for the active tab. When set to a Drive backend, threads
+     *  whose comments include any null `drive_id` render a "Pending" pill
+     *  next to the header. Local-backend tabs never render the pill (they
+     *  don't round-trip through Drive). */
+    backend?: TabBackend;
   },
 ): void {
   root.replaceChildren();
@@ -130,6 +136,27 @@ export function mountCommentsSidebar(
         new CustomEvent('thread-activate', { bubbles: true, detail: { id: t.id } }),
       );
     });
+
+    // B6: Pending pill — thread-level state. A thread is "Pending" when
+    // any of its comments lacks a Drive id (e.g. authored offline, queue
+    // not yet replayed). One pill per thread, not per comment, matches
+    // wireframe-06's affordance and avoids visually doubling up on a
+    // multi-reply thread that's all queued. Only emitted on Drive-backend
+    // tabs — Local docs never round-trip to Drive so a "Pending" badge
+    // there would be misleading. Inserted before the inner header/detail
+    // so the pill is reachable via `.thread .pending-pill` regardless of
+    // which sub-mount (summary vs ThreadDetail) follows.
+    if (
+      opts.backend &&
+      opts.backend !== 'local' &&
+      t.comments.some((c) => !c.drive_id)
+    ) {
+      const pill = document.createElement('span');
+      pill.className = 'pending-pill';
+      pill.setAttribute('data-test', 'pending-pill');
+      pill.textContent = 'Pending';
+      article.appendChild(pill);
+    }
 
     if (opts.activeTabId) {
       // Production mode: mount ThreadDetail inline. Detail already
