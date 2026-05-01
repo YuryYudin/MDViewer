@@ -116,6 +116,18 @@ export function mountDriveSettings(
     errorEl.textContent = '';
     errorEl.hidden = true;
   };
+  // Tauri IPC rejects with the raw `Err(String)` payload, NOT an Error
+  // object — `errMsg(e)` is undefined and the user sees
+  // "Failed to connect: undefined" if we don't normalize. Strings,
+  // Errors with .message, and other shapes all collapse to a useful
+  // string here.
+  const errMsg = (e: unknown): string => {
+    if (typeof e === 'string') return e;
+    if (e && typeof e === 'object' && 'message' in e && typeof (e as { message: unknown }).message === 'string') {
+      return (e as { message: string }).message;
+    }
+    return String(e);
+  };
   if (drive.connected) {
     actionBtn.className = 'danger';
     actionBtn.textContent = 'Disconnect';
@@ -128,7 +140,7 @@ export function mountDriveSettings(
           // The Rust handler emits `drive-status-changed`; the status pill
           // and any future re-render will pick up the new state from there.
         } catch (e) {
-          showError(`Failed to disconnect: ${(e as Error).message}`);
+          showError(`Failed to disconnect: ${errMsg(e)}`);
         }
       })();
     });
@@ -142,7 +154,7 @@ export function mountDriveSettings(
         try {
           await driveConnect();
         } catch (e) {
-          showError(`Failed to connect: ${(e as Error).message}`);
+          showError(`Failed to connect: ${errMsg(e)}`);
         }
       })();
     });

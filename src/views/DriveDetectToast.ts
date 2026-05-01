@@ -86,10 +86,35 @@ export function mountDriveDetectToast(
   dismissBtn.className = 'drive-toast-dismiss';
   toast.appendChild(dismissBtn);
 
+  // Bug fix (2025-05-01): connect failures (e.g. PLACEHOLDER client_id
+  // error) used to only console.warn — invisible to users without
+  // DevTools. Inline error element shows the rejection inline so the
+  // user knows why nothing happened.
+  const errorEl = document.createElement('div');
+  errorEl.className = 'drive-toast-error';
+  errorEl.dataset.testid = 'drive-toast-error';
+  errorEl.setAttribute('role', 'alert');
+  errorEl.style.color = 'var(--danger)';
+  errorEl.style.marginTop = '8px';
+  errorEl.style.fontSize = '13px';
+  errorEl.style.flexBasis = '100%';
+  errorEl.hidden = true;
+  toast.appendChild(errorEl);
+
   host.appendChild(toast);
 
   const close = (): void => {
     toast.remove();
+  };
+
+  // Tauri IPC rejects with the raw `Err(String)` payload, NOT an Error
+  // object. Normalize so we never display "undefined".
+  const errMsg = (e: unknown): string => {
+    if (typeof e === 'string') return e;
+    if (e && typeof e === 'object' && 'message' in e && typeof (e as { message: unknown }).message === 'string') {
+      return (e as { message: string }).message;
+    }
+    return String(e);
   };
 
   dismissBtn.addEventListener('click', () => {
@@ -110,6 +135,8 @@ export function mountDriveDetectToast(
     // pop a second browser tab).
     connectBtn.disabled = true;
     connectBtn.textContent = CONNECTING_LABEL;
+    errorEl.textContent = '';
+    errorEl.hidden = true;
     void (async () => {
       try {
         await driveConnect();
@@ -117,10 +144,12 @@ export function mountDriveDetectToast(
         close();
       } catch (err) {
         // Reset to the resting state so the user can retry. The toast
-        // stays mounted on failure — closing it would silently swallow
-        // the error since there's no other surface for it.
+        // stays mounted on failure and surfaces the error inline so the
+        // user knows what happened.
         connectBtn.disabled = false;
         connectBtn.textContent = CONNECT_LABEL;
+        errorEl.textContent = `Failed to connect: ${errMsg(err)}`;
+        errorEl.hidden = false;
         console.warn('drive-detect connect failed:', err);
       }
     })();
