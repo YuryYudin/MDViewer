@@ -1418,9 +1418,10 @@ impl Workspace {
 /// `Workspace::drive_status` accessor level (B6 will tighten this once the
 /// status fields include real online / pending counts).
 ///
-/// Cancellation: this loop currently runs until the process exits. B1 must
-/// thread a cancel signal (recommended: `tokio::sync::watch::Receiver<bool>`
-/// passed in alongside `app`) so drive_disconnect can stop polling cleanly.
+/// Cancellation: prefer `run_polling_loop_with_cancel` for new spawns. It wraps
+/// this loop in a tokio::select! against a watch::Receiver<bool>; drop the
+/// matching Sender (or send false) to terminate. drive_connect already does
+/// this — the bare run_polling_loop is kept only for future direct callers.
 pub async fn run_polling_loop(app: tauri::AppHandle) {
     use std::time::Duration;
     use tauri::Manager;

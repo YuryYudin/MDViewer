@@ -734,11 +734,7 @@ async fn drive_connect(
         drop(ws);
         mdviewer_lib::drive::queue::spawn_replay_all(app.clone(), api, queues, id_maps);
     }
-    // The change-polling loop (workspace::run_polling_loop) spawn is intentionally
-    // deferred — drive_connect already drains the offline queue above, and a future
-    // pass that wires polling needs a JoinHandle stash on Workspace so
-    // drive_disconnect can abort the task instead of leaving it running across
-    // reconnects.
+    // Polling task is now spawned inside Workspace::drive_connect (see workspace.rs::run_polling_loop_with_cancel). The cancel signal is stashed on Workspace.polling_cancel and drive_disconnect drops it to terminate the loop.
     Ok(st)
 }
 
