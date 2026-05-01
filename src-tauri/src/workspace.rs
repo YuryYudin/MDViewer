@@ -903,6 +903,29 @@ pub enum ConflictSource {
     DriveDesktopWatcher,
 }
 
+impl ConflictSource {
+    /// Canonical wire-format string for the Drive conflict source. The frontend
+    /// `Conflict.ts` view's `DriveConflictSource` TS literal type matches these
+    /// strings exactly — the diff-merge banner copy switch keys off them.
+    ///
+    /// We deliberately avoid `format!("{:?}", source)` (which Phase B's first
+    /// implementation review flagged as fragile): a future `#[derive(Debug)]`
+    /// rename would silently break the wire format. The `to_wire` indirection
+    /// makes the contract explicit and unit-testable in this same module.
+    pub fn to_wire(&self) -> &'static str {
+        match self {
+            Self::DriveApiEtag => "DriveApiEtag",
+            Self::DriveDesktopWatcher => "DriveDesktopWatcher",
+        }
+    }
+}
+
+impl std::fmt::Display for ConflictSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.to_wire())
+    }
+}
+
 /// Test helpers exposed at `pub` (rather than `#[cfg(test)]`) so the
 /// integration test crates under `src-tauri/tests/` — which are separate
 /// crates from `mdviewer_lib` and so don't see `cfg(test)` items — can
@@ -1060,12 +1083,15 @@ pub async fn run_polling_loop(app: tauri::AppHandle) {
         // Cap concurrent in-flight requests at 8 so a workspace with many
         // Drive tabs doesn't trip Drive's per-second quota.
         //
-        // TODO(B6): for the semaphore to provide real concurrency, B6 must
-        // snapshot the per-file inputs (file_id, etag, last_fetched), DROP
-        // the workspace lock, then do the reqwest call, then re-acquire the
-        // lock to merge results into id_maps/cache_meta. Holding state.lock()
-        // across drive_poll_one (as the body below does today) would
-        // serialize all 8 permits to 1.
+        // CURRENT LIMITATION: the body below holds the workspace lock across
+        // `drive_poll_one`, which serializes all 8 permits down to 1. The
+        // semaphore is kept (rather than removed) so that a future restructure
+        // — snapshot per-file inputs (file_id, etag, last_fetched), drop the
+        // lock, do the reqwest call, re-acquire to merge results into
+        // id_maps/cache_meta — gets the cap "for free" without re-introducing
+        // the bound. Treat the 8-permit cap as documenting future intent: it
+        // *will* bound concurrency once the lock pattern is lifted; today it
+        // bounds future-concurrent calls only.
         let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(8));
         let mut tasks = Vec::new();
         for fid in drive_tabs {
@@ -1150,5 +1176,29 @@ pub async fn run_polling_loop(app: tauri::AppHandle) {
             let _ = t.await;
         }
         tokio::time::sleep(interval).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ConflictSource;
+
+    /// Phase B integration review fix #5: the diff-merge view's banner-copy
+    /// switch keys off these literal strings. A future variant rename or a
+    /// derived-Debug shape change must NOT change the wire format silently —
+    /// this assertion is what makes that contract checkable.
+    #[test]
+    fn conflict_source_wire_format_is_stable() {
+        assert_eq!(ConflictSource::DriveApiEtag.to_wire(), "DriveApiEtag");
+        assert_eq!(
+            ConflictSource::DriveDesktopWatcher.to_wire(),
+            "DriveDesktopWatcher"
+        );
+        // Display impl must agree with to_wire so callers can use either spelling.
+        assert_eq!(format!("{}", ConflictSource::DriveApiEtag), "DriveApiEtag");
+        assert_eq!(
+            format!("{}", ConflictSource::DriveDesktopWatcher),
+            "DriveDesktopWatcher"
+        );
     }
 }

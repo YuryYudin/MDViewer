@@ -299,6 +299,7 @@ fn render_markdown(source: String) -> RenderResult {
 fn save_document(
     state: State<'_, Ws>,
     watcher: State<'_, Mutex<Watcher>>,
+    app: tauri::AppHandle,
     tab_id: String,
     body: String,
 ) -> Result<mdviewer_lib::document::SaveOutcome, String> {
@@ -315,6 +316,27 @@ fn save_document(
             .tab(&tab_id)
             .ok_or_else(|| format!("tab not found: {tab_id}"))?;
         (tab.backend, tab.path.clone(), tab.etag.clone())
+    };
+
+    // Phase B implementation review fix #1: when a Drive save returns
+    // SaveOutcome::Conflict, *also* fan out the diff payload as a
+    // `show-conflict` Tauri event so Workspace.ts mounts the diff-merge view
+    // even when the calling TS code (Edit.ts autosave) discards the
+    // outcome. The event mirrors the open_document conflict event shape but
+    // adds a `drive_source` discriminator so wireframe-07's banner picks
+    // the right copy. The handler still returns SaveOutcome to the caller
+    // so Conflict.ts (Finish merge → saveDocument) can keep using it.
+    let emit_drive_conflict = |local: &[u8], remote: &[u8], source: &mdviewer_lib::workspace::ConflictSource| {
+        let _ = app.emit(
+            "show-conflict",
+            serde_json::json!({
+                "tab_id": tab_id,
+                "path": tab_path,
+                "local": String::from_utf8_lossy(local),
+                "incoming": String::from_utf8_lossy(remote),
+                "drive_source": source.to_wire(),
+            }),
+        );
     };
 
     match tab_backend {
@@ -362,10 +384,16 @@ fn save_document(
                     Ok(SaveOutcome::Ok { etag: Some(new_etag) })
                 }
                 Err(SaveError::DriveConflict { local, remote, source }) => {
+                    // Drop the lock before emitting — the listener may
+                    // re-enter via setActive → ipc.diffMd which itself
+                    // doesn't take Workspace, but there's no benefit to
+                    // holding it during the round-trip.
+                    drop(ws);
+                    emit_drive_conflict(&local, &remote, &source);
                     Ok(SaveOutcome::Conflict {
                         local: String::from_utf8_lossy(&local).into_owned(),
                         remote: String::from_utf8_lossy(&remote).into_owned(),
-                        drive_source: Some(format!("{:?}", source)),
+                        drive_source: Some(source.to_wire().to_string()),
                     })
                 }
                 Err(e) => Err(format!("{:?}", e)),
@@ -387,10 +415,12 @@ fn save_document(
             match ws.save_drive_desktop_tab(&tab_id, body.as_bytes()) {
                 Ok(()) => Ok(SaveOutcome::Ok { etag: None }),
                 Err(SaveError::DriveConflict { local, remote, source }) => {
+                    drop(ws);
+                    emit_drive_conflict(&local, &remote, &source);
                     Ok(SaveOutcome::Conflict {
                         local: String::from_utf8_lossy(&local).into_owned(),
                         remote: String::from_utf8_lossy(&remote).into_owned(),
-                        drive_source: Some(format!("{:?}", source)),
+                        drive_source: Some(source.to_wire().to_string()),
                     })
                 }
                 Err(e) => Err(format!("{:?}", e)),
@@ -687,10 +717,11 @@ async fn drive_connect(
         drop(ws);
         mdviewer_lib::drive::queue::spawn_replay_all(app.clone(), api, queues, id_maps);
     }
-    // TODO(B1): on first successful connect, spawn run_polling_loop:
-    //   tauri::async_runtime::spawn(run_polling_loop(app.clone()));
-    //   Hold the JoinHandle in Workspace.polling_task: Option<JoinHandle<()>>
-    //   so drive_disconnect can abort it via tokio::sync::watch or handle.abort().
+    // The change-polling loop (workspace::run_polling_loop) spawn is intentionally
+    // deferred — drive_connect already drains the offline queue above, and a future
+    // pass that wires polling needs a JoinHandle stash on Workspace so
+    // drive_disconnect can abort the task instead of leaving it running across
+    // reconnects.
     Ok(st)
 }
 
@@ -714,13 +745,21 @@ fn drive_status(state: State<'_, Ws>) -> DriveStatus {
 #[tauri::command]
 async fn drive_open_url(
     state: State<'_, Ws>,
+    app: tauri::AppHandle,
     url: String,
 ) -> Result<TabSummary, String> {
-    state
+    let summary = state
         .lock()
         .map_err(|e| e.to_string())?
         .drive_open_url(&url)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    // Phase B implementation review fix #3: emit `workspace-changed` so
+    // main.ts's tab list / document body refresh path runs after a Drive
+    // tab opens. Mirrors the pattern used by `open_document` (and the
+    // single-instance / RunEvent::Opened paths) — without this, the new
+    // tab is created on the Rust side but the WebView never repaints.
+    let _ = app.emit("workspace-changed", ());
+    Ok(summary)
 }
 
 #[tauri::command]

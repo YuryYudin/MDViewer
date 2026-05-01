@@ -276,6 +276,87 @@ describe('Workspace', () => {
     expect(root.querySelector('[data-view="conflict"]')).toBeTruthy();
   });
 
+  // Phase B implementation review fix #4: end-to-end coverage for the
+  // save → SaveOutcome::Conflict → show-conflict event → Conflict view +
+  // wireframe-07 banner flow. Catches regressions in either fix #1 (Rust
+  // emits the event) or fix #2 (TS threads drive_source through
+  // pendingConflict to mountConflict).
+  it('routes a DriveApi save-conflict event to the Conflict view with the API banner', async () => {
+    const root = document.createElement('div');
+    await mountWorkspace(root, makeIpc(['t-drive']));
+    expect(tauriListeners['show-conflict']?.length ?? 0).toBeGreaterThan(0);
+
+    // The Rust save_document handler emits this exact payload shape when
+    // SaveOutcome::Conflict carries source: DriveApiEtag (Phase B fix #1).
+    tauriListeners['show-conflict']![0]!({
+      payload: {
+        tab_id: 't-drive',
+        path: 'drive-api://FID',
+        local: 'my edits',
+        incoming: 'remote edits',
+        drive_source: 'DriveApiEtag',
+      },
+    });
+    await new Promise((r) => setTimeout(r, 5));
+
+    expect(root.querySelector('[data-view="conflict"]')).toBeTruthy();
+    const banner = root.querySelector('.drive-banner');
+    expect(banner).toBeTruthy();
+    // Wireframe-07 API banner copy ("Someone else updated this Drive file").
+    expect(banner?.textContent).toMatch(/Drive file/i);
+    expect(banner?.textContent).toMatch(/Someone else/i);
+    // The data attribute should round-trip the wire string so the
+    // banner-copy switch can be exercised by selector in fidelity tests.
+    expect(banner?.getAttribute('data-drive-source')).toBe('DriveApiEtag');
+  });
+
+  it('routes a DriveDesktop watcher conflict event to the Conflict view with the sync banner', async () => {
+    const root = document.createElement('div');
+    await mountWorkspace(root, makeIpc(['t-desktop']));
+
+    tauriListeners['show-conflict']![0]!({
+      payload: {
+        tab_id: 't-desktop',
+        path: '/Users/me/Drive/notes.md',
+        local: 'my edits',
+        incoming: 'changed externally',
+        drive_source: 'DriveDesktopWatcher',
+      },
+    });
+    await new Promise((r) => setTimeout(r, 5));
+
+    expect(root.querySelector('[data-view="conflict"]')).toBeTruthy();
+    const banner = root.querySelector('.drive-banner');
+    expect(banner).toBeTruthy();
+    // Wireframe-07 sync-client copy must reference Drive Desktop + disk so a
+    // user with both flavors knows which client touched the file.
+    expect(banner?.textContent).toMatch(/Drive Desktop/i);
+    expect(banner?.textContent).toMatch(/disk/i);
+    expect(banner?.getAttribute('data-drive-source')).toBe('DriveDesktopWatcher');
+  });
+
+  it('omits the Drive banner when show-conflict carries no drive_source', async () => {
+    // Local-backend conflicts (mtime mismatch from open_document) emit the
+    // same event without a drive_source field — Conflict.ts must NOT
+    // render the Drive-specific copy in that case.
+    const root = document.createElement('div');
+    await mountWorkspace(root, makeIpc(['t-1']));
+
+    tauriListeners['show-conflict']![0]!({
+      payload: {
+        tab_id: 't-1',
+        path: '/tmp/notes.md',
+        local: 'l',
+        incoming: 'r',
+        // drive_source intentionally omitted; older event payload shape.
+      },
+    });
+    await new Promise((r) => setTimeout(r, 5));
+
+    expect(root.querySelector('[data-view="conflict"]')).toBeTruthy();
+    expect(root.querySelector('.drive-banner')).toBeNull();
+  });
+
   it('forwards external-change reload events for the active tab into a refresh', async () => {
     const root = document.createElement('div');
     let ids: string[] = ['t-1'];

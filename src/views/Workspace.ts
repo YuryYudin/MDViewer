@@ -3,7 +3,7 @@ import { mountStartPage } from './StartPage';
 import { mountTabBar } from './TabBar';
 import { mountDocument } from './Document';
 import { mountCommentsSidebar } from './CommentsSidebar';
-import { mountConflict } from './Conflict';
+import { mountConflict, type DriveConflictSource } from './Conflict';
 import { mountShareDialog } from './ShareDialog';
 import { mountDriveStatus } from './DriveStatus';
 
@@ -171,7 +171,21 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
   // C2: when the most recent OpenOutcome was a Conflict, refresh() routes
   // to Conflict.ts instead of Document.ts. Cleared when a Document outcome
   // arrives or when the user finishes the merge.
-  let pendingConflict: { tabId: string; path: string; local: string; incoming: string } | null = null;
+  //
+  // Phase B implementation review fix #2: `driveSource` is the wireframe-07
+  // banner discriminator — preserve it through pendingConflict so the
+  // mountConflict call can pass it on. Local-backend conflicts (open_document
+  // detected divergence on a non-Drive tab) leave it `null`, which Conflict.ts
+  // treats as "omit the Drive banner".
+  let pendingConflict:
+    | {
+        tabId: string;
+        path: string;
+        local: string;
+        incoming: string;
+        driveSource?: DriveConflictSource | null;
+      }
+    | null = null;
   let settings: Settings | null = null;
 
   // Font-size feature (A9): the most recent per-doc override for the active
@@ -408,7 +422,15 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
     if (pendingConflict) {
       body.replaceChildren();
       const conflictArgs = pendingConflict;
-      const handle = await mountConflict(body, ipc, conflictArgs);
+      const handle = await mountConflict(body, ipc, {
+        tabId: conflictArgs.tabId,
+        path: conflictArgs.path,
+        local: conflictArgs.local,
+        incoming: conflictArgs.incoming,
+        // Phase B fix #2: thread the Drive context through so the
+        // wireframe-07 banner picks the right copy.
+        driveSource: conflictArgs.driveSource ?? null,
+      });
       void handle;
       // Clear the pending state when the user finishes the merge so a
       // subsequent refresh routes to Document.
@@ -614,8 +636,15 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
    * Public hook used by the StartPage (and the show-conflict event) when
    * openDocument resolves so the Workspace can cache the freshly-loaded
    * payload (Document) or queue the divergence handoff (Conflict).
+   *
+   * Accepts an enriched conflict outcome — the show-conflict Tauri event
+   * (Phase B fix #1+#2) carries `driveSource` for save-time conflicts; the
+   * open_document conflict path (Local mtime mismatch) leaves it undefined,
+   * which Conflict.ts treats as "omit the Drive banner".
    */
-  function setActive(outcome: OpenOutcome): void {
+  function setActive(
+    outcome: OpenOutcome | (Extract<OpenOutcome, { kind: 'conflict' }> & { driveSource?: DriveConflictSource | null }),
+  ): void {
     if (outcome.kind === 'document') {
       activeTab.tabId = outcome.tab_id;
       activeTab.path = outcome.path;
@@ -629,6 +658,8 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
         path: outcome.path,
         local: outcome.local,
         incoming: outcome.incoming,
+        driveSource:
+          'driveSource' in outcome ? (outcome.driveSource ?? null) : null,
       };
     }
   }
@@ -664,15 +695,37 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
   // open_document detects divergence. This catches the case where the
   // watcher (B2) fires "external-change" while a tab is already open and
   // the IPC handler re-runs open_document under the covers.
+  //
+  // Phase B fix #1+#2: save_document also emits show-conflict for Drive
+  // save conflicts, with `drive_source` populated. Coerce the wire string
+  // ("DriveApiEtag" | "DriveDesktopWatcher") into the TS literal type the
+  // Conflict view expects; an unrecognized string falls back to `null` so
+  // the banner is suppressed rather than silently mislabeling.
+  const COERCE_DRIVE_SOURCE = (
+    s: string | null | undefined,
+  ): DriveConflictSource | null => {
+    if (s === 'DriveApiEtag' || s === 'DriveDesktopWatcher') return s;
+    return null;
+  };
   try {
     const tauriEvent = await import('@tauri-apps/api/event');
-    await tauriEvent.listen<{ tab_id: string; path: string; local: string; incoming: string }>(
-      'show-conflict',
-      (ev) => {
-        setActive({ kind: 'conflict', ...ev.payload });
-        void refresh();
-      },
-    );
+    await tauriEvent.listen<{
+      tab_id: string;
+      path: string;
+      local: string;
+      incoming: string;
+      drive_source?: string | null;
+    }>('show-conflict', (ev) => {
+      setActive({
+        kind: 'conflict',
+        tab_id: ev.payload.tab_id,
+        path: ev.payload.path,
+        local: ev.payload.local,
+        incoming: ev.payload.incoming,
+        driveSource: COERCE_DRIVE_SOURCE(ev.payload.drive_source),
+      });
+      void refresh();
+    });
   } catch {
     // No Tauri runtime in jsdom — same fallback as the external-change
     // listener above. The setActive hook is still callable from tests.
