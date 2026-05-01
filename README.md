@@ -164,6 +164,46 @@ Phase-1 plain JSON sidecars (`schema_version: 1`) are still readable; the migrat
 
 ---
 
+## Connecting Google Drive
+
+MDViewer can sync comments and document edits with files stored in Google Drive. Two-collaborator latency is sub-10 seconds while either window is focused, and offline comments queue and replay on reconnect.
+
+### Personal Google account (default)
+
+1. Open **Settings → Drive**.
+2. Click **Connect to Drive…**. Your default browser opens a Google sign-in / consent page.
+3. Approve the requested scopes (`drive.file`, `openid`, `email`).
+4. The Drive section flips to the connected state, showing the email of the account you signed in with.
+
+OAuth refresh tokens are encrypted at rest in an OS-managed keyring (Keychain on macOS, Credential Locker on Windows, Secret Service on Linux). MDViewer requests only `drive.file` access — Google does not grant the app any visibility into files you don't open through MDViewer or the Drive web picker.
+
+### Workspace / corporate accounts (Bring-Your-Own client ID)
+
+If your organization restricts third-party OAuth apps, you can route MDViewer through your own Google Cloud Console OAuth client:
+
+1. In Google Cloud Console, create a new OAuth 2.0 Client ID for an **iOS / Desktop application** under your Workspace tenant. (No client secret is needed — MDViewer uses PKCE.)
+2. Add the scope `https://www.googleapis.com/auth/drive.file`, plus `openid` and `email`, to the consent screen.
+3. In MDViewer, open **Settings → Drive → Advanced** and paste the client ID into the **Custom OAuth client ID** field.
+4. Click **Connect to Drive…**. The browser flow now uses your client ID and your tenant's consent rules.
+
+If your tenant is configured as **Internal** in Google Cloud Console, the consent screen will not show the "unverified app" warning that External / unpublished apps display. MDViewer cannot suppress that warning for External configurations — that's a property of your Cloud project, not the app.
+
+### What syncs
+
+- **Comments** — bidirectional with Drive's native comments. Visible in Drive's web UI; new comments from either side appear within ~5–10 seconds while the window is focused.
+- **Document edits on Drive Desktop files** — saved through Drive Desktop's normal sync. If the file changes on disk while you're editing, MDViewer's save action surfaces a conflict view rather than overwriting silently.
+- **Document edits on URL-pasted Drive files** — uploaded via the Drive API with ETag preconditions. Concurrent edits from another tool surface the same conflict view.
+
+### What doesn't (yet)
+
+- Real-time collaborative document editing (live cursors / character-by-character sync).
+- Linux Drive Desktop detection — use the URL-paste flow for files on third-party Linux Drive mounts.
+- Multiple Google accounts in one app instance.
+- Avatar photos — collaborators are shown as initials only.
+- Sharing a file from MDViewer — manage sharing in the Drive web UI.
+
+---
+
 ## Architecture
 
 ### Rust ↔ TypeScript boundary
