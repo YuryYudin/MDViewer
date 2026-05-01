@@ -45,6 +45,14 @@
   --user-teal: #2b8a8a;
   --user-rose: #b54b6e;
 
+  /* C1: collaborator-chip palette. Used by the sidebar-header CollabChip
+   * (drive_get_collaborators avatars) and the per-thread author avatar.
+   * Initials-only — we never request photoLink because that would require
+   * drive.readonly scope. Surface-2 + text-dim keeps the chip readable
+   * without competing with the more prominent user-color comment chips. */
+  --chip-avatar-bg: var(--surface-2);
+  --chip-avatar-fg: var(--text-dim);
+
   /* Type */
   --font-size: 14px;
   /* Per-document font size. Defaults to chrome --font-size; Workspace

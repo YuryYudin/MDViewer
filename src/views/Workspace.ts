@@ -1,11 +1,54 @@
-import type { DocPref, Ipc, OpenOutcome, Settings, Thread } from '../ipc';
+import type {
+  DocPref,
+  DriveCollaborator,
+  Ipc,
+  OpenOutcome,
+  Settings,
+  TabBackend,
+  Thread,
+} from '../ipc';
+import { driveGetCollaborators, driveResolvePath } from '../ipc';
 import { mountStartPage } from './StartPage';
 import { mountTabBar } from './TabBar';
 import { mountDocument } from './Document';
 import { mountCommentsSidebar } from './CommentsSidebar';
+import { mountCollabChip } from './CollabChip';
 import { mountConflict, type DriveConflictSource } from './Conflict';
 import { mountShareDialog } from './ShareDialog';
 import { mountDriveStatus } from './DriveStatus';
+
+/**
+ * C1: synthetic prefix used by `drive_open_url` for DriveApi tabs whose
+ * "path" is `drive-api://<file_id>` rather than an on-disk path. Used
+ * here to recover the file_id without an extra IPC round-trip.
+ */
+const DRIVE_API_PREFIX = 'drive-api://';
+
+/**
+ * C1: best-effort detection of whether the active tab is Drive-backed and,
+ * if so, which `file_id` to ask `drive_get_collaborators` about. Returns
+ * `null` when the tab is Local (or when DriveDesktop resolution rejects —
+ * Drive disconnected, path outside any known mount, etc.). The TabBackend
+ * label is approximate (we don't go through the Rust-side
+ * `Tab::compute_backend` lookup); this is intentionally TS-only per the
+ * task scope. Workspace consumers only need a Drive-vs-Local discriminator
+ * plus the file_id.
+ */
+async function detectDriveBacking(
+  path: string | undefined,
+): Promise<{ backend: Exclude<TabBackend, 'local'>; fileId: string } | null> {
+  if (!path) return null;
+  if (path.startsWith(DRIVE_API_PREFIX)) {
+    const fileId = path.slice(DRIVE_API_PREFIX.length);
+    return fileId ? { backend: 'drive_api', fileId } : null;
+  }
+  try {
+    const fileId = await driveResolvePath(path);
+    return fileId ? { backend: 'drive_desktop', fileId } : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Per-document font-size bounds. Match the Settings panel slider's range
@@ -527,6 +570,56 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
     });
     body.appendChild(showSidebarBtn);
 
+    // C1: Drive backend + collaborator cache for the active tab. We fetch
+    // the collaborator list once per `refresh()` (Drive-backed tabs only)
+    // and pass it BOTH to mountCollabChip (sidebar header avatars) AND to
+    // mountCommentsSidebar (per-thread author avatars). driveBacking is
+    // null on Local tabs (or when DriveDesktop resolution fails — Drive
+    // disconnected, path outside any known mount), in which case neither
+    // surface renders an avatar.
+    const tab = activeTab;
+    const driveBacking = await detectDriveBacking(tab.path);
+    let collaborators: DriveCollaborator[] = [];
+    if (driveBacking) {
+      try {
+        collaborators = await driveGetCollaborators(driveBacking.fileId);
+      } catch {
+        // Best-effort: an offline / scope-mismatch / 5xx response shouldn't
+        // wedge the sidebar render. The chip stays empty (its own loader
+        // path will retry on the next refresh).
+        collaborators = [];
+      }
+    }
+
+    // Sidebar mounter — bundles the chip + comments mount so every refresh
+    // re-installs both atomically. Without this, the chip's host would
+    // disappear on every threads-changed re-render of the sidebar.
+    const remountSidebar = (threads: Thread[], orphans: Thread[]): void => {
+      mountCommentsSidebar(sidebarRoot, ipc, threads, {
+        showResolved: settings?.comments.show_resolved ?? false,
+        orphans,
+        activeTabId: tab.tabId ?? state.activeId ?? undefined,
+        backend: driveBacking?.backend,
+        collaborators,
+      });
+      if (driveBacking) {
+        const sidebarHeader = sidebarRoot.querySelector<HTMLElement>(
+          '[data-region="sidebar-header"]',
+        );
+        if (sidebarHeader && !sidebarHeader.querySelector('.collab-chip')) {
+          const chipHost = document.createElement('div');
+          sidebarHeader.appendChild(chipHost);
+          // Pass a loader that returns the already-cached list so the chip
+          // never duplicates the IPC call. This keeps quota usage to one
+          // drive_get_collaborators per refresh().
+          mountCollabChip(chipHost, {
+            fileId: driveBacking.fileId,
+            collaboratorsLoader: async () => collaborators,
+          });
+        }
+      }
+    };
+
     // SelectionPopover dispatches `thread-created` on the document root
     // when the user posts a new comment; ThreadDetail dispatches
     // `thread-replied` and `thread-resolved`. All three need the same
@@ -540,11 +633,7 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
         const fresh = await ipc.listThreads(tabId);
         activeTab.threads = fresh;
         await view.refreshHighlights();
-        mountCommentsSidebar(sidebarRoot, ipc, fresh, {
-          showResolved: settings?.comments.show_resolved ?? false,
-          orphans: view.orphanThreads(),
-          activeTabId: tabId,
-        });
+        remountSidebar(fresh, view.orphanThreads());
       })();
     };
     docRoot.addEventListener('thread-created', () => {
@@ -557,7 +646,6 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
     sidebarRoot.addEventListener('thread-replied', refreshThreads);
     sidebarRoot.addEventListener('thread-resolved', refreshThreads);
 
-    const tab = activeTab;
     const view = await mountDocument(docRoot, ipc, {
       tabId: tab.tabId ?? state.activeId!,
       html: tab.html ?? '',
@@ -568,18 +656,10 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
       onOrphansChanged: (orphans) => {
         // Re-mount sidebar when orphan list changes so the orphan
         // section reflects the latest reattachment outcome.
-        mountCommentsSidebar(sidebarRoot, ipc, tab.threads ?? [], {
-          showResolved: settings?.comments.show_resolved ?? false,
-          orphans,
-          activeTabId: tab.tabId ?? state.activeId ?? undefined,
-        });
+        remountSidebar(tab.threads ?? [], orphans);
       },
     });
-    mountCommentsSidebar(sidebarRoot, ipc, tab.threads ?? [], {
-      showResolved: settings?.comments.show_resolved ?? false,
-      orphans: view.orphanThreads(),
-      activeTabId: tab.tabId ?? state.activeId ?? undefined,
-    });
+    remountSidebar(tab.threads ?? [], view.orphanThreads());
 
     // Tab-activation font-size hook (A9). Untitled / scratch tabs (no
     // on-disk path) skip the IPC entirely; they get the global default

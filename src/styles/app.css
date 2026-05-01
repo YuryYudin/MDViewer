@@ -664,6 +664,53 @@ body {
   color: var(--warn-border);
   vertical-align: middle;
 }
+/* C1: Collaborator chip — sits in the sidebar header for Drive-backed
+ * tabs, rendering one initials avatar per collaborator (cap 5, then a
+ * `+N` overflow pill). Initials-only because we ship drive.file scope
+ * only; photoLink would require drive.readonly. The host element
+ * (`.collab-chip`) is added by mountCollabChip; the inline-flex + gap
+ * keeps the avatars tight against each other without manual margins. */
+.collab-chip {
+  display: inline-flex;
+  gap: 2px;
+  align-items: center;
+}
+.collab-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--chip-avatar-bg);
+  color: var(--chip-avatar-fg);
+  font-size: 10px;
+  font-weight: 600;
+}
+.collab-overflow {
+  font-size: 11px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--chip-avatar-bg);
+  color: var(--chip-avatar-fg);
+}
+/* C1: per-thread author avatar — same palette as the header chip but
+ * smaller (18px) so it sits inline with the thread author/body without
+ * crowding the row. Rendered only on Drive-backed tabs where the
+ * collaborator list is non-empty. */
+.thread .author-avatar {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  margin-right: 4px;
+  border-radius: 50%;
+  background: var(--chip-avatar-bg);
+  color: var(--chip-avatar-fg);
+  font-size: 9px;
+  text-align: center;
+  line-height: 18px;
+  font-weight: 600;
+}
 [data-view='sidebar-comments'] [data-test='thread-author'] {
   font-size: 12px;
   color: var(--text-dim);
