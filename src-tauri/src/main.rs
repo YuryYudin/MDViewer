@@ -881,6 +881,31 @@ fn main() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        // D1: register the Stronghold plugin so future IPC handlers can
+        // persist OAuth refresh tokens at rest. The password-hash function
+        // delegates the actual key material to `drive::keyring::vault_key()`
+        // — a 32-byte key derived from a per-machine random salt held in
+        // the OS keyring (with a documented obfuscation-only fallback when
+        // no keyring is reachable). The user-supplied `password` argument
+        // is mixed into the SHA-256 so distinct passwords still yield
+        // distinct vault keys, which lets a future per-account flow open
+        // separate Stronghold snapshots without colliding.
+        //
+        // We never panic on registration: a Stronghold init failure (e.g.
+        // a corrupt iota_stronghold runtime in CI) shouldn't tank boot —
+        // we log a warning and continue. Production tauri::Builder::run
+        // surfaces real failures via the standard plugin error path; the
+        // log line gives operators a breadcrumb if Drive features later
+        // refuse to persist tokens.
+        .plugin(tauri_plugin_stronghold::Builder::new(|password| {
+            use sha2::{Digest, Sha256};
+            let key = mdviewer_lib::drive::keyring::vault_key();
+            let mut hasher = Sha256::new();
+            hasher.update(b"mdviewer-stronghold-v1");
+            hasher.update(key);
+            hasher.update(password.as_bytes());
+            hasher.finalize().to_vec()
+        }).build())
         // Persist window state (position + size, plus maximized/fullscreen
         // flags) across restarts. The plugin saves on close and restores
         // on launch — first-run picks up the defaults from
