@@ -707,22 +707,40 @@ async fn drive_connect(
     state: State<'_, Ws>,
     app: tauri::AppHandle,
 ) -> Result<DriveStatus, String> {
+    // Bug-2 fix (lock-across-blocking-IO): drop the workspace lock around
+    // the up-to-5-minute OAuth flow. Previously this handler held
+    // `state.lock()` across `Workspace::drive_connect` which calls the
+    // blocking `auth::run_loopback_flow` — every other IPC stalled until
+    // the user either consented or the timeout fired, freezing the app.
+    //
+    // Three-phase pattern: snapshot under lock → OAuth lock-free → apply
+    // under re-acquired lock.
+    let prep = {
+        let ws = state.lock().map_err(|e| e.to_string())?;
+        // C5 kill-switch: short-circuit before any OAuth round-trip.
+        if drive_kill_switch_active(&ws.settings_store().get()) {
+            return Err(DRIVE_KILL_SWITCH_MSG.to_string());
+        }
+        ws.drive_connect_prep()
+    }; // workspace lock released
+
+    // Bug-1 surface: drive_connect_oauth returns a clear error when the
+    // resolved client_id is the PLACEHOLDER built into the binary and the
+    // user hasn't supplied a BYO override.
+    let outcome = mdviewer_lib::workspace::drive_connect_oauth(
+        prep,
+        mdviewer_lib::workspace::default_open_url,
+    )
+    .map_err(|e| e.to_string())?;
+
     let mut ws = state.lock().map_err(|e| e.to_string())?;
-    // C5 kill-switch: short-circuit before any OAuth round-trip so the
-    // user-facing opt-out is honored. The settings snapshot is the source
-    // of truth — `serde(default)` round-trip preservation is pinned by
-    // `drive_feature_flag.rs::explicit_user_override_to_false_is_preserved...`.
-    if drive_kill_switch_active(&ws.settings_store().get()) {
-        return Err(DRIVE_KILL_SWITCH_MSG.to_string());
-    }
-    ws.drive_connect(&app).map_err(|e| e.to_string())?;
+    ws.drive_connect_apply(&app, outcome).map_err(|e| e.to_string())?;
     let st = ws.drive_status();
     let _ = app.emit("drive-status-changed", &st);
     // B6: snapshot the per-file_id queue list + id_map handles + the
     // drive_api Arc under the existing lock, then drop the lock and spawn
     // an async fan-out that drains every queue without holding Workspace
-    // through the API roundtrips. A long queue (offline session of an hour)
-    // would otherwise block every other IPC call until it finished.
+    // through the API roundtrips.
     if let Some(api) = ws.drive_api_arc() {
         let cfg = ws.config_dir().to_path_buf();
         let queues: Vec<(String, std::path::PathBuf)> = ws
@@ -734,7 +752,6 @@ async fn drive_connect(
         drop(ws);
         mdviewer_lib::drive::queue::spawn_replay_all(app.clone(), api, queues, id_maps);
     }
-    // Polling task is now spawned inside Workspace::drive_connect (see workspace.rs::run_polling_loop_with_cancel). The cancel signal is stashed on Workspace.polling_cancel and drive_disconnect drops it to terminate the loop.
     Ok(st)
 }
 

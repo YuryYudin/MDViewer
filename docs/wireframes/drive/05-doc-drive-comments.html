@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>05 · Document with Drive comments</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<p class="wf-note"><a href="index.html">← All wireframes</a></p>
+<h1 class="wf-title">05 · Document with Drive backend</h1>
+<p class="wf-note">
+  Same Workspace shell as today. Three new pieces highlighted:
+  (a) collaborator chip in the sidebar header,
+  (b) "Drive · synced 4 s ago" pill in the status bar,
+  (c) author-color avatars on threads (matches Drive's per-user color).
+</p>
+
+<div class="app">
+  <div class="titlebar">
+    <span class="traffic"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
+    <span style="font-size: 12px;">RFC-031.md — MDViewer</span>
+  </div>
+
+  <div class="tabbar">
+    <div class="tab active">RFC-031.md <span class="x">×</span></div>
+    <div class="tab">+ </div>
+  </div>
+
+  <div class="body-area">
+    <div class="doc-pane">
+      <h2>RFC-031: Per-tenant Rate Limiting</h2>
+      <p style="color: var(--text-dim); font-size: 12px;">
+        <em>Status: draft · Author: Priya · Updated 2026-04-29</em>
+      </p>
+      <h2 style="font-size: 14px;">Summary</h2>
+      <p>
+        Today the gateway enforces a single global request budget. As we
+        onboard larger customers, <mark data-anchor="t1">a single tenant's
+        traffic spike can degrade response times</mark> for every other tenant.
+      </p>
+      <h2 style="font-size: 14px;">Goals</h2>
+      <p>Bound the worst-case impact one tenant can have on
+      <mark data-anchor="t2">shared infrastructure</mark>.</p>
+    </div>
+
+    <div class="sidebar">
+      <div class="sidebar-header">
+        <span class="sidebar-title">Comments</span>
+        <button class="sidebar-close" title="Hide sidebar">×</button>
+      </div>
+
+      <!-- (a) Collaborators chip — derived from Drive permissions.list() -->
+      <div class="collab-row">
+        Sharing with
+        <span class="avatar">A</span>
+        <span class="avatar teal">B</span>
+        <span class="avatar rose">C</span>
+        <strong>+2 more</strong>
+      </div>
+
+      <!-- (c) Threads with author-color avatars matching Drive -->
+      <div class="thread">
+        <div class="author">
+          <span class="avatar teal">B</span>
+          Bob Chen
+          <span class="meta">2 m ago</span>
+        </div>
+        <div class="body">Should this also cover free-tier users, or only paid?</div>
+      </div>
+
+      <div class="thread">
+        <div class="author">
+          <span class="avatar rose">C</span>
+          Carol Liu
+          <span class="meta">just now</span>
+        </div>
+        <div class="body">+1 — and what about burst allowances?</div>
+      </div>
+
+      <div class="thread">
+        <div class="author">
+          <span class="avatar">A</span>
+          Alice (you)
+          <span class="meta">5 m ago</span>
+        </div>
+        <div class="body">Good point. Adding a section.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="statusbar">
+    <span class="chip">alice@example.com</span>
+    <span class="chip success">● Drive · synced 4 s ago</span>
+    <span class="grow"></span>
+    <span style="color: var(--text-faint); font-size: 11px;">
+      MDViewer v0.2.0
+    </span>
+  </div>
+</div>
+</body>
+</html>

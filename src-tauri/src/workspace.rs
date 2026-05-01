@@ -626,10 +626,42 @@ impl Workspace {
     /// state lock around the call (it's the `&mut self` borrow that holds
     /// the lock; the IPC handler scope ends after the borrow returns).
     pub fn drive_connect(&mut self, app: &tauri::AppHandle) -> Result<()> {
-        self.drive_connect_inner(default_open_url)?;
-        // Spawn the polling task with a cancel handle. The watch channel
-        // initial value is `true` so `*cancel_rx.borrow()` reads as "still
-        // alive"; drive_disconnect drops the sender to signal cancellation.
+        // Production wrapper: snapshot → OAuth → apply, all in one method.
+        // The IPC handler in main.rs uses the three-phase split below to
+        // drop the workspace lock around the blocking OAuth call so the
+        // app doesn't freeze for up to 5 minutes while the user consents.
+        let prep = self.drive_connect_prep();
+        let outcome = drive_connect_oauth(prep, default_open_url)?;
+        self.drive_connect_apply(app, outcome)
+    }
+
+    /// Bug-2 fix (lock-across-blocking-IO): snapshot the inputs the OAuth
+    /// phase needs while we hold the workspace lock, so the IPC handler can
+    /// drop the lock before invoking `drive_connect_oauth`. Without this,
+    /// `Workspace::drive_connect` held `state.lock()` across the up-to-5-min
+    /// `run_loopback_flow`, freezing every other IPC call.
+    pub fn drive_connect_prep(&self) -> DriveConnectPrep {
+        let s = self.settings.get();
+        DriveConnectPrep {
+            byo_client_id: s.cloud.drive.custom_oauth_client_id.clone(),
+            config_dir: self.config_dir.clone(),
+        }
+    }
+
+    /// Apply the OAuth result: persist refresh token, populate DriveApi,
+    /// flip settings, recompute backends, spawn polling. Held under the
+    /// re-acquired workspace lock by the IPC handler.
+    pub fn drive_connect_apply(
+        &mut self,
+        app: &tauri::AppHandle,
+        outcome: DriveOauthOutcome,
+    ) -> Result<()> {
+        // Shared state mutation (no polling spawn).
+        self.drive_connect_apply_no_spawn(outcome)?;
+
+        // Spawn polling with cancel handle. Production-only — the test
+        // seams use `drive_connect_for_test` which skips the spawn and
+        // manually initializes polling_cancel.
         let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(true);
         self.polling_cancel = Some(cancel_tx);
         tauri::async_runtime::spawn(run_polling_loop_with_cancel(
@@ -639,76 +671,49 @@ impl Workspace {
         Ok(())
     }
 
-    /// D2: shared OAuth + token-persist + DriveApi-populate pipeline.
-    /// Production callers go through `drive_connect`; tests use
-    /// `drive_connect_for_test` which supplies a worker-thread opener that
-    /// simulates the user-consent redirect.
+    /// D2 + Bug-2: test-only OAuth pipeline. Production goes through
+    /// `Workspace::drive_connect` (which uses the prep/oauth/apply split so
+    /// the IPC handler can drop the workspace lock around the blocking
+    /// OAuth call). This helper keeps the test seams (`drive_connect_for_test`,
+    /// `drive_connect_capture_auth_url_for_test`) running synchronously
+    /// against a stub OAuth server without the lock-management ceremony.
+    /// The state mutation half is shared via `drive_connect_apply_no_spawn`.
     fn drive_connect_inner(
         &mut self,
         open_url: impl FnOnce(&str) + Send + 'static,
     ) -> Result<()> {
-        let settings_snapshot = self.settings.get();
-        let mut builder = crate::drive::auth::AuthBuilder::new();
-        if let Some(byo) = settings_snapshot.cloud.drive.custom_oauth_client_id.as_ref() {
-            builder = builder.with_byo_client_id(Some(byo));
-        }
+        let prep = self.drive_connect_prep();
+        let outcome = drive_connect_oauth(prep, open_url)?;
+        self.drive_connect_apply_no_spawn(outcome)
+    }
 
-        // 5-minute timeout matches Google's default consent window. The
-        // closure synchronously opens the browser; the loopback listener
-        // recv-loops until the redirect arrives or the timeout elapses.
-        let token = crate::drive::auth::run_loopback_flow(
-            builder,
-            std::time::Duration::from_secs(300),
-            open_url,
-        )
-        .map_err(|e| anyhow::anyhow!("OAuth failed: {}", e))?;
-
-        // Extract the email claim from the id_token. Falls back to a
-        // sentinel string when the id_token is missing or malformed —
-        // production always receives an id_token because the consent URL
-        // includes the `openid email` scopes.
-        let email = token
-            .id_token
-            .as_deref()
-            .and_then(crate::drive::auth::extract_email_from_id_token)
-            .unwrap_or_else(|| "unknown@drive.local".into());
-
-        // Persist the refresh token (when present — Google only returns it
-        // on the first consent for a given client_id).
-        if let Some(refresh) = token.refresh_token.as_ref() {
-            // The Stronghold plugin's path lives in the production binary;
-            // for the in-process facade we derive the snapshot path from
-            // self.config_dir (mirrors the test harness in
-            // `drive_tokens.rs`). Failures here are NOT fatal — connect
-            // should still succeed against the live API even if disk
-            // persistence drops the token.
+    /// Apply the OAuth result without spawning the polling task. Test
+    /// seams (`drive_connect_for_test`) call this and then manually
+    /// initialize `polling_cancel` so the disconnect-cancel path stays
+    /// observable. Production via `drive_connect_apply` adds the spawn.
+    fn drive_connect_apply_no_spawn(&mut self, outcome: DriveOauthOutcome) -> Result<()> {
+        if let Some(refresh) = outcome.refresh_token.as_ref() {
             let key = crate::drive::keyring::vault_key();
             if let Ok(store) = crate::drive::tokens::TokenStore::open_for_test(
                 self.config_dir.join("drive_tokens.bin"),
                 &key,
             ) {
                 if let Err(e) =
-                    crate::drive::tokens::save_refresh_token(&store, &email, refresh)
+                    crate::drive::tokens::save_refresh_token(&store, &outcome.email, refresh)
                 {
                     tracing::warn!(?e, "drive: refresh token persist failed");
                 }
             }
         }
-
-        // Initialize the shared DriveApi BEFORE recomputing backends — A7's
-        // recompute writes Local→DriveDesktop in place but doesn't touch
-        // DriveApi, so it doesn't actually need the API populated; the
-        // ordering is defensive (and matches the spec's `Avoid` note).
         let api = std::sync::Arc::new(
-            crate::drive::api::DriveApi::with_token(token.access_token),
+            crate::drive::api::DriveApi::with_token(outcome.access_token),
         );
         self.drive_api = Some(api);
-
+        let email = outcome.email;
         self.settings.update(|s| {
             s.cloud.drive.connected = true;
             s.cloud.drive.account_email = Some(email);
         })?;
-
         self.recompute_backends_after_connect_change(true);
         Ok(())
     }
@@ -1151,12 +1156,75 @@ impl Workspace {
     }
 }
 
+/// Bug-2 fix: snapshot of inputs the OAuth phase needs. Built from
+/// `Workspace::drive_connect_prep` while the workspace lock is held, then
+/// passed to `drive_connect_oauth` which runs without any lock.
+pub struct DriveConnectPrep {
+    pub byo_client_id: Option<String>,
+    pub config_dir: std::path::PathBuf,
+}
+
+/// Result of the OAuth phase. `drive_connect_apply` consumes this under the
+/// re-acquired workspace lock to populate DriveApi + persist tokens.
+pub struct DriveOauthOutcome {
+    pub access_token: String,
+    pub refresh_token: Option<String>,
+    pub email: String,
+}
+
+/// Bug-2 fix: standalone OAuth phase that does NOT require the workspace
+/// lock. The IPC handler in main.rs calls this between the prep snapshot
+/// and the apply step. Bug-1 fix is also enforced here (PLACEHOLDER check).
+pub fn drive_connect_oauth(
+    prep: DriveConnectPrep,
+    open_url: impl FnOnce(&str) + Send + 'static,
+) -> Result<DriveOauthOutcome> {
+    let mut builder = crate::drive::auth::AuthBuilder::new();
+    if let Some(byo) = prep.byo_client_id.as_deref() {
+        builder = builder.with_byo_client_id(Some(byo));
+    }
+
+    // Bug-1 fix: clear error before the 5-min OAuth timeout if the binary
+    // was built without MDVIEWER_DEFAULT_CLIENT_ID and the user hasn't
+    // supplied a BYO client_id. Suppressed when MDVIEWER_DRIVE_AUTH_BASE
+    // is set (e2e/test harness).
+    if builder.resolved_client_id().starts_with("PLACEHOLDER_")
+        && std::env::var("MDVIEWER_DRIVE_AUTH_BASE").is_err()
+    {
+        return Err(anyhow::anyhow!(
+            "Drive integration needs a Google OAuth client ID. Either rebuild with \
+             MDVIEWER_DEFAULT_CLIENT_ID set, or paste your own client_id under \
+             Settings → Drive → Advanced (Bring-Your-Own client_id)."
+        ));
+    }
+
+    let token = crate::drive::auth::run_loopback_flow(
+        builder,
+        std::time::Duration::from_secs(300),
+        open_url,
+    )
+    .map_err(|e| anyhow::anyhow!("OAuth failed: {}", e))?;
+
+    let email = token
+        .id_token
+        .as_deref()
+        .and_then(crate::drive::auth::extract_email_from_id_token)
+        .unwrap_or_else(|| "unknown@drive.local".into());
+
+    let _ = prep.config_dir; // captured for symmetry; apply() uses self.config_dir
+    Ok(DriveOauthOutcome {
+        access_token: token.access_token,
+        refresh_token: token.refresh_token,
+        email,
+    })
+}
+
 /// D2: production browser-opener used by `drive_connect`. Fires the
 /// platform-default URL handler asynchronously so the OAuth-loopback
 /// thread doesn't block on the spawn. Errors are swallowed: the loopback
 /// listener will time out (5 minutes) and surface the original "OAuth
 /// failed" error if the browser never came up.
-fn default_open_url(url: &str) {
+pub fn default_open_url(url: &str) {
     #[cfg(target_os = "macos")]
     let res = std::process::Command::new("open").arg(url).spawn();
     #[cfg(target_os = "linux")]

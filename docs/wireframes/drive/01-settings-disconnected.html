@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>01 · Settings — Drive (Not connected)</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<p class="wf-note"><a href="index.html">← All wireframes</a></p>
+<h1 class="wf-title">01 · Settings → Drive (Not connected)</h1>
+<p class="wf-note">
+  First-time state. Most users will click "Connect to Drive" and that's it.
+  Advanced (corporate / BYO) reveals a custom OAuth client ID/secret.
+</p>
+
+<section class="settings">
+  <h2>Drive integration</h2>
+
+  <div class="status-card">
+    <span class="icon warn">⚠</span>
+    <div class="text">
+      <div class="line1"><strong>Not connected</strong></div>
+      <div class="line2">
+        Sign in with Google to enable real-time comment sync on Drive-stored
+        documents.
+      </div>
+    </div>
+    <button class="primary">Connect to Drive…</button>
+  </div>
+
+  <div class="row">
+    <label for="backend">Backend for Drive files</label>
+    <select id="backend" disabled>
+      <option>Auto (Drive when available, else local sidecar)</option>
+      <option>Always sidecar</option>
+      <option>Always Drive</option>
+    </select>
+  </div>
+  <p class="help" style="margin-left: 190px;">
+    Available after connecting.
+  </p>
+
+  <details>
+    <summary>Advanced — use a custom OAuth client (corporate / BYO)</summary>
+    <div class="row" style="margin-top: 8px;">
+      <label for="cid">Client ID</label>
+      <input id="cid" type="text" class="mono"
+             placeholder="123456789-abcde.apps.googleusercontent.com">
+    </div>
+    <div class="row">
+      <label for="cse">Client secret</label>
+      <input id="cse" type="password" class="mono" placeholder="•••••••••••">
+    </div>
+    <p class="help">
+      Useful for organizations using <strong>Internal</strong> OAuth on a
+      Google Workspace project — bypasses the 100-user verification cap and
+      removes the unverified-app warning.
+      <a href="#">How to set this up →</a>
+    </p>
+  </details>
+</section>
+</body>
+</html>

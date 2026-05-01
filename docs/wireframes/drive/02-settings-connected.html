@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>02 · Settings — Drive (Connected)</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<p class="wf-note"><a href="index.html">← All wireframes</a></p>
+<h1 class="wf-title">02 · Settings → Drive (Connected)</h1>
+<p class="wf-note">
+  Connected state. Account is shown. Backend dropdown becomes active.
+  Disconnect revokes the token + clears cache (with confirmation).
+</p>
+
+<section class="settings">
+  <h2>Drive integration</h2>
+
+  <div class="status-card">
+    <span class="icon success">✓</span>
+    <div class="text">
+      <div class="line1">
+        <strong>Connected as alice@example.com</strong>
+      </div>
+      <div class="line2">
+        Connected via custom OAuth client · Last synced 12 s ago
+      </div>
+    </div>
+    <button class="danger">Disconnect</button>
+  </div>
+
+  <div class="row">
+    <label for="backend">Backend for Drive files</label>
+    <select id="backend">
+      <option selected>Auto (Drive when available, else local sidecar)</option>
+      <option>Always sidecar</option>
+      <option>Always Drive</option>
+    </select>
+  </div>
+  <p class="help" style="margin-left: 190px;">
+    "Auto" detects files on Drive Desktop mounts (e.g.
+    <code>~/Library/CloudStorage/GoogleDrive-…</code>) and uses Drive
+    comments for those. Other files stay local.
+  </p>
+
+  <div class="row">
+    <label for="poll">Poll interval (active window)</label>
+    <select id="poll">
+      <option selected>5 seconds</option>
+      <option>10 seconds</option>
+      <option>30 seconds</option>
+    </select>
+  </div>
+
+  <details>
+    <summary>Advanced — custom OAuth client</summary>
+    <div class="row" style="margin-top: 8px;">
+      <label for="cid">Client ID</label>
+      <input id="cid" type="text" class="mono"
+             value="123456789-abcde.apps.googleusercontent.com">
+    </div>
+    <div class="row">
+      <label for="cse">Client secret</label>
+      <input id="cse" type="password" class="mono" value="•••••••••••">
+    </div>
+    <p class="help">
+      Changes apply on next reconnect. <a href="#">How to set this up →</a>
+    </p>
+  </details>
+</section>
+</body>
+</html>

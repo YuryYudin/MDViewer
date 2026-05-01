@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>07 · Save conflict (Drive doc)</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<p class="wf-note"><a href="index.html">← All wireframes</a></p>
+<h1 class="wf-title">07 · Save conflict — Drive document modified by someone else</h1>
+<p class="wf-note">
+  We attempted to save (PATCH the file content). Drive returned 412
+  Precondition Failed (the <code>If-Match</code> ETag didn't match the
+  current revision). Reuses the existing diff-merge UI from C2 — same
+  hunk-by-hunk Accept Left / Accept Right / Hand-edit pattern.
+  Banner explains the Drive context.
+</p>
+
+<div class="app">
+  <div class="titlebar">
+    <span class="traffic"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
+    <span style="font-size: 12px;">RFC-031.md — MDViewer</span>
+  </div>
+
+  <div class="tabbar">
+    <div class="tab active">RFC-031.md <span class="x">×</span></div>
+  </div>
+
+  <div class="banner warn">
+    <strong>⚠ Saved by Bob Chen on Drive while you were editing.</strong>
+    <span>Pick which version to keep, hunk-by-hunk.</span>
+    <span class="grow"></span>
+    <button>View Drive history</button>
+  </div>
+
+  <div style="padding: 16px 20px; background: var(--surface);">
+    <div style="display: grid; grid-template-columns: 1fr 1fr auto auto auto; gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--border); align-items: center;">
+      <pre style="background: var(--surface-2); border: 1px solid var(--border); border-radius: 4px; padding: 8px; margin: 0; font-family: var(--mono); font-size: 12px;">
+Goals
+- Bound worst-case impact
+- Expose limit headroom
+- Operate without round-trip
+      </pre>
+      <pre style="background: var(--surface-2); border: 1px solid var(--border); border-radius: 4px; padding: 8px; margin: 0; font-family: var(--mono); font-size: 12px;">
+Goals
+- Bound worst-case impact
+- Expose limit headroom via headers
+- Operate without round-trip to a central counter
+      </pre>
+      <button style="padding: 4px 10px; background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 4px;">← Local</button>
+      <button style="padding: 4px 10px; background: var(--accent); color: #fff; border: 1px solid var(--accent); border-radius: 4px;">Drive →</button>
+      <button style="padding: 4px 10px; background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 4px;">Edit</button>
+    </div>
+
+    <div style="display: grid; grid-template-columns: 1fr 1fr auto auto auto; gap: 8px; padding: 12px 0; align-items: center;">
+      <pre style="background: var(--surface-2); border: 1px solid var(--accent); border-radius: 4px; padding: 8px; margin: 0; font-family: var(--mono); font-size: 12px;">
+## Implementation
+Token bucket with redis backing.
+      </pre>
+      <pre style="background: var(--surface-2); border: 1px solid var(--border); border-radius: 4px; padding: 8px; margin: 0; font-family: var(--mono); font-size: 12px;">
+## Implementation
+Will write up later.
+      </pre>
+      <button style="padding: 4px 10px; background: var(--accent); color: #fff; border: 1px solid var(--accent); border-radius: 4px;">← Local</button>
+      <button style="padding: 4px 10px; background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 4px;">Drive →</button>
+      <button style="padding: 4px 10px; background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 4px;">Edit</button>
+    </div>
+
+    <div style="text-align: right; margin-top: 16px;">
+      <button style="padding: 8px 16px; background: var(--accent); color: #fff; border: 1px solid var(--accent); border-radius: 5px; font-size: 13px;">Finish merge &amp; save to Drive</button>
+    </div>
+  </div>
+
+  <div class="statusbar">
+    <span class="chip">alice@example.com</span>
+    <span class="chip warn">● Save conflict</span>
+    <span class="grow"></span>
+    <span style="color: var(--text-faint); font-size: 11px;">MDViewer v0.2.0</span>
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>08 · Drive-detected toast</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+.toast {
+  position: relative;
+  margin: 24px;
+  padding: 12px 16px;
+  background: var(--accent-soft);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.toast .actions {
+  display: inline-flex;
+  gap: 8px;
+  margin-left: auto;
+}
+.toast .actions button {
+  padding: 4px 10px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--accent);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+.toast .actions button.primary {
+  background: var(--accent);
+  color: #fff;
+}
+.toast .x {
+  margin-left: 4px;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 0 4px;
+}
+</style>
+</head>
+<body>
+<p class="wf-note"><a href="index.html">← All wireframes</a></p>
+<h1 class="wf-title">08 · "This file is in Drive — connect to enable real-time comments"</h1>
+<p class="wf-note">
+  User opens a file via the OS file chooser. We detect the path is inside a
+  Drive Desktop mount, but Drive isn't connected yet (or backend is set to
+  "Always sidecar"). One-time toast, dismissable, persists "don't show again
+  for this file" choice.
+</p>
+
+<div class="app">
+  <div class="titlebar">
+    <span class="traffic"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
+    <span style="font-size: 12px;">RFC-031.md — MDViewer</span>
+  </div>
+
+  <div class="tabbar">
+    <div class="tab active">RFC-031.md <span class="x">×</span></div>
+  </div>
+
+  <div class="toast">
+    <strong>📂 This file is in Google Drive.</strong>
+    <span style="color: var(--text-dim);">
+      Connect to enable real-time comment sync with collaborators.
+    </span>
+    <div class="actions">
+      <button class="primary">Connect…</button>
+      <button>Not now</button>
+    </div>
+    <span class="x" title="Don't show this for this file again">✕</span>
+  </div>
+
+  <div class="body-area">
+    <div class="doc-pane">
+      <h2>RFC-031: Per-tenant Rate Limiting</h2>
+      <p>Document content here. Comments work via the local sidecar until you connect Drive.</p>
+    </div>
+    <div class="sidebar">
+      <div class="sidebar-header">
+        <span class="sidebar-title">Comments</span>
+        <button class="sidebar-close" title="Hide sidebar">×</button>
+      </div>
+      <p style="color: var(--text-faint); text-align: center; padding: 16px 0;">
+        No comments yet
+      </p>
+    </div>
+  </div>
+
+  <div class="statusbar">
+    <span class="chip muted">Local sidecar</span>
+    <span class="grow"></span>
+    <span style="color: var(--text-faint); font-size: 11px;">MDViewer v0.2.0</span>
+  </div>
+</div>
+</body>
+</html>

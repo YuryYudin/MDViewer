@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>06 · Offline state</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<p class="wf-note"><a href="index.html">← All wireframes</a></p>
+<h1 class="wf-title">06 · Offline / disconnected from Drive</h1>
+<p class="wf-note">
+  Network goes away mid-session, or auth token expired and refresh failed.
+  Banner at top + status pill flips to warn. Comments stay editable —
+  they go to the offline queue + local sidecar. Pending comments get a
+  "Pending" pill until the next successful sync.
+</p>
+
+<div class="app">
+  <div class="titlebar">
+    <span class="traffic"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
+    <span style="font-size: 12px;">RFC-031.md — MDViewer</span>
+  </div>
+
+  <div class="tabbar">
+    <div class="tab active">RFC-031.md <span class="x">×</span></div>
+  </div>
+
+  <!-- Top-of-body banner -->
+  <div class="banner warn">
+    <strong>⚠ Drive offline.</strong>
+    <span>Comments will sync when connection returns.</span>
+    <span class="grow"></span>
+    <button>Retry now</button>
+    <button>Dismiss</button>
+  </div>
+
+  <div class="body-area">
+    <div class="doc-pane">
+      <h2>RFC-031: Per-tenant Rate Limiting</h2>
+      <p>
+        Today the gateway enforces a single global request budget. As we
+        onboard larger customers, <mark data-anchor="t1">a single tenant's
+        traffic spike can degrade response times</mark>.
+      </p>
+    </div>
+
+    <div class="sidebar">
+      <div class="sidebar-header">
+        <span class="sidebar-title">Comments</span>
+        <button class="sidebar-close" title="Hide sidebar">×</button>
+      </div>
+
+      <!-- Pending threads -->
+      <div class="thread" style="border-left: 3px solid var(--warn-border);">
+        <div class="author">
+          <span class="avatar">A</span>
+          Alice (you)
+          <span class="meta">
+            <span class="pending-pill">Pending</span>
+            just now
+          </span>
+        </div>
+        <div class="body">Worth adding token-bucket vs leaky-bucket comparison.</div>
+      </div>
+
+      <div class="thread">
+        <div class="author">
+          <span class="avatar teal">B</span>
+          Bob Chen
+          <span class="meta">12 m ago</span>
+        </div>
+        <div class="body">Should this also cover free-tier users?</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="statusbar">
+    <span class="chip">alice@example.com</span>
+    <span class="chip warn">● Drive offline · 1 pending</span>
+    <span class="grow"></span>
+    <span style="color: var(--text-faint); font-size: 11px;">MDViewer v0.2.0</span>
+  </div>
+</div>
+</body>
+</html>

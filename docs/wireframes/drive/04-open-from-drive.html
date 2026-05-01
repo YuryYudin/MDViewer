@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>04 · Open from Drive (URL paste)</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+.three-states {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 18px;
+  max-width: 1200px;
+}
+.three-states figure { margin: 0; }
+.three-states figcaption {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+.error-text { color: var(--danger); font-size: 12px; }
+input.error { border-color: var(--danger); }
+</style>
+</head>
+<body>
+<p class="wf-note"><a href="index.html">← All wireframes</a></p>
+<h1 class="wf-title">04 · Open from Drive — URL paste dialog</h1>
+<p class="wf-note">
+  New menu item under File: "Open from Drive…". Modal with a URL input.
+  We extract the file ID from any of Drive's standard URL shapes
+  (<code>/file/d/&lt;id&gt;/view</code>, <code>?id=…</code>, etc.).
+  Three states shown: empty, valid URL, invalid/inaccessible.
+</p>
+
+<div class="three-states">
+  <figure>
+    <figcaption>① Empty (initial)</figcaption>
+    <div class="modal-overlay">
+      <div class="modal">
+        <h2>Open from Google Drive</h2>
+        <p>Paste a Drive URL or file ID. The file must be a markdown (.md) document.</p>
+        <label for="u1">Drive URL or ID</label>
+        <input id="u1" type="text" placeholder="https://drive.google.com/file/d/…" />
+        <div class="actions">
+          <button>Cancel</button>
+          <button class="primary" disabled>Open</button>
+        </div>
+      </div>
+    </div>
+  </figure>
+
+  <figure>
+    <figcaption>② Valid (resolvable)</figcaption>
+    <div class="modal-overlay">
+      <div class="modal">
+        <h2>Open from Google Drive</h2>
+        <p>Paste a Drive URL or file ID. The file must be a markdown (.md) document.</p>
+        <label for="u2">Drive URL or ID</label>
+        <input id="u2" type="text"
+               value="https://drive.google.com/file/d/1ABCxyz_meeting-notes/view" />
+        <p style="color: var(--text-dim); font-size: 12px; margin-top: 8px;">
+          ✓ <strong>meeting-notes-2026-04-29.md</strong> (in Shared drives › Eng)
+        </p>
+        <div class="actions">
+          <button>Cancel</button>
+          <button class="primary">Open</button>
+        </div>
+      </div>
+    </div>
+  </figure>
+
+  <figure>
+    <figcaption>③ Invalid / no access</figcaption>
+    <div class="modal-overlay">
+      <div class="modal">
+        <h2>Open from Google Drive</h2>
+        <p>Paste a Drive URL or file ID. The file must be a markdown (.md) document.</p>
+        <label for="u3">Drive URL or ID</label>
+        <input id="u3" type="text" class="error"
+               value="https://drive.google.com/file/d/zzzNotMine/view" />
+        <p class="error-text">
+          File not found or not shared with alice@example.com.
+        </p>
+        <div class="actions">
+          <button>Cancel</button>
+          <button class="primary" disabled>Open</button>
+        </div>
+      </div>
+    </div>
+  </figure>
+</div>
+</body>
+</html>
