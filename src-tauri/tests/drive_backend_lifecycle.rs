@@ -164,12 +164,14 @@ fn ipc_main_rs_declares_seven_drive_commands() {
 }
 
 #[test]
-fn drive_connect_handler_leaves_b6_replay_marker() {
-    // B6's first verification step requires that A7 leave EXACTLY two
-    // `// TODO(B6): replay queues here` markers behind: one in main.rs's
-    // drive_connect IPC handler body, and one inside run_polling_loop's
-    // post-poll iteration body. We check the count is >= 2 here; B6 will
-    // grep for it later and replace.
+fn drive_connect_handler_calls_spawn_replay_all() {
+    // A7 left `// TODO(B6): replay queues here` markers behind in two
+    // places (drive_connect + run_polling_loop) which B6 has since filled
+    // in. The replacement is the `spawn_replay_all` fan-out call in
+    // drive_connect plus an inline `drive::queue::replay(` call inside the
+    // polling loop's spawn_blocking body. We assert *both* call sites are
+    // present so a future regression that drops the wiring is caught at
+    // build time. A6's free-form prose markers are no longer required.
     let main_rs = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
     )
@@ -178,11 +180,13 @@ fn drive_connect_handler_leaves_b6_replay_marker() {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/workspace.rs"),
     )
     .expect("read workspace.rs");
-    let total = main_rs.matches("TODO(B6): replay queues here").count()
-        + workspace_rs.matches("TODO(B6): replay queues here").count();
-    assert_eq!(
-        total, 2,
-        "expected exactly two `TODO(B6): replay queues here` markers across main.rs+workspace.rs (one in drive_connect, one in run_polling_loop), found {total}"
+    assert!(
+        main_rs.contains("spawn_replay_all"),
+        "main.rs drive_connect handler must call drive::queue::spawn_replay_all"
+    );
+    assert!(
+        workspace_rs.contains("drive::queue::replay"),
+        "workspace.rs run_polling_loop must call drive::queue::replay inline"
     );
 }
 
@@ -216,7 +220,10 @@ fn workspace_source_declares_config_dir_and_pollable_state() {
         "drive_queues: HashMap<String, DriveQueue>",
         "id_maps: HashMap<String, Arc<Mutex<IdMap>>>",
         "last_drive_status: Option<DriveStatus>",
-        "pub(crate) fn config_dir(",
+        // B6 promoted `config_dir` from `pub(crate)` to `pub` so the
+        // drive_connect IPC handler in main.rs can pass the path into
+        // `spawn_replay_all` without a second managed-state slot.
+        "pub fn config_dir(",
         "pub async fn run_polling_loop(",
     ] {
         assert!(

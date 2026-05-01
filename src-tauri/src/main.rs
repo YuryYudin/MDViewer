@@ -671,7 +671,22 @@ async fn drive_connect(
     ws.drive_connect(&app).map_err(|e| e.to_string())?;
     let st = ws.drive_status();
     let _ = app.emit("drive-status-changed", &st);
-    // TODO(B6): replay queues here
+    // B6: snapshot the per-file_id queue list + id_map handles + the
+    // drive_api Arc under the existing lock, then drop the lock and spawn
+    // an async fan-out that drains every queue without holding Workspace
+    // through the API roundtrips. A long queue (offline session of an hour)
+    // would otherwise block every other IPC call until it finished.
+    if let Some(api) = ws.drive_api_arc() {
+        let cfg = ws.config_dir().to_path_buf();
+        let queues: Vec<(String, std::path::PathBuf)> = ws
+            .drive_tab_file_ids()
+            .into_iter()
+            .map(|fid| (fid, cfg.clone()))
+            .collect();
+        let id_maps = ws.id_maps_arc_clone();
+        drop(ws);
+        mdviewer_lib::drive::queue::spawn_replay_all(app.clone(), api, queues, id_maps);
+    }
     // TODO(B1): on first successful connect, spawn run_polling_loop:
     //   tauri::async_runtime::spawn(run_polling_loop(app.clone()));
     //   Hold the JoinHandle in Workspace.polling_task: Option<JoinHandle<()>>

@@ -256,11 +256,19 @@ impl Workspace {
 
     /// A7: read-only accessor for the captured `data_dir`. Used by Drive
     /// queue / id_map lazy-open call sites to avoid re-passing the path
-    /// through every IPC handler signature. B2 is the first caller — until
-    /// then the allow(dead_code) keeps the warning surface clean.
-    #[allow(dead_code)]
-    pub(crate) fn config_dir(&self) -> &Path {
+    /// through every IPC handler signature. B6 promoted this to `pub` so
+    /// the `drive_connect` IPC handler can pass the path into
+    /// `spawn_replay_all` without a second managed-state slot.
+    pub fn config_dir(&self) -> &Path {
         &self.config_dir
+    }
+
+    /// B6: shallow-clone the `Arc<DriveApi>` (when connected) so callers
+    /// like `drive_connect`'s replay fan-out can hand the API to a Tokio
+    /// task without holding the Workspace lock through any HTTP roundtrip.
+    /// Returns `None` before the first successful connect.
+    pub fn drive_api_arc(&self) -> Option<Arc<DriveApi>> {
+        self.drive_api.clone()
     }
 
     /// A7: shallow-clone the per-file_id `Arc<Mutex<IdMap>>` handles so
@@ -1071,10 +1079,48 @@ pub async fn run_polling_loop(app: tauri::AppHandle) {
                 let _ = tokio::task::spawn_blocking(move || {
                     let state = app2.state::<std::sync::Mutex<Workspace>>();
                     let mut ws = state.lock().expect("workspace lock poisoned");
-                    if let Err(e) = ws.drive_poll_one(&fid, &api2) {
-                        tracing::debug!("drive poll {} failed: {}", fid, e);
+                    let poll_ok = match ws.drive_poll_one(&fid, &api2) {
+                        Ok(()) => true,
+                        Err(e) => {
+                            tracing::debug!("drive poll {} failed: {}", fid, e);
+                            false
+                        }
+                    };
+                    // B6: replay any offline-queued ops for this file_id
+                    // when the poll succeeded — this catches connectivity
+                    // blips that don't go through `drive_connect`. Snapshot
+                    // the (config_dir, id_map_arc) under the lock, then
+                    // drop it before the API roundtrip so other IPC
+                    // handlers aren't blocked. We deliberately re-`open`
+                    // the queue from the same path rather than holding a
+                    // `&DriveQueue` across the lock drop — DriveQueue is a
+                    // path + per-process Mutex<()>, and its append/drain
+                    // both rely on `O_APPEND` atomicity at the file layer,
+                    // so two handles for the same path are safe in-process.
+                    if poll_ok {
+                        let cfg = ws.config_dir().to_path_buf();
+                        let id_map = ws
+                            .id_maps_arc_clone()
+                            .get(&fid)
+                            .cloned();
+                        drop(ws);
+                        if let Some(map) = id_map {
+                            let q = crate::drive::queue::DriveQueue::open(&cfg, &fid);
+                            if !q.is_empty() {
+                                if let Err(e) =
+                                    crate::drive::queue::replay(&q, &api2, &fid, &map)
+                                {
+                                    tracing::debug!(
+                                        "drive replay {} pending: {:?}",
+                                        fid,
+                                        e
+                                    );
+                                }
+                            }
+                        }
+                        // Re-acquire the lock for the status diff below.
+                        ws = state.lock().expect("workspace lock poisoned");
                     }
-                    // TODO(B6): replay queues here
                     let snapshot = ws.drive_status();
                     let changed = ws
                         .last_drive_status
