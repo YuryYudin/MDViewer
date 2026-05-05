@@ -36,3 +36,14 @@ Screenshot*.png
 /target
 /coverage.lcov
 crates/*/target
+
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/core/build/
+android/local.properties
+android/captures/
+android/.idea/
+*.hprof
+.cxx/
