@@ -27,6 +27,10 @@ pub fn build_info() -> BuildInfo {
     }
 }
 
+// Workspace re-export so `mdviewer_lib::mdviewer_core::*` resolves identically
+// to the in-crate paths for any external consumer (only export_types today).
+pub use mdviewer_core;
+
 pub mod anchor;
 pub mod cli;
 pub mod comments;

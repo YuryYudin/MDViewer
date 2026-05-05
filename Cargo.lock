@@ -3110,9 +3110,16 @@ dependencies = [
 name = "mdviewer-core"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "automerge",
+ "base64 0.22.1",
+ "diff-match-patch-rs",
  "pulldown-cmark",
  "serde",
+ "serde_json",
+ "similar",
  "syntect",
+ "thiserror 1.0.69",
  "ts-rs",
 ]
 

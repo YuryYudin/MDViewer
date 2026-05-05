@@ -10,15 +10,21 @@ name = "mdviewer_core"
 path = "src/lib.rs"
 
 [dependencies]
-# A6: render half of document.rs moved here. pulldown-cmark drives the
-# GFM event walk; syntect powers the syntax-highlighting path. Both
-# previously lived in src-tauri/Cargo.toml — we keep the same major
-# versions so transitive crate-graph behaviour is unchanged.
+# A3 + A6 deps merged. Render half (pulldown-cmark, syntect) plus
+# anchor/comments graph (diff-match-patch-rs, automerge, anyhow,
+# thiserror, base64, similar). Versions match what previously lived
+# in src-tauri/Cargo.toml so transitive crate-graph behaviour is
+# unchanged. ts-rs derive must stay attached to the canonical
+# RenderOptions / RenderResult / Anchor / Thread / Comment definitions
+# (the generated TypeScript binding pulls from the same source).
 pulldown-cmark = "0.11"
 syntect = "5"
 serde = { version = "1", features = ["derive"] }
-# RenderOptions / RenderResult continue to cross the desktop's IPC
-# boundary; the ts-rs derive must stay attached to the canonical
-# definition rather than living on a desktop wrapper. Without it the
-# generated TypeScript binding would silently drop these types.
+serde_json = "1"
+anyhow = "1"
+thiserror = "1"
+diff-match-patch-rs = "0.4"
+automerge = "0.5"
+base64 = "0.22"
+similar = "2.5"
 ts-rs = "8"

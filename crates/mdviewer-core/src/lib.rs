@@ -6,4 +6,6 @@
 //! - A5: sidecar
 //! - A6: document, assets/document.css
 
+pub mod anchor;
+pub mod comments;
 pub mod document;
