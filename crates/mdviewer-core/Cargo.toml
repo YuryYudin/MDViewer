@@ -9,6 +9,14 @@ license = "GPL-3.0-or-later"
 name = "mdviewer_core"
 path = "src/lib.rs"
 
+[features]
+# Default empty: desktop builds (src-tauri) link mdviewer-core as a pure
+# rlib with no UniFFI runtime. The Android shim crate (`mdviewer-jni`)
+# turns this on via `features = ["uniffi"]` to pull `uniffi`'s scaffolding
+# emit + the `uniffi_bindings` module that bodies the generated FFI.
+default = []
+uniffi = ["dep:uniffi"]
+
 [dependencies]
 # A3 + A4 + A6 deps merged.
 # - Render half (A6): pulldown-cmark for the GFM event walk, syntect for
@@ -31,6 +39,16 @@ automerge = "0.5"
 base64 = "0.22"
 similar = "2.5"
 ts-rs = "8"
+
+# Optional: pulled in only when the `uniffi` feature is on. The runtime
+# (procmacros + ffi support) is gated so desktop builds never see it.
+# v1 surface is fully synchronous; no `tokio` feature.
+uniffi = { version = "0.28", optional = true }
+
+[build-dependencies]
+# Same gate: scaffolding generation is only needed when the consuming
+# crate (mdviewer-jni) compiles us with `--features uniffi`.
+uniffi = { version = "0.28", features = ["build"], optional = true }
 
 [dev-dependencies]
 # A4 sidecar_path / auto_merge round-trip tests serialise via serde_json.

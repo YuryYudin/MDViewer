@@ -1,0 +1,12 @@
+# UniFFI bindings configuration.
+#
+# `package_name` controls the Kotlin package the generated bindings live in
+# — Android-side Sidecar.kt and friends will `import dev.mdviewer.core.*`.
+# `android_cleaner = true` switches the runtime to use Android's
+# `dalvik.system.CloseGuard`-backed phantom-reference cleaner instead of
+# the desktop JVM's `java.lang.ref.Cleaner`, which is unavailable on API
+# levels older than 33. Our minSdk is 26, so this flag is required.
+
+[bindings.kotlin]
+package_name = "dev.mdviewer.core"
+android_cleaner = true
