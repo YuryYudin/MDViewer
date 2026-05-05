@@ -173,6 +173,13 @@ dependencies {
     // generated serializers delegate to.
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.documentfile)
+    // C4: WebViewAssetLoader. Lets us serve bundled assets (the shared
+    // document.css, document-host.html, and the future selection-bridge.js)
+    // under https://appassets.androidplatform.net/assets/ so relative
+    // stylesheet hrefs resolve from inside the WebView. The asset loader
+    // is the *only* legal way to ship CSS into the WebView in this app —
+    // file:// access is disabled for security (see MarkdownWebView.kt).
+    implementation(libs.webkit)
     // AppAuth is pinned for v2 (cloud-comments OAuth flow). Kept on the
     // classpath so the API surface stabilizes against the resolved
     // version even though no code calls it in v1.
@@ -282,3 +289,34 @@ tasks.register<JacocoReport>("testDebugUnitTestCoverage") {
         ),
     )
 }
+
+// ---------------------------------------------------------------------------
+// copyCoreCss (C4) — single-source the rendered-document stylesheet.
+//
+// The canonical `document.css` lives at `crates/mdviewer-core/assets/` so
+// desktop and Android render with byte-identical CSS. Rather than commit a
+// duplicate copy under `app/src/main/assets/`, we copy at build time. The
+// task is wired before `preBuild` so every Gradle invocation (assembleDebug,
+// connectedDebugAndroidTest, IDE sync, etc.) refreshes the asset before AGP
+// merges it into the APK.
+//
+// Why `rootProject.file("../crates/...")`:
+//   - `rootProject` here is the `android/` Gradle root (declared in
+//     settings.gradle.kts). `../crates/...` walks one level up to the
+//     repository root, then into the workspace crate. This keeps the path
+//     stable across worktrees and CI checkouts where `android/` is always
+//     the gradle root regardless of where the repo lives on disk.
+//
+// Why we don't bake the CSS into a Kotlin string constant:
+//   - Two source-of-truth files would drift the moment someone edited the
+//     desktop stylesheet without remembering to mirror the change. The
+//     "shared CSS asset" rule from the design doc depends on this task.
+// ---------------------------------------------------------------------------
+val copyCoreCss by tasks.registering(Copy::class) {
+    description = "Copies crates/mdviewer-core/assets/document.css into app assets."
+    group = "build"
+    from(rootProject.file("../crates/mdviewer-core/assets/document.css"))
+    into(layout.projectDirectory.dir("src/main/assets"))
+}
+
+tasks.named("preBuild") { dependsOn(copyCoreCss) }

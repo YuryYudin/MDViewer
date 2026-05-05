@@ -21,6 +21,13 @@ kotlinx-serialization = "1.7.1"
 # Kotlin 2.0.0 stable channel; matches the version Compose-BOM 2024.06
 # resolves transitively at runtime so we don't double-graph the API.
 kotlinx-coroutines = "1.8.1"
+# androidx.webkit ships WebViewAssetLoader: the only supported way to serve
+# bundled assets to a WebView under a real https:// origin so relative
+# stylesheet hrefs resolve. Pinned to 1.11.0 — the line that's stable on
+# minSdk 26 (the project's floor) and contemporaneous with Compose BOM
+# 2024.06. Earlier 1.6.x lines are still on the maintenance track but
+# predate the AssetLoaderBuilder fluent API used in C4.
+webkit = "1.11.0"
 
 [libraries]
 appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
@@ -39,6 +46,7 @@ androidx-test-core = { group = "androidx.test", name = "core", version = "1.6.1"
 androidx-test-ext-junit = { group = "androidx.test.ext", name = "junit", version = "1.2.1" }
 appauth = { group = "net.openid", name = "appauth", version.ref = "appauth" }
 documentfile = { group = "androidx.documentfile", name = "documentfile", version = "1.0.1" }
+webkit = { group = "androidx.webkit", name = "webkit", version.ref = "webkit" }
 junit = { group = "junit", name = "junit", version = "4.13.2" }
 androidx-test-runner = { group = "androidx.test", name = "runner", version = "1.6.1" }
 androidx-test-rules = { group = "androidx.test", name = "rules", version = "1.6.1" }

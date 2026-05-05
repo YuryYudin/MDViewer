@@ -47,3 +47,10 @@ android/captures/
 android/.idea/
 *.hprof
 .cxx/
+
+# C4: document.css is a build-time copy of crates/mdviewer-core/assets/
+# document.css produced by the `copyCoreCss` Gradle task that runs before
+# `preBuild`. Ignoring it keeps the canonical file at the workspace-crate
+# path and prevents the two from drifting via stray edits to the copied
+# version. The Gradle task re-creates it on every build.
+android/app/src/main/assets/document.css
