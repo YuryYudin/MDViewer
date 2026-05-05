@@ -10,13 +10,16 @@ name = "mdviewer_core"
 path = "src/lib.rs"
 
 [dependencies]
-# A3 + A6 deps merged. Render half (pulldown-cmark, syntect) plus
-# anchor/comments graph (diff-match-patch-rs, automerge, anyhow,
-# thiserror, base64, similar). Versions match what previously lived
-# in src-tauri/Cargo.toml so transitive crate-graph behaviour is
-# unchanged. ts-rs derive must stay attached to the canonical
-# RenderOptions / RenderResult / Anchor / Thread / Comment definitions
-# (the generated TypeScript binding pulls from the same source).
+# A3 + A4 + A6 deps merged.
+# - Render half (A6): pulldown-cmark for the GFM event walk, syntect for
+#   syntax highlighting. RenderOptions / RenderResult cross the desktop
+#   IPC boundary, so ts-rs stays here too.
+# - Anchor + comments graph (A3): diff-match-patch-rs (Bitap fuzzy match),
+#   automerge (CRDT bridge), anyhow / thiserror (error context), base64,
+#   similar — all previously in src-tauri/Cargo.toml.
+# - AutoMergeMode + sidecar_filename (A4): serde-only — the wrapper
+#   `AutoMergeModeTs` in src-tauri's settings.rs is what carries ts-rs
+#   so the core enum stays platform-agnostic.
 pulldown-cmark = "0.11"
 syntect = "5"
 serde = { version = "1", features = ["derive"] }
@@ -28,3 +31,7 @@ automerge = "0.5"
 base64 = "0.22"
 similar = "2.5"
 ts-rs = "8"
+
+[dev-dependencies]
+# A4 sidecar_path / auto_merge round-trip tests serialise via serde_json.
+serde_json = "1"

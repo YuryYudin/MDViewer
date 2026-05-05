@@ -18,7 +18,11 @@ fn export_all() -> Result<String, Box<dyn std::error::Error>> {
     buf.push_str("\n");
     buf.push_str(&mdviewer_lib::settings::ExternalChangeBehavior::export_to_string().unwrap());
     buf.push_str("\n");
-    buf.push_str(&mdviewer_lib::settings::AutoMergeMode::export_to_string().unwrap());
+    // A4: the runtime enum lives in `mdviewer-core` (no ts-rs dep). The
+    // desktop wrapper `AutoMergeModeTs` carries the `#[derive(TS)]` and
+    // is renamed to `AutoMergeMode` via `#[ts(rename = ...)]` so the
+    // emitted .ts file stays byte-identical to v0.2.0.
+    buf.push_str(&mdviewer_lib::settings::AutoMergeModeTs::export_to_string().unwrap());
     buf.push_str("\n");
     buf.push_str(&mdviewer_lib::settings::StartupMode::export_to_string().unwrap());
     buf.push_str("\n");

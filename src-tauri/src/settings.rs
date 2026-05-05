@@ -15,6 +15,15 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
+
+// A4: `AutoMergeMode` lives in `mdviewer-core` so the shared sidecar
+// merge code can take the policy as a parameter without depending on
+// the desktop's larger `Settings` struct. Re-exported here so existing
+// `crate::settings::AutoMergeMode` paths (sidecar.rs, main.rs IPC handlers,
+// integration tests) keep compiling. The serde shape stays
+// `#[serde(rename_all = "snake_case")]` on the core enum, so settings.toml
+// round-trips remain byte-identical.
+pub use mdviewer_core::auto_merge::AutoMergeMode;
 // `std::sync::mpsc` is unbounded but single-consumer; for a fan-out we keep a
 // Vec<Sender> behind a Mutex and emit by cloning the event to each subscriber.
 // This avoids tokio's broadcast and works without any async runtime.
@@ -55,13 +64,48 @@ pub enum ExternalChangeBehavior {
     Ignore,
 }
 
+// `AutoMergeMode` re-exported from `mdviewer_core::auto_merge` at the top
+// of this file. Local enum removed in A4.
+//
+// `AutoMergeModeTs` is a thin desktop-side mirror used purely for TypeScript
+// codegen. We can't `#[derive(ts_rs::TS)]` on the core enum (orphan rules
+// would force `mdviewer-core` to depend on `ts-rs`, which is desktop-only
+// per the design). The wrapper keeps the TS shape byte-identical to before
+// the move — `export type AutoMergeMode = "always" | "ask" | "manual";` —
+// via `#[ts(rename = "AutoMergeMode")]`. The `CommentsSettings.auto_merge`
+// field uses `#[ts(as = "AutoMergeModeTs")]` so ts-rs resolves the import
+// without needing the foreign enum to implement `TS`.
+//
+// Pinned by `auto_merge_ts_wrapper_matches_core_variants` in this file's
+// test module: any future variant added to `AutoMergeMode` must also be
+// added here, and round-trips between the two enums via `From` impls.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
-#[ts(export)]
+#[ts(export, rename = "AutoMergeMode")]
 #[serde(rename_all = "snake_case")]
-pub enum AutoMergeMode {
+pub enum AutoMergeModeTs {
     Always,
     Ask,
     Manual,
+}
+
+impl From<AutoMergeMode> for AutoMergeModeTs {
+    fn from(m: AutoMergeMode) -> Self {
+        match m {
+            AutoMergeMode::Always => AutoMergeModeTs::Always,
+            AutoMergeMode::Ask => AutoMergeModeTs::Ask,
+            AutoMergeMode::Manual => AutoMergeModeTs::Manual,
+        }
+    }
+}
+
+impl From<AutoMergeModeTs> for AutoMergeMode {
+    fn from(m: AutoMergeModeTs) -> Self {
+        match m {
+            AutoMergeModeTs::Always => AutoMergeMode::Always,
+            AutoMergeModeTs::Ask => AutoMergeMode::Ask,
+            AutoMergeModeTs::Manual => AutoMergeMode::Manual,
+        }
+    }
 }
 
 /// What MDViewer should do when the app launches.
@@ -131,6 +175,12 @@ pub struct EditorSettings {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
 #[ts(export)]
 pub struct CommentsSettings {
+    // `AutoMergeMode` is the foreign re-export from `mdviewer_core::auto_merge`,
+    // so we can't `derive(TS)` on it directly. `#[ts(as = "AutoMergeModeTs")]`
+    // tells ts-rs to use the desktop wrapper's name when emitting the import
+    // for this field, keeping the generated `import type { AutoMergeMode }`
+    // line identical to before the A4 extraction.
+    #[ts(as = "AutoMergeModeTs")]
     pub auto_merge: AutoMergeMode,
     pub reattachment_confidence: u8, // 1..=100
     pub sidecar_pattern: String,     // "{name}.md.comments.json"
@@ -454,6 +504,31 @@ fn diff_event(a: &Settings, b: &Settings) -> Option<ChangeEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A4 invariant: `AutoMergeModeTs` (the desktop TS-codegen wrapper)
+    /// must mirror `AutoMergeMode` (the core enum) variant-for-variant
+    /// and round-trip through both `From` impls without loss. If a future
+    /// variant lands in `mdviewer_core::auto_merge::AutoMergeMode`, this
+    /// match-on-every-variant pattern fails to compile until the same
+    /// variant is added here — the goal is to make drift impossible to
+    /// introduce silently.
+    #[test]
+    fn auto_merge_ts_wrapper_matches_core_variants() {
+        for core in [
+            AutoMergeMode::Always,
+            AutoMergeMode::Ask,
+            AutoMergeMode::Manual,
+        ] {
+            let ts: AutoMergeModeTs = core.into();
+            let back: AutoMergeMode = ts.into();
+            assert_eq!(core, back);
+            // Shape pin: snake_case JSON identical for both sides.
+            assert_eq!(
+                serde_json::to_string(&core).unwrap(),
+                serde_json::to_string(&ts).unwrap(),
+            );
+        }
+    }
 
     /// The font-zoom keymap actions (`font_increase`, `font_decrease`,
     /// `font_reset`) must ship with the universal browser-zoom accelerators

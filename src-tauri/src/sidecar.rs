@@ -18,6 +18,7 @@ use crate::comments::{merge_stores, store_from_automerge, store_to_automerge, Co
 use crate::settings::AutoMergeMode;
 use anyhow::{Context, Result};
 use base64::Engine;
+use mdviewer_core::sidecar_path::sidecar_filename;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -53,15 +54,14 @@ struct SchemaPeek {
 /// `".{name}.comments"` produce `.spec.comments`.
 pub fn sidecar_path(md_path: &Path, pattern: &str) -> PathBuf {
     let parent = md_path.parent().unwrap_or(Path::new(""));
-    let name = md_path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("");
-    // Replace `{name}` with the bare stem so the result stays predictable
-    // for any extension casing (.md / .MD / .markdown).
-    let stem = md_path.file_stem().and_then(|s| s.to_str()).unwrap_or(name);
-    let resolved = pattern.replace("{name}", stem);
-    parent.join(resolved)
+    let filename = md_path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    // A4: filename-shape resolution moved to `mdviewer_core::sidecar_path`
+    // so Android's `DocumentFile`-sibling logic shares the same
+    // `{name}` substitution rule. We retain the parent join here because
+    // desktop's `Path` API gives us the parent directly; Android can't
+    // do the same for `content://` URIs and joins via `DocumentFile`
+    // instead.
+    parent.join(sidecar_filename(filename, pattern))
 }
 
 /// Load a sidecar from disk into a fresh `CommentsStore`. Missing file is

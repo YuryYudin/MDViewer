@@ -7,5 +7,7 @@
 //! - A6: document, assets/document.css
 
 pub mod anchor;
+pub mod auto_merge;
 pub mod comments;
 pub mod document;
+pub mod sidecar_path;
