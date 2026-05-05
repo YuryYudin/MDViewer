@@ -10,4 +10,5 @@ pub mod anchor;
 pub mod auto_merge;
 pub mod comments;
 pub mod document;
+pub mod sidecar;
 pub mod sidecar_path;
