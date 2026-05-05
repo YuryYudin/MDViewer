@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Single-activity Compose host. Intent filters here cover the
+  "open from external app" surface (Drive, Gmail attachment, Files,
+  third-party file managers). The complementary ACTION_OPEN_DOCUMENT
+  chooser is fired *outbound* from MainActivity in Phase C5 — that is
+  how the in-app "Open file" FAB hands off to the system picker — and
+  doesn't need a manifest filter.
+
+  ACTION_SEND ("share to MDViewer") is intentionally NOT declared here:
+  the share-handler implementation lands in E3, and registering the
+  filter without a handler would route share targets to a black screen.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Mdviewer"
+        android:requestLegacyExternalStorage="false">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask">
+
+            <!-- Standard launcher entry point. -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!--
+              ACTION_VIEW for explicit text/markdown MIME. This is the
+              clean path Drive uses when it knows the file is markdown
+              (matches the `MarkdownFiles` SAF predicate the design
+              spec expects in Phase C).
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:mimeType="text/markdown" />
+            </intent-filter>
+
+            <!--
+              Path-pattern fallback for providers that hand us
+              `application/octet-stream` or `*/*` plus a filename ending
+              in .md / .markdown. Many file-manager apps and cloud
+              providers don't actually report text/markdown for .md
+              files (the IANA registration is recent), so this catch-all
+              keeps the open-from-Drive flow working in practice.
+
+              `pathPattern` glob: `.*\\.md` matches any path ending in
+              `.md`. The double-backslash is XML-escaped from a single
+              backslash that the manifest parser then escapes for the
+              regex engine. Order matters: the more specific .markdown
+              pattern goes after .md so the framework's pattern matcher
+              evaluates them top-down without ambiguity.
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:mimeType="*/*" />
+                <data android:host="*" />
+                <data android:pathPattern=".*\\.md" />
+                <data android:pathPattern=".*\\.markdown" />
+            </intent-filter>
+
+            <!-- ACTION_SEND filter intentionally added in E3. -->
+        </activity>
+    </application>
+
+</manifest>

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Adaptive-icon stub. The framework needs both a background and a
+  foreground; using @android:color/* as drawables avoids shipping
+  PNG / vector assets just to satisfy the launcher. A designed icon
+  replaces this in a follow-up.
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@android:color/white" />
+    <foreground android:drawable="@android:color/darker_gray" />
+</adaptive-icon>

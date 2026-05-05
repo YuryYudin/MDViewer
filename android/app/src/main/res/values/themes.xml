@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Light theme. We keep the AppCompat ancestor (NoActionBar variant)
+  because Compose's Activity host still walks up to a Theme.AppCompat
+  during inflation when activity-compose's ComponentActivity asks
+  AppCompat for resource resolution; using a non-AppCompat parent
+  surfaces a "needs Theme.AppCompat" runtime crash on some devices.
+-->
+<resources>
+    <style name="Theme.Mdviewer" parent="Theme.AppCompat.Light.NoActionBar">
+        <item name="android:windowSplashScreenBackground">#FFFFFF</item>
+    </style>
+</resources>

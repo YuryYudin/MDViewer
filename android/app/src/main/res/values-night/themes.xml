@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Dark-mode counterpart. Same parent family minus the `.Light` suffix
+  so AppCompat's auto-night switching picks the dark colorset; the
+  Compose MaterialTheme inside MdviewerApp drives the actual surface
+  colors at the Compose layer.
+-->
+<resources>
+    <style name="Theme.Mdviewer" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowSplashScreenBackground">#0F0F10</item>
+    </style>
+</resources>
