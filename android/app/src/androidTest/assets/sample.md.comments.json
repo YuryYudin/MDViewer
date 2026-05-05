@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "threads": [
+    {
+      "id": "t-existing-1",
+      "anchor": {
+        "selector_text": "This is a paragraph reviewers might highlight",
+        "context_before": "# Sample Document\n\n",
+        "context_after": " to start a thread.",
+        "char_start": 18,
+        "char_end": 64
+      },
+      "comments": [
+        {
+          "id": "c-1",
+          "author_id": "desktop-user",
+          "author_name": "Desktop User",
+          "author_color": "#7c3aed",
+          "body": "This thread came from desktop.",
+          "created_at": "2026-04-01T10:00:00Z"
+        }
+      ],
+      "resolved": false,
+      "created_at": "2026-04-01T10:00:00Z"
+    }
+  ]
+}
