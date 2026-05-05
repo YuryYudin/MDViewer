@@ -182,6 +182,16 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation("org.jetbrains.kotlin:kotlin-test")
     testImplementation(libs.robolectric)
+    // C3: tests under dev.mdviewer.saf.Sidecar* exercise the UniFFI-bound
+    // `loadSidecarBytes`/`saveSidecarBytes`/`sidecarFilename` helpers from
+    // :core on the host JVM. The :core AAR carries the generated Kotlin
+    // bindings + JNA runtime, but `Native.load("mdviewer_jni")` itself
+    // needs the *host*-built `libmdviewer_jni.so` on the JNA search
+    // path. We pull in the non-AAR JNA jar here (same trick :core uses
+    // for its UniffiSmokeTest) and the gradle wiring below stages the
+    // host library + sets `jna.library.path` for every JVM unit test
+    // variant in this module.
+    testImplementation("net.java.dev.jna:jna:5.14.0")
     // C1: `runTest` + StandardTestDispatcher for exercising the DataStore-
     // backed stores against a real preferences file under a Robolectric
     // Application context. The host-JVM dispatchers in coroutines-test let
@@ -213,6 +223,29 @@ dependencies {
     // uses Intents; the Drive ACTION_VIEW spec deliberately avoids it so
     // the manifest filter from B4 stays the failure surface.
     androidTestImplementation("androidx.test.espresso:espresso-intents:3.6.1")
+}
+
+// ---------------------------------------------------------------------------
+// Host-native libmdviewer_jni for :app JVM unit tests (C3+).
+//
+// :core already builds + stages the host library at
+// `core/build/jniLibs-host/libmdviewer_jni.{so,dylib,dll}` so its
+// UniffiSmokeTest can run on a developer's laptop without an emulator.
+// :app reuses that same staged artifact rather than re-running cargo:
+// the build is idempotent across modules and the host .so is identical.
+//
+// We hook every `:app:test*UnitTest` task to depend on `:core:stageHostLib`
+// and set `jna.library.path` to the same staging dir so JNA's
+// `Native.load("mdviewer_jni")` resolves before falling back to
+// `/usr/lib` — mirrors the wiring in `core/build.gradle.kts`.
+// ---------------------------------------------------------------------------
+val coreHostLibDir = project(":core").layout.buildDirectory.dir("jniLibs-host")
+
+tasks.withType<Test>().configureEach {
+    dependsOn(":core:stageHostLib")
+    doFirst {
+        systemProperty("jna.library.path", coreHostLibDir.get().asFile.absolutePath)
+    }
 }
 
 // ---------------------------------------------------------------------------
