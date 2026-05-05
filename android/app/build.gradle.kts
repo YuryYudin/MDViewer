@@ -37,6 +37,12 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.compose.compiler)
+    // C1: enables `@Serializable` codegen for the DataStore-backed stores
+    // under `dev.mdviewer.data.*`. The plugin emits per-class serializers at
+    // compile time so JSON round-trips on persisted RecentEntry / Profile
+    // payloads don't fall back to reflection (which is slower and would
+    // require shrinker rules in release builds).
+    alias(libs.plugins.kotlin.serialization)
     jacoco
 }
 
@@ -160,6 +166,12 @@ dependencies {
     implementation(libs.compose.material3)
     implementation(libs.navigation.compose)
     implementation(libs.datastore.preferences)
+    // C1: JSON encoder/decoder for the DataStore-backed Recents +
+    // ProfileStore + SettingsStore round-tripping. The kotlinx-serialization
+    // Gradle plugin (declared above) generates the per-class serializers at
+    // compile time; this dep ships the JSON format implementation those
+    // generated serializers delegate to.
+    implementation(libs.kotlinx.serialization.json)
     implementation(libs.documentfile)
     // AppAuth is pinned for v2 (cloud-comments OAuth flow). Kept on the
     // classpath so the API surface stabilizes against the resolved
@@ -170,6 +182,19 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation("org.jetbrains.kotlin:kotlin-test")
     testImplementation(libs.robolectric)
+    // C1: `runTest` + StandardTestDispatcher for exercising the DataStore-
+    // backed stores against a real preferences file under a Robolectric
+    // Application context. The host-JVM dispatchers in coroutines-test let
+    // us assert suspend writes complete deterministically without an
+    // emulator.
+    testImplementation(libs.kotlinx.coroutines.test)
+    // ApplicationProvider.getApplicationContext() ships in androidx.test.core
+    // and is the canonical way to obtain a Context inside a Robolectric
+    // unit test. Pulled in alongside the AndroidJUnit4 runner from
+    // androidx.test.ext:junit so the `@RunWith(AndroidJUnit4::class)` test
+    // classes resolve their imports.
+    testImplementation(libs.androidx.test.core)
+    testImplementation(libs.androidx.test.ext.junit)
 
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.test.rules)
