@@ -13,7 +13,10 @@ src-tauri/gen/
 # ts-rs auto-emits per-type .ts files under `bindings/` when running
 # `cargo test`. Our pipeline uses the `export_types` binary instead, which
 # writes to `src/types-generated.ts`, so the bindings/ directory is noise.
+# A6 split RenderOptions/RenderResult into mdviewer-core, which gets its
+# own auto-emitted bindings/ for the same reason.
 src-tauri/bindings/
+crates/mdviewer-core/bindings/
 
 # OS
 .DS_Store

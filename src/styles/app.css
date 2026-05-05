@@ -3,7 +3,15 @@
  * Variable vocabulary mirrors wireframes/styles.css; the wireframes are the
  * source of truth for layout and density. Per-view selectors are scoped via
  * data-view so a region's rules can never leak into a sibling region.
+ *
+ * Renderer-target styles (everything that targets [data-region='render'])
+ * live in crates/mdviewer-core/assets/document.css and are imported here so
+ * desktop and Android share one source of truth for the rendered markdown
+ * body's typography, code block chrome, table look, and anchor highlights.
+ * Per A6: do NOT re-add rules targeting [data-region='render'] in this
+ * file — they belong in the consolidated stylesheet only.
  */
+@import url('../../crates/mdviewer-core/assets/document.css');
 
 * {
   box-sizing: border-box;
@@ -448,87 +456,11 @@ body {
   flex-direction: column;
 }
 
-/* Rendered markdown typography (mirrors wireframe `.md`).
- * Heading / code / pre sizes are em-relative so they scale with
- * --doc-font-size on the [data-region='render'] container. */
-[data-region='render'] h1 {
-  font-size: 1.85em;
-  margin: 0 0 12px;
-}
-[data-region='render'] h2 {
-  font-size: 1.35em;
-  margin: 28px 0 8px;
-}
-[data-region='render'] h3 {
-  font-size: 1.15em;
-  margin: 22px 0 6px;
-}
-[data-region='render'] p {
-  margin: 0 0 12px;
-}
-[data-region='render'] ul,
-[data-region='render'] ol {
-  margin: 0 0 12px;
-  padding-left: 24px;
-}
-[data-region='render'] li {
-  margin: 2px 0;
-}
-[data-region='render'] pre {
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 10px 12px;
-  overflow-x: auto;
-  font-family: var(--mono);
-  font-size: 0.92em;
-  line-height: 1.45;
-}
-[data-region='render'] code {
-  font-family: var(--mono);
-  font-size: 0.92em;
-}
-[data-region='render'] table {
-  border-collapse: collapse;
-  margin: 6px 0 14px;
-}
-[data-region='render'] th,
-[data-region='render'] td {
-  border: 1px solid var(--border);
-  padding: 5px 10px;
-  text-align: left;
-}
-[data-region='render'] th {
-  background: var(--surface-2);
-  font-weight: 600;
-  text-align: center;
-}
-/* Zebra striping for body rows — matches GitHub's alternating-row look so
- * wide tables stay scannable. Even rows pick up --surface-2; odd rows
- * keep the default --surface (table inherits via td bg). The
- * tbody-scoped selector means thead's --surface-2 background still wins
- * for headers regardless of how many rows precede. */
-[data-region='render'] tbody tr:nth-child(even) td {
-  background: var(--surface-2);
-}
-[data-region='render'] blockquote {
-  margin: 0 0 12px;
-  padding: 4px 12px;
-  border-left: 3px solid var(--border-strong);
-  color: var(--text-dim);
-}
-[data-region='render'] mark[data-anchor] {
-  background: var(--highlight);
-  border-bottom: 1px dotted var(--user-amber);
-  padding: 0 1px;
-}
-[data-region='render'] mark[data-anchor].active {
-  background: var(--highlight-strong);
-}
-[data-region='render'] mark[data-anchor].resolved {
-  background: var(--resolved);
-  border-bottom-color: transparent;
-}
+/* Renderer-target typography for [data-region='render'] now lives in
+ * crates/mdviewer-core/assets/document.css. See the @import at the top
+ * of this file. Adding rules here that re-target [data-region='render']
+ * defeats the desktop/Android single source of truth — put them in the
+ * consolidated stylesheet instead. */
 
 /* =====================================================================
  * Edit mode (wireframe 07)

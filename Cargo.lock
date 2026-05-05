@@ -3109,6 +3109,12 @@ dependencies = [
 [[package]]
 name = "mdviewer-core"
 version = "0.1.0"
+dependencies = [
+ "pulldown-cmark",
+ "serde",
+ "syntect",
+ "ts-rs",
+]
 
 [[package]]
 name = "memchr"
