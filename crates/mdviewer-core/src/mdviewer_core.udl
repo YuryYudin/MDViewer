@@ -1,0 +1,87 @@
+// UniFFI interface for mdviewer-core.
+//
+// The Phase B1 surface covers the *read* path of the comments model:
+// render Markdown, load a sidecar from raw bytes, save it back to raw
+// bytes, list the threads from a loaded store, and resolve the sidecar
+// filename for a given document filename + pattern. Mutation methods
+// (create_thread, post_reply, resolve_thread, merge_stores) come in D1
+// when the Android UI layer needs them.
+//
+// The UDL deliberately mirrors the Rust shape declared in
+// `mdviewer_core::uniffi_bindings` rather than the per-module Anchor /
+// Comment / Thread / RenderResult types directly, because:
+//   - `Anchor` in anchor.rs uses `usize` for offsets — the UDL exposes
+//     u32 to keep Kotlin call sites trivial; the wrapper down-casts
+//     safely (sidecars longer than 4 GiB never happen).
+//   - `Comment` in comments.rs has optional `author_email` / `drive_id`
+//     fields the Kotlin side does not need in B1; the UDL trims to the
+//     minimum surface and the wrapper fills sensible defaults.
+//
+// `[Throws=CoreError]` on every fallible function maps Rust's
+// Result<_, CoreError> to a Kotlin checked exception.
+
+namespace mdviewer_core {
+    [Throws=CoreError]
+    RenderResult render_markdown(string source, RenderOptions opts);
+
+    [Throws=CoreError]
+    CommentsStoreHandle load_sidecar_bytes(bytes data);
+
+    [Throws=CoreError]
+    bytes save_sidecar_bytes(CommentsStoreHandle store);
+
+    string sidecar_filename(string doc_filename, string pattern);
+};
+
+dictionary RenderOptions {
+    boolean syntax_highlighting;
+    boolean mermaid_enabled;
+};
+
+dictionary RenderResult {
+    string html;
+    sequence<SrcSpan> spans;
+};
+
+dictionary SrcSpan {
+    u32 dom_index;
+    u32 src_start;
+    u32 src_end;
+};
+
+dictionary Anchor {
+    string selector_text;
+    string context_before;
+    string context_after;
+    u32 char_start;
+    u32 char_end;
+};
+
+dictionary Comment {
+    string id;
+    string author_id;
+    string author_name;
+    string author_color;
+    string body;
+    string created_at;
+};
+
+dictionary Thread {
+    string id;
+    Anchor anchor;
+    sequence<Comment> comments;
+    boolean resolved;
+    string created_at;
+};
+
+interface CommentsStoreHandle {
+    sequence<Thread> threads();
+};
+
+[Error]
+enum CoreError {
+    "Parse",
+    "Schema",
+    "Automerge",
+    "Internal",
+};

@@ -1,0 +1,31 @@
+[package]
+name = "mdviewer-jni"
+version = "0.1.0"
+edition = "2021"
+description = "UniFFI-bound JNI shim that re-exports mdviewer-core to Android."
+license = "GPL-3.0-or-later"
+
+# crate-type doubles up so cargo-ndk can produce both the Android .so
+# (cdylib) and a static-link target useful for test harnesses (staticlib).
+# rlib is implicit for the test crate to consume the public surface.
+[lib]
+name = "mdviewer_jni"
+crate-type = ["staticlib", "cdylib", "rlib"]
+path = "src/lib.rs"
+
+[dependencies]
+# Pull mdviewer-core with the `uniffi` feature on. Desktop's src-tauri
+# Cargo.toml deliberately does NOT enable this feature, so the desktop
+# build never links UniFFI's runtime/macros.
+mdviewer-core = { path = "../mdviewer-core", features = ["uniffi"] }
+# Runtime UniFFI types (`Arc`, FFI converter traits) are referenced via
+# the re-exported `mdviewer_core::*` surface. Listing it here keeps
+# rust-analyzer happy when it indexes this crate in isolation. No
+# `tokio` feature — the v1 surface is fully synchronous.
+uniffi = "0.28"
+
+[dev-dependencies]
+# Smoke tests use anyhow to fabricate an error and prove the
+# `From<anyhow::Error> for CoreError` adapter funnels every internal
+# failure through the UDL's [Throws=CoreError] surface.
+anyhow = "1"
