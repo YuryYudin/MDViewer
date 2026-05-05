@@ -14,11 +14,27 @@ const FIXTURE: &str = include_str!("fixtures/render_pin_input.md");
 const EXPECTED: &str = include_str!("fixtures/render_pin_expected.html");
 
 #[test]
-fn render_byte_identical_to_pin_fixture() {
+fn render_pin_byte_identical_to_fixture() {
     let opts = RenderOptions {
         syntax_highlighting: true,
         mermaid_enabled: false,
     };
     let result = render_markdown(FIXTURE, &opts);
     assert_eq!(result.html.trim(), EXPECTED.trim());
+
+    // text_spans guard: render_markdown emits one (start, end) tuple per text
+    // chunk it walks. The fixture has multiple paragraphs and inline spans, so
+    // the count must be > 0 and every offset must lie within the source.
+    assert!(
+        !result.text_spans.is_empty(),
+        "render_markdown should emit at least one text span for the fixture"
+    );
+    for &(s, e) in &result.text_spans {
+        assert!(s <= e, "text_span start {s} > end {e}");
+        assert!(
+            e <= FIXTURE.len(),
+            "text_span end {e} past fixture length {}",
+            FIXTURE.len()
+        );
+    }
 }
