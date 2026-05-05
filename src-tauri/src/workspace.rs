@@ -501,7 +501,7 @@ impl Workspace {
         let api = self
             .drive_api
             .as_ref()
-            .ok_or_else(|| SaveError::Drive(crate::drive::DriveError::NotConnected))?
+            .ok_or(SaveError::Drive(crate::drive::DriveError::NotConnected))?
             .clone();
         let file_id = self
             .tabs
@@ -1344,7 +1344,7 @@ impl Workspace {
     /// immediately dropped) so the `save_drive_desktop_tab` flow has a
     /// `compare_for_save` target without forcing every test to construct
     /// + manage one. Production callers go through `Workspace::new` and
-    /// rely on B5 plumbing the Tauri-managed Watcher in.
+    ///   rely on B5 plumbing the Tauri-managed Watcher in.
     pub fn new_for_test(config_dir: &std::path::Path) -> Self {
         let mut ws = Self::new(config_dir).expect("Workspace::new for tests");
         // Drop the receiver immediately — the watcher's notify thread will

@@ -5,8 +5,15 @@
 //! disconnect leaves them unchanged (they go read-only and prompt for
 //! reconnect rather than downgrading to Local).
 
+// These imports back the macOS-gated tests below. On other platforms the
+// `compute_backend` assertions are skipped, so the symbols would otherwise
+// look unused to clippy. Gating the imports keeps `-D warnings` clean
+// without `#[allow(unused_imports)]`.
+#[cfg(target_os = "macos")]
 use mdviewer_lib::drive::TabBackend;
+#[cfg(target_os = "macos")]
 use mdviewer_lib::workspace::Tab;
+#[cfg(target_os = "macos")]
 use std::path::Path;
 
 #[cfg(target_os = "macos")]

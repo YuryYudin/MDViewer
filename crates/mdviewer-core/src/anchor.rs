@@ -178,11 +178,12 @@ pub fn resolve_anchor_with_threshold(
     let pre_score = matching_suffix_len(&source[..start], &anchor.prefix);
     let suf_score = matching_prefix_len(&source[end..], &anchor.suffix);
     let context_len = anchor.prefix.len() + anchor.suffix.len();
-    let context_score_pct: u8 = if context_len == 0 {
-        100
-    } else {
-        (((pre_score + suf_score) * 100) / context_len) as u8
-    };
+    // `checked_div` returns None for context_len == 0 (no surrounding context
+    // recorded → vacuously full score). Otherwise normalize to a 0..=100 pct.
+    let context_score_pct: u8 = ((pre_score + suf_score) * 100)
+        .checked_div(context_len)
+        .map(|v| v as u8)
+        .unwrap_or(100);
     if context_score_pct < threshold_pct {
         return ResolveOutcome::Orphan;
     }

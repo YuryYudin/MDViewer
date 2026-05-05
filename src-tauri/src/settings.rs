@@ -41,18 +41,13 @@ pub enum Theme {
 /// near-black background, warm grey panels (the look the user picked from
 /// the wireframe round). `Cool` shifts the dark palette slightly bluish,
 /// closer to a code-editor feel. Inert when the active theme is `Light`.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS, Default)]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
 pub enum DarkVariant {
+    #[default]
     Pure,
     Cool,
-}
-
-impl Default for DarkVariant {
-    fn default() -> Self {
-        Self::Pure
-    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
@@ -117,18 +112,13 @@ impl From<AutoMergeModeTs> for AutoMergeMode {
 /// re-activating the same tab. Backed by `<data_dir>/session.json`,
 /// which Workspace updates eagerly on every open / close so a crash
 /// doesn't lose the state. The Settings.ts dropdown writes this field.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS, Default)]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
 pub enum StartupMode {
+    #[default]
     Clean,
     Restore,
-}
-
-impl Default for StartupMode {
-    fn default() -> Self {
-        Self::Clean
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
@@ -194,19 +184,14 @@ pub struct AdvancedSettings {
     pub verbose_logs: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS, Default)]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
 pub enum BackendMode {
+    #[default]
     Auto,
     AlwaysSidecar,
     AlwaysDrive,
-}
-
-impl Default for BackendMode {
-    fn default() -> Self {
-        BackendMode::Auto
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
@@ -443,9 +428,9 @@ impl SettingsStore {
         {
             let mut g = self.inner.write().unwrap();
             let before = g.clone();
-            f(&mut *g);
-            clamp(&mut *g);
-            event = diff_event(&before, &*g);
+            f(&mut g);
+            clamp(&mut g);
+            event = diff_event(&before, &g);
             snapshot = g.clone();
         }
         // Only touch disk when something actually changed. Skipping no-op

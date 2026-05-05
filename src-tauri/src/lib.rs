@@ -27,9 +27,41 @@ pub fn build_info() -> BuildInfo {
     }
 }
 
-// Workspace re-export so `mdviewer_lib::mdviewer_core::*` resolves identically
-// to the in-crate paths for any external consumer (only export_types today).
-pub use mdviewer_core;
+// Workspace re-exports (A7).
+//
+// Phase A (A3-A6) split the platform-agnostic core (anchor, comments,
+// document::render, sidecar::{parse,serialize,merge}, auto_merge enum,
+// sidecar_path filename helper) into the `mdviewer-core` crate so the
+// upcoming Android target can consume the same logic via UniFFI without
+// dragging in `notify`, `tauri`, or our filesystem helpers.
+//
+// To keep the existing `crate::anchor::*` / `crate::comments::*` /
+// `crate::document::*` / `crate::sidecar::*` import paths resolving for
+// every desktop call site, we keep the per-module stub files in
+// `src-tauri/src/`:
+//
+// * Pure re-export stubs (no desktop additions) — `anchor.rs`, `comments.rs`.
+//   Each is a 1-liner: `pub use mdviewer_core::<module>::*;`. Don't delete
+//   them; the call sites in `workspace.rs` / `drive/comments.rs` import via
+//   `crate::anchor::{self, Anchor}` etc. and `self` only resolves while a
+//   local module by that name exists.
+//
+// * Thin desktop wrappers — `document.rs` (adds `save_document` + the
+//   IPC-facing `SaveOutcome`), `sidecar.rs` (adds path-based `load_sidecar`
+//   / `save_sidecar` + the `merge_with_policy` pass-through), `settings.rs`
+//   (re-exports `AutoMergeMode` from core for back-compat). These pull
+//   `pub use mdviewer_core::<module>::{...}` for the items that moved and
+//   own the desktop-only items themselves.
+//
+// We deliberately do NOT add `pub use mdviewer_core;` at the top level: it
+// would create the path `crate::mdviewer_core::anchor`, which doesn't match
+// the existing `crate::anchor` call sites and offers nothing the stubs
+// don't already cover.
+//
+// The two core modules with no desktop wrapper today (`auto_merge`,
+// `sidecar_path`) are exposed via aliases so a future call site can write
+// `crate::auto_merge::AutoMergeMode` without first creating another stub.
+pub use mdviewer_core::{auto_merge, sidecar_path};
 
 pub mod anchor;
 pub mod cli;

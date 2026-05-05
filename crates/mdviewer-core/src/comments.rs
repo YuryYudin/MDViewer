@@ -393,7 +393,7 @@ fn union_thread(local: Thread, incoming: Thread) -> Thread {
     use std::collections::HashSet;
     let mut seen: HashSet<String> = HashSet::new();
     let mut comments: Vec<Comment> = Vec::new();
-    for c in local.comments.into_iter().chain(incoming.comments.into_iter()) {
+    for c in local.comments.into_iter().chain(incoming.comments) {
         if seen.insert(c.id.clone()) {
             comments.push(c);
         }
