@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>MDViewer Android — 09 · Dark Theme</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <p class="page-title">09 · Document View — Dark</p>
+  <p class="page-sub">Same scene as 04 in dark theme. Validates that anchored highlight legibility, comment-bubble badge, and code-fence backgrounds all work against the dark surface stack. Theme switching is reactive (no restart) — driven by the SettingsStore.</p>
+
+  <div class="phone m3-dark">
+    <div class="phone__notch"></div>
+    <div class="phone__screen">
+      <div class="statusbar">
+        <span class="statusbar__time">9:41</span>
+        <span class="statusbar__icons">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M2 22h20V2L2 22z"/></svg>
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3C7 3 2.7 5.6.7 9.4l1.7 1.4C4.2 7.6 7.9 5 12 5s7.8 2.6 9.6 5.8l1.7-1.4C21.3 5.6 17 3 12 3z"/></svg>
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17 4h-2V2H9v2H7c-1.1 0-2 .9-2 2v15c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 17H7V6h10v15z"/></svg>
+        </span>
+      </div>
+
+      <header class="appbar">
+        <div class="appbar__icon" title="Back">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 11H7.8l5.6-5.6L12 4l-8 8 8 8 1.4-1.4L7.8 13H20v-2z"/></svg>
+        </div>
+        <div style="flex: 1; min-width: 0; padding: 0 4px;">
+          <div class="appbar__title appbar__title--small" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">atlas-mobile-strategy.md</div>
+          <div class="appbar__sub" style="display: flex; align-items: center; gap: 6px;">
+            <svg viewBox="0 0 24 24" width="11" height="11" fill="#8AB4F8"><path d="M19.6 11l-5.6-9.7a1 1 0 0 0-1.7 0L7 11l7.5 12.1c.4.6 1.3.6 1.7 0L24 11h-4.4z"/></svg>
+            Drive · Atlas / strategy
+          </div>
+        </div>
+        <div class="appbar__icon" title="Comments">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M21.99 4c0-1.1-.89-2-1.99-2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h14l4 4-.01-18z"/></svg>
+          <span style="position: absolute; top: 6px; right: 6px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--md-sys-color-error); color: #1D1B20; font-size: 10px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center;">3</span>
+        </div>
+        <div class="appbar__icon">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 8a2 2 0 1 0 0-4 2 2 0 0 0 0 4zm0 2a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm0 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg>
+        </div>
+      </header>
+
+      <div class="body">
+        <div class="scroll doc">
+
+          <h1>Atlas Mobile — Q3 review</h1>
+
+          <p>We've shipped the desktop client to a small private beta. Feedback on collaboration is positive but reviewers consistently ask for a way to <span class="anchored">work from their phone</span>.</p>
+
+          <h2>What we know</h2>
+
+          <ul>
+            <li>12 of 18 beta reviewers commented from a phone in the past two weeks <span class="anchored">by replying via Drive's web UI</span> — the desktop sidecar picked those up correctly within ~10 seconds.</li>
+            <li>Drive comments arrive in the desktop sidecar within 5–10 seconds while the window is focused.</li>
+            <li>The sidecar format is portable; nothing in the v2 envelope is desktop-specific. <span class="anchored anchored--resolved">A reviewer can carry a folder between devices unchanged.</span></li>
+          </ul>
+
+          <h2>What's new this milestone</h2>
+
+          <ol>
+            <li>Standalone APK distribution (out of the Play Store for v1)</li>
+            <li>Open via the Storage Access Framework — Drive, Dropbox, OneDrive, local — all show up in the picker</li>
+            <li>Comment-only edits — no Markdown editing yet</li>
+          </ol>
+
+          <h3>Anchor model</h3>
+          <p>Anchors are W3C TextQuoteSelectors flattened: <code>exact</code> + <code>prefix</code> + <code>suffix</code> + offsets. The mobile client reuses the desktop's Bitap fuzzy resolver via the shared Rust core.</p>
+
+          <pre>fn resolve_anchor_with_threshold(
+    source: &amp;str,
+    anchor: &amp;Anchor,
+    threshold_pct: u8,
+) -&gt; ResolveOutcome { ... }</pre>
+
+          <blockquote>
+            The unit of collaboration is a folder. Comments live next to the document. The mobile client honors that contract — sidecars persist as DocumentFile siblings.
+          </blockquote>
+
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

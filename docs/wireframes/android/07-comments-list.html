@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>MDViewer Android — 07 · All Comments Drawer</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <p class="page-title">07 · All Comments Drawer</p>
+  <p class="page-sub">Equivalent to desktop's CommentsSidebar.ts — every thread in the doc, ordered by anchor offset, with author avatars + last-reply preview. Resolved/Unresolved tabs match desktop's show-resolved toggle. Tapping a row jumps to the anchor in the document and opens Thread Detail (06).</p>
+
+  <div class="phone">
+    <div class="phone__notch"></div>
+    <div class="phone__screen">
+      <div class="statusbar">
+        <span class="statusbar__time">9:41</span>
+        <span class="statusbar__icons">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M2 22h20V2L2 22z"/></svg>
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3C7 3 2.7 5.6.7 9.4l1.7 1.4C4.2 7.6 7.9 5 12 5s7.8 2.6 9.6 5.8l1.7-1.4C21.3 5.6 17 3 12 3z"/></svg>
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17 4h-2V2H9v2H7c-1.1 0-2 .9-2 2v15c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 17H7V6h10v15z"/></svg>
+        </span>
+      </div>
+
+      <header class="appbar">
+        <div class="appbar__icon" title="Back">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 11H7.8l5.6-5.6L12 4l-8 8 8 8 1.4-1.4L7.8 13H20v-2z"/></svg>
+        </div>
+        <div style="flex: 1; padding: 0 4px;">
+          <div class="appbar__title appbar__title--small">All comments</div>
+          <div class="appbar__sub">3 open · 2 resolved</div>
+        </div>
+        <div class="appbar__icon" title="Filter">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 5h18v2H3V5zm4 6h10v2H7v-2zm4 6h2v2h-2v-2z"/></svg>
+        </div>
+      </header>
+
+      <div style="display: flex; gap: 8px; padding: 8px 16px 12px; border-bottom: 1px solid var(--md-sys-color-outline-variant); background: var(--md-sys-color-surface);">
+        <button class="btn btn--tonal btn--small" style="height: 36px; border-radius: 18px; padding: 0 16px; gap: 6px;">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg>
+          Open · 3
+        </button>
+        <button class="btn btn--text" style="height: 36px;">Resolved · 2</button>
+        <button class="btn btn--text" style="height: 36px; margin-left: auto;">All · 5</button>
+      </div>
+
+      <div class="body">
+        <div class="scroll" style="padding: 0 0 24px;">
+
+          <div class="row" style="align-items: flex-start; padding: 14px 16px;">
+            <div class="avatar" style="background: var(--author-7);">RP</div>
+            <div class="row__main" style="padding-right: 8px;">
+              <div style="display: flex; gap: 8px; align-items: center;">
+                <span class="row__title">Rui Park</span>
+                <span style="font-size: 11px; color: var(--md-sys-color-on-surface-variant);">· 2h</span>
+                <span style="margin-left: auto; font-size: 11px; color: var(--md-sys-color-on-surface-variant);">3 replies</span>
+              </div>
+              <div style="font-size: 12px; color: var(--md-sys-color-on-surface-variant); border-left: 2px solid var(--md-sys-color-primary); padding-left: 8px; margin-top: 4px; font-style: italic;">"work from their phone"</div>
+              <div style="font-size: 13px; color: var(--md-sys-color-on-surface); margin-top: 6px; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">Strong agree — half of my review cycle happens between meetings. Even read-only on phone would unblock most of the workflow.</div>
+            </div>
+          </div>
+
+          <div style="height: 1px; background: var(--md-sys-color-outline-variant); margin: 0 16px;"></div>
+
+          <div class="row" style="align-items: flex-start; padding: 14px 16px;">
+            <div class="avatar" style="background: var(--author-2);">MK</div>
+            <div class="row__main" style="padding-right: 8px;">
+              <div style="display: flex; gap: 8px; align-items: center;">
+                <span class="row__title">Mei Kuroda</span>
+                <span style="font-size: 11px; color: var(--md-sys-color-on-surface-variant);">· 5h</span>
+                <span style="margin-left: auto; font-size: 11px; color: var(--md-sys-color-on-surface-variant);">1 reply</span>
+              </div>
+              <div style="font-size: 12px; color: var(--md-sys-color-on-surface-variant); border-left: 2px solid var(--md-sys-color-primary); padding-left: 8px; margin-top: 4px; font-style: italic;">"by replying via Drive's web UI"</div>
+              <div style="font-size: 13px; color: var(--md-sys-color-on-surface); margin-top: 6px; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">Worth showing the Drive web URL alongside on each thread? When you fall back to web you lose the phone-side context.</div>
+            </div>
+          </div>
+
+          <div style="height: 1px; background: var(--md-sys-color-outline-variant); margin: 0 16px;"></div>
+
+          <div class="row" style="align-items: flex-start; padding: 14px 16px;">
+            <div class="avatar" style="background: var(--author-4);">DS</div>
+            <div class="row__main" style="padding-right: 8px;">
+              <div style="display: flex; gap: 8px; align-items: center;">
+                <span class="row__title">Daisy Sato</span>
+                <span style="font-size: 11px; color: var(--md-sys-color-on-surface-variant);">· yesterday</span>
+                <span style="margin-left: auto; font-size: 11px; color: var(--md-sys-color-on-surface-variant);">no replies</span>
+              </div>
+              <div style="font-size: 12px; color: var(--md-sys-color-on-surface-variant); border-left: 2px solid var(--md-sys-color-primary); padding-left: 8px; margin-top: 4px; font-style: italic;">"5–10 seconds while the window is focused"</div>
+              <div style="font-size: 13px; color: var(--md-sys-color-on-surface); margin-top: 6px; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">Should we drop "while the window is focused"? Not relevant on phones once we ship background poll later.</div>
+            </div>
+          </div>
+
+          <div style="padding: 24px 16px 8px; font-size: 13px; font-weight: 500; color: var(--md-sys-color-on-surface-variant); text-transform: uppercase; letter-spacing: 0.4px;">Recently resolved</div>
+
+          <div class="row" style="align-items: flex-start; padding: 14px 16px; opacity: 0.7;">
+            <div class="avatar" style="background: var(--author-1);">JL</div>
+            <div class="row__main" style="padding-right: 8px;">
+              <div style="display: flex; gap: 8px; align-items: center;">
+                <span class="row__title">Jordan Lee</span>
+                <span style="font-size: 11px; color: var(--md-sys-color-on-surface-variant);">· 3d</span>
+                <span class="chip chip--resolved" style="margin-left: auto;">resolved</span>
+              </div>
+              <div style="font-size: 12px; color: var(--md-sys-color-on-surface-variant); border-left: 2px solid var(--md-sys-color-outline-variant); padding-left: 8px; margin-top: 4px; font-style: italic; text-decoration: line-through;">"A reviewer can carry a folder between devices"</div>
+              <div style="font-size: 13px; color: var(--md-sys-color-on-surface-variant); margin-top: 6px; line-height: 1.45;">Confirmed — round-trip works without re-importing.</div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

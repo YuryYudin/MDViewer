@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>MDViewer Android — Wireframe Index</title>
+  <link rel="stylesheet" href="styles.css" />
+  <style>
+    body { background: #f1f3f5; padding: 32px 0; }
+    .index-head {
+      max-width: 1100px;
+      margin: 0 auto 32px;
+      padding: 0 24px;
+      text-align: left;
+    }
+    .index-head h1 {
+      font-size: 28px;
+      font-weight: 500;
+      margin: 0 0 6px;
+    }
+    .index-head p {
+      font-size: 14px;
+      color: #555;
+      margin: 0;
+      line-height: 1.6;
+    }
+    .index-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 32px;
+      max-width: 1500px;
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+    .index-card {
+      background: #fff;
+      border-radius: 14px;
+      padding: 18px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 0 rgba(0,0,0,0.04);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .index-card a.preview {
+      display: block;
+      width: 100%;
+      aspect-ratio: 412 / 891;
+      border: 1px solid #e1e3e8;
+      border-radius: 12px;
+      overflow: hidden;
+      position: relative;
+      background: #fafafa;
+      text-decoration: none;
+    }
+    .index-card iframe {
+      position: absolute;
+      top: 0; left: 0;
+      width: 760px;
+      height: 1640px;
+      border: 0;
+      pointer-events: none;
+      transform: scale(0.36);
+      transform-origin: top left;
+    }
+    .index-card .meta {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .index-card .num {
+      font-size: 11px;
+      color: #6750A4;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+    }
+    .index-card .title {
+      font-size: 15px;
+      font-weight: 500;
+      color: #1d1b20;
+    }
+    .index-card .desc {
+      font-size: 12px;
+      color: #555;
+      line-height: 1.55;
+    }
+    .index-card .open {
+      font-size: 12px;
+      color: #6750A4;
+      text-decoration: none;
+      font-weight: 500;
+      align-self: flex-start;
+    }
+  </style>
+</head>
+<body>
+  <div class="index-head">
+    <h1>MDViewer for Android — wireframes</h1>
+    <p>Ten frames cover the v1 user journey. Each links to its standalone HTML so you can resize, inspect, and review interaction details. The phone frame is sized at 412 × 891 dp (Pixel 7 / 8 family). Material 3 light and dark theme tokens are scoped under <code>.m3-light</code> / <code>.m3-dark</code>.</p>
+  </div>
+
+  <div class="index-grid">
+    <div class="index-card">
+      <a class="preview" href="01-startup-empty.html"><iframe src="01-startup-empty.html" scrolling="no"></iframe></a>
+      <div class="meta">
+        <span class="num">01</span>
+        <span class="title">Startup — empty recents</span>
+        <span class="desc">Post-profile entry point with no opened files yet. FAB and Drive nudge.</span>
+      </div>
+      <a class="open" href="01-startup-empty.html">Open standalone →</a>
+    </div>
+
+    <div class="index-card">
+      <a class="preview" href="02-profile-setup.html"><iframe src="02-profile-setup.html" scrolling="no"></iframe></a>
+      <div class="meta">
+        <span class="num">02</span>
+        <span class="title">First-launch profile setup</span>
+        <span class="desc">Display name + author color picker. Same data model as desktop.</span>
+      </div>
+      <a class="open" href="02-profile-setup.html">Open standalone →</a>
+    </div>
+
+    <div class="index-card">
+      <a class="preview" href="03-recents.html"><iframe src="03-recents.html" scrolling="no"></iframe></a>
+      <div class="meta">
+        <span class="num">03</span>
+        <span class="title">Recents — populated</span>
+        <span class="desc">MRU list, source chip per row, "Open file" FAB.</span>
+      </div>
+      <a class="open" href="03-recents.html">Open standalone →</a>
+    </div>
+
+    <div class="index-card">
+      <a class="preview" href="04-document-view.html"><iframe src="04-document-view.html" scrolling="no"></iframe></a>
+      <div class="meta">
+        <span class="num">04</span>
+        <span class="title">Document view — light</span>
+        <span class="desc">Rendered Markdown with anchored highlights, comment-count badge.</span>
+      </div>
+      <a class="open" href="04-document-view.html">Open standalone →</a>
+    </div>
+
+    <div class="index-card">
+      <a class="preview" href="05-selection-popover.html"><iframe src="05-selection-popover.html" scrolling="no"></iframe></a>
+      <div class="meta">
+        <span class="num">05</span>
+        <span class="title">Selection popover</span>
+        <span class="desc">Long-press selection → action sheet → "Comment on selection".</span>
+      </div>
+      <a class="open" href="05-selection-popover.html">Open standalone →</a>
+    </div>
+
+    <div class="index-card">
+      <a class="preview" href="06-thread-detail.html"><iframe src="06-thread-detail.html" scrolling="no"></iframe></a>
+      <div class="meta">
+        <span class="num">06</span>
+        <span class="title">Thread detail</span>
+        <span class="desc">Bottom-sheet thread with anchored quote, replies, resolve, compose row.</span>
+      </div>
+      <a class="open" href="06-thread-detail.html">Open standalone →</a>
+    </div>
+
+    <div class="index-card">
+      <a class="preview" href="07-comments-list.html"><iframe src="07-comments-list.html" scrolling="no"></iframe></a>
+      <div class="meta">
+        <span class="num">07</span>
+        <span class="title">All comments drawer</span>
+        <span class="desc">Ordered list of every thread, Open / Resolved / All tabs.</span>
+      </div>
+      <a class="open" href="07-comments-list.html">Open standalone →</a>
+    </div>
+
+    <div class="index-card">
+      <a class="preview" href="08-settings.html"><iframe src="08-settings.html" scrolling="no"></iframe></a>
+      <div class="meta">
+        <span class="num">08</span>
+        <span class="title">Settings</span>
+        <span class="desc">Theme, profile, sidecar pattern, reattachment confidence, About.</span>
+      </div>
+      <a class="open" href="08-settings.html">Open standalone →</a>
+    </div>
+
+    <div class="index-card">
+      <a class="preview" href="09-dark-document.html"><iframe src="09-dark-document.html" scrolling="no"></iframe></a>
+      <div class="meta">
+        <span class="num">09</span>
+        <span class="title">Document view — dark</span>
+        <span class="desc">Dark theme parity check for highlights, badges, code blocks.</span>
+      </div>
+      <a class="open" href="09-dark-document.html">Open standalone →</a>
+    </div>
+
+    <div class="index-card">
+      <a class="preview" href="10-reload-toast.html"><iframe src="10-reload-toast.html" scrolling="no"></iframe></a>
+      <div class="meta">
+        <span class="num">10</span>
+        <span class="title">Reload action + snackbar</span>
+        <span class="desc">Overflow → Reload from storage; "N new comments" snackbar.</span>
+      </div>
+      <a class="open" href="10-reload-toast.html">Open standalone →</a>
+    </div>
+
+  </div>
+</body>
+</html>
