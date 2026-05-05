@@ -28,3 +28,8 @@ Thumbs.db
 .claude/worktrees/
 .claude/tcoder/
 Screenshot*.png
+
+# A2: workspace + coverage
+/target
+/coverage.lcov
+crates/*/target

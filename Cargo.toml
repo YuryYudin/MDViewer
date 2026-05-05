@@ -1,0 +1,9 @@
+[workspace]
+resolver = "2"
+members = ["src-tauri", "crates/mdviewer-core"]
+
+# Populated as dependencies move in Phase A:
+# [workspace.dependencies]
+# automerge = "0.5"
+# pulldown-cmark = "0.11"
+# ...

@@ -25,6 +25,10 @@ path = "src/bin/export_types.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+# A2: workspace-local crate that will absorb anchor/comments/sidecar/render
+# code in A3-A6. Currently an empty stub — adding the path dep here so later
+# tasks can `use mdviewer_core::*` without re-touching this manifest.
+mdviewer-core = { path = "../crates/mdviewer-core" }
 tauri = { version = "2", features = ["devtools"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"

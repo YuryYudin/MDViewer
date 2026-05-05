@@ -1,0 +1,10 @@
+[package]
+name = "mdviewer-core"
+version = "0.1.0"
+edition = "2021"
+description = "Shared MDViewer core: anchor + comments + sidecar + render."
+license = "GPL-3.0-or-later"
+
+[lib]
+name = "mdviewer_core"
+path = "src/lib.rs"
