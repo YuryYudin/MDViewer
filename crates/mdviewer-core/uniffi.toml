@@ -10,3 +10,10 @@
 [bindings.kotlin]
 package_name = "dev.mdviewer.core"
 android_cleaner = true
+# UniFFI 0.28's default library name for Kotlin is `uniffi_<namespace>` —
+# i.e. `libuniffi_mdviewer_core.so`. Our cdylib is built from the
+# mdviewer-jni shim (which produces `libmdviewer_jni.so`), so the
+# generated `Native.load(...)` would otherwise fail with
+# `UnsatisfiedLinkError`. `cdylib_name` overrides the lookup target
+# so the bindings dlopen the actual artifact name.
+cdylib_name = "mdviewer_jni"

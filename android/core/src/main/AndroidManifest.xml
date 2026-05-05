@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  :core is a pure-library AAR — no permissions, no activities, no
+  services. AGP still requires a manifest file at this path; an empty
+  <manifest> with just the namespace is enough to satisfy the merger.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+</manifest>
