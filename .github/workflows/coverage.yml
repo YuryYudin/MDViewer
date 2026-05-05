@@ -9,5 +9,10 @@ jobs:
         with: { components: llvm-tools-preview }
       - run: cargo install cargo-llvm-cov --locked
       - run: cargo llvm-cov --workspace --lcov --output-path coverage.lcov
+      - name: Self-test the coverage gate script
+        run: tests/scripts/check_coverage_test.sh
+      - name: Gate mdviewer-core at 80% line coverage
+        run: scripts/check-coverage.sh coverage.lcov 80 crates/mdviewer-core/
       - uses: actions/upload-artifact@v4
+        if: always()
         with: { name: coverage-lcov, path: coverage.lcov }
