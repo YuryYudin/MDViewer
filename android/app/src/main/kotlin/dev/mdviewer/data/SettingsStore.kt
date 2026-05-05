@@ -106,8 +106,13 @@ class SettingsStore(
      * [setTheme] which guarantees the encoded value round-trips through
      * [decodeTheme]; the test suite uses this to assert that bogus on-
      * disk values fall back to FollowSystem rather than throwing.
+     *
+     * `internal` keeps this off the production API surface — callers
+     * outside the `:app` module cannot corrupt the theme slot with
+     * arbitrary strings. `:app`-internal tests in the same module still
+     * resolve it because Kotlin's `internal` is module-scoped.
      */
-    suspend fun setThemeRaw(raw: String) {
+    internal suspend fun setThemeRaw(raw: String) {
         store.edit { it[themeKey] = raw }
     }
 
