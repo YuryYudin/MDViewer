@@ -11,6 +11,16 @@ datastore = "1.1.1"
 appauth = "0.11.1"   # v2 anchor; not used in v1 code
 cargo-ndk = "1.2.1"
 uniffi = "0.28.3"
+# kotlinx-serialization 1.7.x ships the JSON encoder/decoder used by the
+# Phase C1 DataStore-backed stores (Recents, Profile, Settings). Pinned
+# to the stable line that ships with Kotlin 2.0.0 so a silent transitive
+# bump can't change the wire format underneath persisted entries.
+kotlinx-serialization = "1.7.1"
+# coroutines-test provides `runTest` + the Standard/Unconfined test
+# dispatchers used by the host-JVM stores' unit tests. Trails the
+# Kotlin 2.0.0 stable channel; matches the version Compose-BOM 2024.06
+# resolves transitively at runtime so we don't double-graph the API.
+kotlinx-coroutines = "1.8.1"
 
 [libraries]
 appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
@@ -23,6 +33,10 @@ compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
 compose-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }
 navigation-compose = { group = "androidx.navigation", name = "navigation-compose", version.ref = "navigation" }
 datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
+kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinx-serialization" }
+kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "kotlinx-coroutines" }
+androidx-test-core = { group = "androidx.test", name = "core", version = "1.6.1" }
+androidx-test-ext-junit = { group = "androidx.test.ext", name = "junit", version = "1.2.1" }
 appauth = { group = "net.openid", name = "appauth", version.ref = "appauth" }
 documentfile = { group = "androidx.documentfile", name = "documentfile", version = "1.0.1" }
 junit = { group = "junit", name = "junit", version = "4.13.2" }
@@ -35,4 +49,5 @@ android-application = { id = "com.android.application", version.ref = "agp" }
 android-library = { id = "com.android.library", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 compose-compiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 mozilla-rust-android-gradle = { id = "org.mozilla.rust-android-gradle.rust-android", version = "0.9.4" }
