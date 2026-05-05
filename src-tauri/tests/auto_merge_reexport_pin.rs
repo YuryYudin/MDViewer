@@ -52,10 +52,6 @@ fn parses_ask_and_manual_variants() {
     ] {
         let parsed: CommentsBlock =
             toml::from_str(&format!(r#"auto_merge = "{s}""#)).unwrap();
-        // Debug-format equality is a stable proxy for variant equality
-        // here; `AutoMergeMode` already derives `PartialEq` upstream so
-        // the assertion is straightforward without resorting to runtime
-        // pattern bindings.
-        assert_eq!(format!("{:?}", parsed.auto_merge), format!("{:?}", want));
+        assert_eq!(parsed.auto_merge, want);
     }
 }
