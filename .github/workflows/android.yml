@@ -1,0 +1,188 @@
+name: android
+
+# Linux-only Android pipeline. Two jobs:
+#   * build    — compiles the Rust workspace, runs Gradle assemble + unit
+#                tests, uploads the JaCoCo HTML and debug APK.
+#   * emulator — runs `:app:connectedDebugAndroidTest` on an API 33 emulator
+#                via reactivecircus/android-emulator-runner with KVM.
+#                continue-on-error until E7 because the e2e specs from A1
+#                are deliberately RED until the screens land in C–E.
+#
+# Why Linux + KVM: macOS runners are ~10x more expensive and the emulator
+# runner action supports nested virtualization on ubuntu-latest since v2.
+# Why `cargo build --workspace` before Gradle: catches Rust-side regressions
+# (UniFFI scaffolding, version-catalog drift) on the same job that builds
+# the Android artifacts, instead of surfacing only when someone runs Gradle
+# locally.
+
+on:
+  push:
+  pull_request:
+
+# Force-pushes to a PR cancel the in-flight run; pushes to main never cancel
+# each other so every merge gets a fresh full run. Mirrors the desktop CI.
+concurrency:
+  group: android-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  GRADLE_OPTS: "-Dorg.gradle.daemon=false"
+
+jobs:
+  build:
+    name: Build + unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
+
+      - name: Cache cargo registry + git + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-android-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-android-${{ runner.os }}-
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Setup Android SDK + NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK 26 + cmake
+        run: |
+          sdkmanager --install "ndk;26.1.10909125" "cmake;3.22.1"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> "$GITHUB_ENV"
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Cargo build (workspace)
+        run: cargo build --workspace --release
+
+      # A1 contract: the 10 e2e specs must remain on disk so RED→GREEN can
+      # be tracked. If someone deletes one to "fix" CI, fail loudly here.
+      - name: Verify e2e spec files exist (A1 guard)
+        run: |
+          count="$(ls android/app/src/androidTest/kotlin/dev/mdviewer/e2e/*.kt | wc -l)"
+          if [ "$count" != "10" ]; then
+            echo "::error::Expected 10 e2e spec files under android/app/src/androidTest/kotlin/dev/mdviewer/e2e/, found $count"
+            exit 1
+          fi
+
+      - name: Gradle assemble (:core + :app)
+        working-directory: android
+        run: ./gradlew :core:assembleDebug :app:assembleDebug --stacktrace
+
+      - name: Gradle unit tests (:core + :app)
+        working-directory: android
+        run: ./gradlew :core:testDebugUnitTest :app:testDebugUnitTest --stacktrace
+
+      - name: Gradle JaCoCo coverage report
+        working-directory: android
+        run: ./gradlew :app:testDebugUnitTestCoverage --stacktrace
+
+      - name: Upload JaCoCo HTML report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: jacoco-html
+          path: android/app/build/reports/jacoco/testDebugUnitTestCoverage/
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: app-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+
+  emulator:
+    name: Instrumented tests (API 33, x86_64)
+    runs-on: ubuntu-latest
+    needs: build
+    # The e2e suite from A1 stays RED until E7's final green gate. Mark this
+    # job as continue-on-error so the workflow stays neutral while Phase C/D
+    # PRs land. Flip this to `false` (and remove this comment) in E7.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
+
+      - name: Cache cargo registry + git + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-android-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-android-${{ runner.os }}-
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Setup Android SDK + NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK 26 + cmake
+        run: |
+          sdkmanager --install "ndk;26.1.10909125" "cmake;3.22.1"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> "$GITHUB_ENV"
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      # The action requires KVM access to run hardware-accelerated x86_64
+      # AVDs on the Linux runner. This udev rule grants the runner user
+      # rw access to /dev/kvm.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # Spec mandates `reactivecircus/android-emulator-runner@v2`. A floating
+      # major-version tag is the contract the spec specifies; revisit pinning
+      # to a commit SHA in a follow-up once a concrete SHA can be verified
+      # against the upstream release.
+      - name: Run :app:connectedDebugAndroidTest on emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 33
+          target: google_apis
+          arch: x86_64
+          profile: pixel_4
+          script: cd android && ./gradlew :app:connectedDebugAndroidTest --stacktrace
+
+      - name: Upload connected test reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: connected-test-reports
+          path: |
+            android/app/build/reports/androidTests/
+            android/app/build/outputs/androidTest-results/
