@@ -9,6 +9,16 @@ license = "GPL-3.0-or-later"
 name = "mdviewer_core"
 path = "src/lib.rs"
 
+# Host-side bindgen entry point. Compiled only with `--features uniffi`
+# so desktop builds (which never enable that feature) don't pull in the
+# bindgen / askama / weedle dependency tree. The Android `:core` Gradle
+# module invokes this via `cargo run --bin uniffi-bindgen --features uniffi`
+# to regenerate `dev.mdviewer.core` Kotlin bindings from the UDL.
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/uniffi_bindgen_main.rs"
+required-features = ["uniffi"]
+
 [features]
 # Default empty: desktop builds (src-tauri) link mdviewer-core as a pure
 # rlib with no UniFFI runtime. The Android shim crate (`mdviewer-jni`)
@@ -43,7 +53,9 @@ ts-rs = "8"
 # Optional: pulled in only when the `uniffi` feature is on. The runtime
 # (procmacros + ffi support) is gated so desktop builds never see it.
 # v1 surface is fully synchronous; no `tokio` feature.
-uniffi = { version = "0.28", optional = true }
+# `cli` is required so `uniffi::uniffi_bindgen_main()` (used by the
+# `uniffi-bindgen` host bin above) is available.
+uniffi = { version = "0.28", optional = true, features = ["cli"] }
 
 [build-dependencies]
 # Same gate: scaffolding generation is only needed when the consuming
