@@ -1,0 +1,38 @@
+[versions]
+agp = "8.5.0"
+kotlin = "2.0.0"
+compose-bom = "2024.06.00"
+compose-compiler = "1.5.14"
+appcompat = "1.7.0"
+core-ktx = "1.13.1"
+activity-compose = "1.9.0"
+navigation = "2.8.0"
+datastore = "1.1.1"
+appauth = "0.11.1"   # v2 anchor; not used in v1 code
+cargo-ndk = "1.2.1"
+uniffi = "0.28.3"
+
+[libraries]
+appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
+core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "core-ktx" }
+activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activity-compose" }
+compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "compose-bom" }
+compose-ui = { group = "androidx.compose.ui", name = "ui" }
+compose-material3 = { group = "androidx.compose.material3", name = "material3" }
+compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
+compose-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }
+navigation-compose = { group = "androidx.navigation", name = "navigation-compose", version.ref = "navigation" }
+datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
+appauth = { group = "net.openid", name = "appauth", version.ref = "appauth" }
+documentfile = { group = "androidx.documentfile", name = "documentfile", version = "1.0.1" }
+junit = { group = "junit", name = "junit", version = "4.13.2" }
+androidx-test-runner = { group = "androidx.test", name = "runner", version = "1.6.1" }
+androidx-test-rules = { group = "androidx.test", name = "rules", version = "1.6.1" }
+robolectric = { group = "org.robolectric", name = "robolectric", version = "4.13" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+android-library = { id = "com.android.library", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+compose-compiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+mozilla-rust-android-gradle = { id = "org.mozilla.rust-android-gradle.rust-android", version = "0.9.4" }
