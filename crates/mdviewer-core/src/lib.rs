@@ -47,9 +47,10 @@ pub mod uniffi_bindings;
 // scaffolding sees here must match the UDL.
 #[cfg(feature = "uniffi")]
 use crate::uniffi_bindings::{
-    create_thread, load_sidecar_bytes, merge_stores, post_reply, render_markdown, resolve_thread,
-    save_sidecar_bytes, sidecar_filename, unresolve_thread, Anchor, Comment, CommentsStoreHandle,
-    CoreError, NewComment, NewThread, RenderOptions, RenderResult, SrcSpan, Thread,
+    create_thread, load_sidecar_bytes, merge_stores, post_reply, render_markdown, resolve_anchor,
+    resolve_thread, save_sidecar_bytes, sidecar_filename, unresolve_thread, Anchor, Comment,
+    CommentsStoreHandle, CoreError, NewComment, NewThread, RenderOptions, RenderResult,
+    ResolveOutcome, SrcSpan, Thread,
 };
 
 // `include_scaffolding!` hands UniFFI's macro the path stem of the UDL
