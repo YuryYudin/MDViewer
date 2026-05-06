@@ -7,11 +7,24 @@
 //   * Visible only when DocumentViewModel reports
 //     `SafCapability.SingleUri` (DocumentScreen branches on the state).
 //   * Tap interaction triggers `onTap` which the parent screen wires to
-//     the SaveSidecarToSource flow in E3 — for C5 the lambda defaults to
-//     a no-op so the screen mounts without crashing.
+//     the SaveSidecarToSource flow in E3.
 //   * Style: full-width amber bar at the top of the document content,
 //     under the AppBar. Padding 12.dp on all sides matches the spacing
 //     scale used elsewhere in the screen.
+//
+// Two surfaces in this file:
+//
+//   1. [SafCapabilityBanner] — the bare visual + onTap callback. Kept
+//      stateless so [SafCapabilityBannerTest] can mount it under
+//      Robolectric without needing the activity-result plumbing
+//      ACTION_OPEN_DOCUMENT_TREE requires.
+//
+//   2. [SafCapabilityBannerWithPromote] — the production wrapper that
+//      registers an [androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree]
+//      launcher and routes a successful tree grant through
+//      [SaveSidecarToSource.onTreeGranted]. The wrapper is what
+//      [DocumentScreen] mounts; the bare banner stays available for
+//      tests + previews.
 //
 // We deliberately do NOT auto-launch the OPEN_DOCUMENT_TREE prompt when
 // capability is SingleUri — see the C5 spec's "Avoid" section. The
@@ -20,15 +33,25 @@
 // ---------------------------------------------------------------------------
 package dev.mdviewer.ui
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import dev.mdviewer.saf.SaveSidecarToSource
+import dev.mdviewer.saf.Sidecar
+import dev.mdviewer.saf.SidecarMirror
+import kotlinx.coroutines.launch
 
 @Composable
 fun SafCapabilityBanner(onTap: () -> Unit = {}) {
@@ -40,5 +63,86 @@ fun SafCapabilityBanner(onTap: () -> Unit = {}) {
             .clickable(onClick = onTap)
             .padding(12.dp),
     )
-    // Tap behavior wired in E3 (SaveSidecarToSource).
+}
+
+/**
+ * Production banner wired against [SaveSidecarToSource]. Registers an
+ * [ActivityResultContracts.OpenDocumentTree] launcher at composition
+ * time so a tap fires the system tree picker; on grant we coroutine-
+ * launch the mirror -> tree flush and report the boolean outcome via
+ * [onPromoted].
+ *
+ * Inputs:
+ *   * [docUri] — the document URI the user opened. The mirror file is
+ *     keyed off this URI; the granted tree is the destination.
+ *   * [docFilename] — display name from the OpenedDocument; we need it
+ *     to build the sibling sidecar filename via `sidecarFilename(...)`.
+ *   * [sidecarPattern] — the user's configured sidecar filename pattern
+ *     (defaulted in SettingsStore). DocumentViewModel already resolves
+ *     this; the banner takes it as a value rather than re-reading the
+ *     store so the banner stays Compose-context-free.
+ *   * [onPromoted] — invoked with `true` when the flush succeeded (UI
+ *     can dismiss the banner / refresh state) or `false` on benign
+ *     failure (UI can keep the banner visible, optionally surface a
+ *     snackbar). The wrapper does NOT itself emit a snackbar — the
+ *     screen owns the SnackbarHost and decides the messaging.
+ *
+ * Why we construct a fresh [SidecarMirror] / [Sidecar] / [SaveSidecarToSource]
+ * inside the Composable (rather than injecting them): both classes are
+ * Context-bound + cheap to allocate; allocating once per recomposition
+ * would matter for a hot Composable but the banner only mounts once
+ * per document open. Hoisting to a ViewModel would introduce a third
+ * collaborator on DocumentViewModel for a flow that's strictly
+ * orthogonal to the document state machine.
+ */
+@Composable
+fun SafCapabilityBannerWithPromote(
+    docUri: Uri,
+    docFilename: String,
+    sidecarPattern: String,
+    onPromoted: (Boolean) -> Unit = {},
+) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    // Stable across recompositions — Sidecar(ctx) builds a default
+    // production [TreeAccess] internally (DocumentFileTreeAccess) so the
+    // verification step in onTreeGranted walks the same tree the save
+    // call used. Re-allocation only happens if the activity Context
+    // changes, which in practice means a process death + restore.
+    val saveSidecarToSource = remember(ctx) {
+        val mirror = SidecarMirror(ctx)
+        val treeAccess = dev.mdviewer.saf.DocumentFileTreeAccess(ctx)
+        val sidecar = Sidecar(ctx, mirror = mirror, treeAccess = treeAccess)
+        SaveSidecarToSource(
+            mirror = mirror,
+            sidecar = sidecar,
+            sidecarPattern = { sidecarPattern },
+            treeAccess = treeAccess,
+        )
+    }
+
+    val launcher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree(),
+    ) { treeUri ->
+        // Null = user dismissed the picker. Treat as a benign cancel —
+        // the user can re-tap the banner if they change their mind.
+        if (treeUri != null) {
+            scope.launch {
+                val ok = saveSidecarToSource.onTreeGranted(
+                    ctx = ctx,
+                    docUri = docUri,
+                    docFilename = docFilename,
+                    treeUri = treeUri,
+                )
+                onPromoted(ok)
+            }
+        }
+    }
+
+    // null = let the picker open at the default location. Passing the
+    // doc's parent URI as a hint would require resolving the parent
+    // tree URI from the document URI, which is what the user is being
+    // asked to grant in the first place — a chicken-and-egg setup.
+    SafCapabilityBanner(onTap = { launcher.launch(null) })
 }

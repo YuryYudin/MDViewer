@@ -7,9 +7,13 @@
   how the in-app "Open file" FAB hands off to the system picker — and
   doesn't need a manifest filter.
 
-  ACTION_SEND ("share to MDViewer") is intentionally NOT declared here:
-  the share-handler implementation lands in E3, and registering the
-  filter without a handler would route share targets to a black screen.
+  ACTION_SEND ("share to MDViewer") is wired in E3:
+  [ShareIntents.extractDocumentUri] pulls EXTRA_STREAM out of the
+  inbound intent and [IntentDispatcher] routes the result through the
+  same NavDestination.Document path ACTION_VIEW uses. Two SEND filters
+  declared below — text/markdown for clean producers, and *.md +
+  text/* / */* for the long tail of share producers that don't tag
+  their MIME correctly.
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
@@ -74,7 +78,45 @@
                 <data android:pathPattern=".*\\.markdown" />
             </intent-filter>
 
-            <!-- ACTION_SEND filter intentionally added in E3. -->
+            <!--
+              ACTION_SEND clean path: producers that tag the share with
+              `text/markdown`. This is the same MIME the desktop builds
+              produce when handing files to the system file manager;
+              we accept it directly so a Drive "Share with..." action
+              that knows the MIME hits this filter and skips the *./*
+              fallback below.
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/markdown" />
+            </intent-filter>
+
+            <!--
+              ACTION_SEND fallback for the wider text/* surface: most
+              cloud providers (Drive especially) tag .md files as
+              `text/*` or `*/*` rather than the still-recent
+              `text/markdown` IANA registration. Same pathPattern logic
+              as the ACTION_VIEW fallback above keeps the filter from
+              advertising MDViewer for arbitrary text shares — only
+              ones whose URI path ends in `.md` / `.markdown` will
+              match. The framework runs the pathPattern check only when
+              the MIME match passes AND the URI carries a path; share
+              intents that hand us inline EXTRA_TEXT (no URI) won't
+              match either filter, which is the right outcome
+              (ShareIntents.extractDocumentUri returns null on those
+              and the dispatcher falls through to the cold-start
+              default).
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/*" />
+                <data android:mimeType="*/*" />
+                <data android:host="*" />
+                <data android:pathPattern=".*\\.md" />
+                <data android:pathPattern=".*\\.markdown" />
+            </intent-filter>
         </activity>
     </application>
 

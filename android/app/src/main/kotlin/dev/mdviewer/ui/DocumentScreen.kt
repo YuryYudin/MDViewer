@@ -105,7 +105,15 @@ fun DocumentScreen(uri: Uri, vm: DocumentViewModel) {
                 is DocumentUiState.Error -> Text("Could not open: ${s.message}")
                 is DocumentUiState.Loaded -> {
                     if (s.capability == SafCapability.SingleUri) {
-                        SafCapabilityBanner()
+                        // E3: the banner here is the ACTION_OPEN_DOCUMENT_TREE
+                        // entry point, wired to SaveSidecarToSource. The
+                        // bare [SafCapabilityBanner] (no promote behavior)
+                        // is still exported for tests + previews.
+                        SafCapabilityBannerWithPromote(
+                            docUri = s.uri,
+                            docFilename = s.displayName,
+                            sidecarPattern = vm.sidecarPatternValue,
+                        )
                     }
                     // D8: anchorRanges flow through MarkdownWebView's
                     // LaunchedEffect into HighlightInjector. Orphan

@@ -92,9 +92,43 @@ class IntentDispatcherTest {
     @Test
     fun unknown_action_routes_to_default_start() {
         // Any unhandled action falls through to the default — Recents or
-        // ProfileSetup based on hasProfile. ACTION_SEND is in this bucket
-        // until E3 wires it.
+        // ProfileSetup based on hasProfile.
         val intent = Intent("dev.mdviewer.test.UNKNOWN_ACTION")
+        assertEquals(
+            NavDestination.Recents,
+            IntentDispatcher.resolve(intent, hasProfile = true),
+        )
+        assertEquals(
+            NavDestination.ProfileSetup,
+            IntentDispatcher.resolve(intent, hasProfile = false),
+        )
+    }
+
+    @Test
+    fun action_send_with_extra_stream_routes_to_document() {
+        // E3 wires ACTION_SEND through ShareIntents.extractDocumentUri.
+        // A SEND intent carrying an EXTRA_STREAM URI for a markdown file
+        // must land on Document(uri) the same way ACTION_VIEW does.
+        val uri = Uri.parse("content://provider/document/shared.md")
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/markdown"
+            putExtra(Intent.EXTRA_STREAM, uri)
+        }
+        assertEquals(
+            NavDestination.Document(uri),
+            IntentDispatcher.resolve(intent, hasProfile = true),
+        )
+    }
+
+    @Test
+    fun action_send_text_only_falls_through_to_default() {
+        // EXTRA_TEXT-only shares are out of scope in v1 — fall through
+        // to the cold-start default rather than land on a doc-less
+        // Document destination.
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, "inline text")
+        }
         assertEquals(
             NavDestination.Recents,
             IntentDispatcher.resolve(intent, hasProfile = true),

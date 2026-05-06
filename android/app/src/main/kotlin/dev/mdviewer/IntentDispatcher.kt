@@ -18,8 +18,11 @@
 //     dispatcher only routes.
 //   * ACTION_VIEW with NO data -> default. Empty ACTION_VIEW shouldn't
 //     drop the user on a Document screen with no source.
-//   * ACTION_MAIN, ACTION_SEND, anything else -> default. ACTION_SEND
-//     gets its own arm in E3 once the share-handler lands.
+//   * ACTION_SEND with an EXTRA_STREAM URI -> Document(uri). Wired in
+//     E3 — the SEND filter in the manifest gets the user here when
+//     they pick MDViewer from a third-party share sheet. EXTRA_TEXT-
+//     only shares fall through (v1 supports stream-mode shares only).
+//   * ACTION_MAIN, anything else -> default.
 //
 // `defaultStart(hasProfile)` is the cold-start router:
 //   * hasProfile=true  -> Recents (the user has done setup)
@@ -32,6 +35,7 @@ package dev.mdviewer
 
 import android.content.Intent
 import android.net.Uri
+import dev.mdviewer.saf.ShareIntents
 
 /**
  * Top-level navigation target. Stays sealed so a future arm (e.g. the
@@ -77,10 +81,15 @@ object IntentDispatcher {
             Intent.ACTION_VIEW -> intent.data
                 ?.let { NavDestination.Document(it) }
                 ?: defaultStart(hasProfile)
-            // ACTION_SEND is handled in E3 — until then it falls through
-            // to the default. Letting it pass through silently (vs.
-            // crashing) keeps share-target advertising tolerable while
-            // the surface is in flux.
+            // E3: ACTION_SEND with EXTRA_STREAM holding a markdown URI
+            // routes to the same Document destination ACTION_VIEW lands
+            // on. We delegate the extraction to [ShareIntents] so the
+            // EXTRA_TEXT-only path (out of v1 scope) returns null and
+            // we fall through to the cold-start default rather than
+            // dropping the user on a doc-less Document screen.
+            Intent.ACTION_SEND -> ShareIntents.extractDocumentUri(intent)
+                ?.let { NavDestination.Document(it) }
+                ?: defaultStart(hasProfile)
             else -> defaultStart(hasProfile)
         }
     }

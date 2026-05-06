@@ -144,6 +144,15 @@ class DocumentViewModel(
     val uiState: StateFlow<DocumentUiState> = _ui.asStateFlow()
 
     /**
+     * E3: read-only view of the sidecar filename pattern for the
+     * SafCapabilityBanner's mirror -> tree promotion. The
+     * `SaveSidecarToSource` flow needs this to compute the sibling
+     * filename; pulling it from the ViewModel keeps the Compose layer
+     * out of the SettingsStore directly.
+     */
+    val sidecarPatternValue: String get() = sidecarPattern
+
+    /**
      * Per-thread resolved ranges the Compose layer feeds to
      * [dev.mdviewer.render.HighlightInjector]. Empty when the document
      * has no threads or every thread orphaned. Re-emits whenever

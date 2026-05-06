@@ -39,3 +39,25 @@
                     A: http://schemas.android.com/apk/res/android:pathPattern(0x0101002c)=".*\.md" (Raw: ".*\.md")
                   E: data
                     A: http://schemas.android.com/apk/res/android:pathPattern(0x0101002c)=".*\.markdown" (Raw: ".*\.markdown")
+              E: intent-filter
+                  E: action
+                    A: http://schemas.android.com/apk/res/android:name(0x01010003)="android.intent.action.SEND" (Raw: "android.intent.action.SEND")
+                  E: category
+                    A: http://schemas.android.com/apk/res/android:name(0x01010003)="android.intent.category.DEFAULT" (Raw: "android.intent.category.DEFAULT")
+                  E: data
+                    A: http://schemas.android.com/apk/res/android:mimeType(0x01010026)="text/markdown" (Raw: "text/markdown")
+              E: intent-filter
+                  E: action
+                    A: http://schemas.android.com/apk/res/android:name(0x01010003)="android.intent.action.SEND" (Raw: "android.intent.action.SEND")
+                  E: category
+                    A: http://schemas.android.com/apk/res/android:name(0x01010003)="android.intent.category.DEFAULT" (Raw: "android.intent.category.DEFAULT")
+                  E: data
+                    A: http://schemas.android.com/apk/res/android:mimeType(0x01010026)="text/*" (Raw: "text/*")
+                  E: data
+                    A: http://schemas.android.com/apk/res/android:mimeType(0x01010026)="*/*" (Raw: "*/*")
+                  E: data
+                    A: http://schemas.android.com/apk/res/android:host(0x01010028)="*" (Raw: "*")
+                  E: data
+                    A: http://schemas.android.com/apk/res/android:pathPattern(0x0101002c)=".*\.md" (Raw: ".*\.md")
+                  E: data
+                    A: http://schemas.android.com/apk/res/android:pathPattern(0x0101002c)=".*\.markdown" (Raw: ".*\.markdown")
