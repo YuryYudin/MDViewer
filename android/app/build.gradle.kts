@@ -189,6 +189,18 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation("org.jetbrains.kotlin:kotlin-test")
     testImplementation(libs.robolectric)
+    // C7: Robolectric loads classes through its own SandboxClassLoader,
+    // bypassing the JaCoCo `-javaagent` instrumentation that AGP wires in
+    // when `enableUnitTestCoverage = true`. The result is that every
+    // class touched only by Robolectric tests reports 0% coverage even
+    // though the tests demonstrably execute it. Switching to OFFLINE
+    // instrumentation (see the `jacocoOfflineInstrument` task below)
+    // bakes the JaCoCo probes into the .class files at build time, so
+    // they fire regardless of whose classloader sees the bytes. The
+    // runtime jar dependency below provides `org.jacoco.agent.rt`, the
+    // tiny in-process probe collector that the offline-instrumented
+    // bytecode references.
+    testRuntimeOnly("org.jacoco:org.jacoco.agent:0.8.12:runtime")
     // C3: tests under dev.mdviewer.saf.Sidecar* exercise the UniFFI-bound
     // `loadSidecarBytes`/`saveSidecarBytes`/`sidecarFilename` helpers from
     // :core on the host JVM. The :core AAR carries the generated Kotlin
@@ -272,6 +284,212 @@ tasks.withType<Test>().configureEach {
 // The C7 task adds a per-package threshold gate on top of this report. B5
 // stops at "report exists, exit 0".
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// JaCoCo coverage shared config (B5 + C7).
+//
+// `coverageExcludes` is referenced in two places:
+//   1. The offline-instrumentation task below — we must NOT instrument R/
+//      BuildConfig/test classes; instrumenting tests inflates coverage to
+//      100% trivially.
+//   2. The JacocoReport aggregator — the report's `classDirectories` view
+//      must apply the same exclusions so the denominator matches what was
+//      instrumented.
+// Pulled out as a top-level val so a future excludes drift between the two
+// is impossible.
+// ---------------------------------------------------------------------------
+val coverageExcludes = listOf(
+    "**/R.class",
+    "**/R$*.class",
+    "**/BuildConfig.*",
+    "**/Manifest*.*",
+    "**/*Test*.*",
+    "android/**/*.*",
+    "**/databinding/**/*.*",
+    "**/dagger/**/*.*",
+    "**/hilt_aggregated_deps/**",
+    "**/*_Hilt*.*",
+    "**/*Hilt*Module*.*",
+    // Production-only SAF adapters that wrap real `androidx.documentfile`
+    // calls. They exist as a seam (see `Sidecar.kt`) so unit tests can
+    // inject in-memory fakes; running them on host-JVM would require a
+    // genuine DocumentsContract provider, which Robolectric does not
+    // ship. C3's tests cover Sidecar through `FakeTreeNode` instead, so
+    // these wrappers contribute zero testable lines and have to come out
+    // of the gate denominator.
+    "**/saf/DocumentFileNode*.*",
+    "**/saf/DocumentFileTreeAccess*.*",
+    // MarkdownWebView is a Compose AndroidView wrapping a real WebView;
+    // exercising it on host-JVM is not feasible (WebView's classes throw
+    // immediately under Robolectric). C4's instrumented test under
+    // `androidTest/` covers the screen path on an emulator. The render
+    // package's testable surface is `AssetLoaderFactory`, which has its
+    // own host-JVM unit test.
+    "**/render/MarkdownWebView*.*",
+)
+
+// ---------------------------------------------------------------------------
+// jacocoOfflineInstrument (C7) — the fix for Robolectric's coverage gap.
+//
+// Robolectric's `SandboxClassLoader` redefines every class it loads to
+// rewrite Android-system stubs at load time. The JVM `-javaagent` JaCoCo
+// agent that AGP wires in via `enableUnitTestCoverage = true` only
+// transforms classes loaded by the *system* classloader; everything
+// Robolectric loads bypasses the agent and ends up with zero probes.
+//
+// Offline instrumentation sidesteps this entirely: we ask JaCoCo to
+// rewrite the .class files on disk before tests run, baking the probes
+// into the bytecode. Then *any* classloader that reads the file —
+// including Robolectric's — sees the instrumented version, and the
+// runtime probe collector (`org.jacoco.agent.rt`) records the hits at
+// test time without needing a JVM-level agent.
+//
+// This task uses the JaCoCo Ant `Instrument` task; the Ant tasks ship
+// inside the `org.jacoco.ant` jar that the Gradle JaCoCo plugin already
+// pulls onto the buildscript classpath via the configuration named
+// `jacocoAnt`. We delegate to ant via `ant.invokeMethod("instrument")`
+// rather than wiring up the Java class directly so the task self-resolves
+// the toolVersion JaCoCo we pinned above (0.8.12) without us having to
+// thread a dep through configurations.
+// ---------------------------------------------------------------------------
+val jacocoInstrumentedDir =
+    layout.buildDirectory.dir("intermediates/jacoco-instrumented-classes/debug")
+
+val jacocoOfflineInstrument by tasks.registering {
+    group = "verification"
+    description = "Offline-instruments :app's debug classes for Robolectric coverage."
+
+    dependsOn("compileDebugKotlin", "compileDebugJavaWithJavac")
+
+    val javaClasses = layout.buildDirectory.dir("intermediates/javac/debug/classes")
+    val kotlinClasses = layout.buildDirectory.dir("tmp/kotlin-classes/debug")
+    val outDir = jacocoInstrumentedDir
+
+    // Track input as a FileTree (not inputs.dir) so a missing source root
+    // is treated as "no inputs" rather than a hard validation failure.
+    // Java-free Kotlin modules and vice-versa are both legitimate states
+    // for AGP intermediate outputs; the Ant task below short-circuits when
+    // a root is absent.
+    inputs.files(
+        fileTree(kotlinClasses) { include("**/*.class") },
+        fileTree(javaClasses) { include("**/*.class") },
+    ).withPropertyName("classRoots")
+    outputs.dir(outDir).withPropertyName("instrumentedClasses")
+
+    // Resolve the JaCoCo Ant tasks at configuration time so the Ant taskdef
+    // call below picks the same 0.8.12 toolVersion the report uses.
+    val jacocoAntCfg = configurations["jacocoAnt"]
+    inputs.files(jacocoAntCfg).withPropertyName("jacocoAnt")
+
+    val excludesCopy = coverageExcludes
+    doLast {
+        val outRoot = outDir.get().asFile
+        outRoot.deleteRecursively()
+        outRoot.mkdirs()
+
+        ant.withGroovyBuilder {
+            "taskdef"(
+                "name" to "jacocoInstrument",
+                "classname" to "org.jacoco.ant.InstrumentTask",
+                "classpath" to jacocoAntCfg.asPath,
+            )
+        }
+
+        // Run the JaCoCo Ant `instrument` task once per source root. Both
+        // root paths are optional — Kotlin-only modules have no javac
+        // output and vice-versa — so we skip absent dirs to keep the task
+        // idempotent against trimmed builds.
+        listOf(kotlinClasses.get().asFile, javaClasses.get().asFile).forEach { src ->
+            if (!src.exists()) return@forEach
+            ant.withGroovyBuilder {
+                "jacocoInstrument"("destdir" to outRoot) {
+                    "fileset"("dir" to src) {
+                        "include"("name" to "**/*.class")
+                        excludesCopy.forEach { pattern ->
+                            "exclude"("name" to pattern)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Wire the unit-test task to consume the offline-instrumented classes
+// instead of the originals. We:
+//   * Disable the on-the-fly JaCoCo agent (the source of the Robolectric
+//     gap) so it doesn't double-instrument and produce mismatched probe
+//     IDs that JaCoCo would then fail to aggregate.
+//   * Set `jacoco-agent.destfile` so the runtime probe collector writes
+//     its `.exec` to a path the JacocoReport task below picks up. The
+//     "output=file" mode avoids the TCP listener default that would
+//     hang the test JVM on shutdown.
+//   * Prepend the instrumented classes dir to the test classpath so
+//     class resolution prefers the rewritten bytecode.
+// AGP creates the per-variant `testDebugUnitTest` task lazily (well after
+// the build script's top-level `evaluate` finishes), so referencing it by
+// name at config time would be too eager. The `tasks.withType<Test>` view
+// is created up-front and matches AGP's task as soon as it lands; we
+// guard with the name check so the wiring only applies to the debug unit-
+// test variant (and not, say, a future testReleaseUnitTest).
+val instrumentedClassesProvider = jacocoInstrumentedDir
+val execFileProvider = layout.buildDirectory.file(
+    "outputs/unit_test_code_coverage/debugUnitTest/testDebugUnitTest.exec",
+)
+
+tasks.withType<Test>().configureEach {
+    if (name != "testDebugUnitTest") return@configureEach
+
+    dependsOn(jacocoOfflineInstrument)
+
+    // Ditch the on-the-fly agent — it's the proximate cause of the 0%
+    // Robolectric reports. Keeping it on alongside offline instrumentation
+    // would emit two probe sets and double-count on the merge.
+    extensions.configure(JacocoTaskExtension::class) {
+        isEnabled = false
+    }
+
+    doFirst {
+        // Make sure the parent dir exists; the runtime collector won't
+        // mkdir on its own and would silently emit nothing if the path
+        // is missing.
+        execFileProvider.get().asFile.parentFile.mkdirs()
+
+        systemProperty(
+            "jacoco-agent.destfile",
+            execFileProvider.get().asFile.absolutePath,
+        )
+        systemProperty("jacoco-agent.output", "file")
+        systemProperty("jacoco-agent.dumponexit", "true")
+
+        // Replace AGP's bundled-runtime-classes jar with the offline-
+        // instrumented dir on the test classpath. AGP's
+        // `bundleDebugClassesToRuntimeJar` task packages :app's compiled
+        // classes into one fat jar
+        // (`runtime_app_classes_jar/.../classes.jar`) and that jar — not
+        // the raw class outputs — is what AGP threads onto the unit-test
+        // runtime classpath. Simply *prepending* the instrumented dir
+        // doesn't help: the classloader is happy with whichever copy it
+        // sees first only when the names disagree, and our instrumented
+        // classes share the same FQNs as the jar's, so JVM merge order
+        // picks the bundled-jar version on most runs (depends on URL
+        // ordering).
+        //
+        // The fix is to filter the bundled jar OUT of the classpath and
+        // add our instrumented dir back in its place. The classpath is
+        // otherwise the same — third-party deps (Kotlin stdlib, Compose,
+        // AppAuth, etc.) remain unchanged because we only filter the file
+        // whose path matches the AGP bundle marker.
+        //
+        // Done in `doFirst` rather than at configuration time because AGP
+        // wires the classpath value AFTER `configureEach` returns; an
+        // earlier reassignment is silently overwritten.
+        classpath = files(instrumentedClassesProvider) +
+            classpath.filter { f ->
+                !f.absolutePath.contains("runtime_app_classes_jar")
+            }
+    }
+}
+
 tasks.register<JacocoReport>("testDebugUnitTestCoverage") {
     group = "verification"
     description = "Generates JaCoCo XML+HTML coverage from testDebugUnitTest."
@@ -289,20 +507,6 @@ tasks.register<JacocoReport>("testDebugUnitTestCoverage") {
         )
     }
 
-    val coverageExcludes = listOf(
-        "**/R.class",
-        "**/R$*.class",
-        "**/BuildConfig.*",
-        "**/Manifest*.*",
-        "**/*Test*.*",
-        "android/**/*.*",
-        "**/databinding/**/*.*",
-        "**/dagger/**/*.*",
-        "**/hilt_aggregated_deps/**",
-        "**/*_Hilt*.*",
-        "**/*Hilt*Module*.*",
-    )
-
     val mainJavaClasses = fileTree(
         layout.buildDirectory.dir("intermediates/javac/debug/classes"),
     ) { exclude(coverageExcludes) }
@@ -310,6 +514,11 @@ tasks.register<JacocoReport>("testDebugUnitTestCoverage") {
         layout.buildDirectory.dir("tmp/kotlin-classes/debug"),
     ) { exclude(coverageExcludes) }
 
+    // The report MUST point at the *original* (non-instrumented) classes,
+    // not the offline-instrumented copies. JaCoCo uses the original class
+    // bytecode + the .exec probe IDs to compute coverage; pointing at the
+    // instrumented copies would either double-count or miss the line
+    // tables entirely.
     classDirectories.setFrom(files(mainJavaClasses, mainKotlinClasses))
     sourceDirectories.setFrom(files("src/main/kotlin", "src/main/java"))
     executionData.setFrom(

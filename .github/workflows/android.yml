@@ -96,6 +96,13 @@ jobs:
         working-directory: android
         run: ./gradlew :app:testDebugUnitTestCoverage --stacktrace
 
+      - name: Coverage gate (saf, data, render >= 80%)
+        working-directory: android
+        run: |
+          ../scripts/check-coverage.sh \
+            app/build/reports/jacoco/testDebugUnitTestCoverage.xml \
+            80 saf data render
+
       - name: Upload JaCoCo HTML report
         uses: actions/upload-artifact@v4
         if: always()

@@ -101,6 +101,77 @@ if [[ "$REPORT" == *.lcov ]]; then
         }
     ' "$REPORT"
 else
-    echo "JaCoCo mode wired in C7 (Android module coverage); not implemented yet" >&2
-    exit 2
+    # JaCoCo XML mode (C7). The report path can be either a path to the
+    # JaCoCo XML file directly, or a directory containing one (we pick the
+    # first .xml found in that case so the script gates equally well
+    # against `app/build/reports/jacoco/foo.xml` and against the report
+    # directory `app/build/reports/jacoco/foo/`).
+    #
+    # The Python parser below sums per-package LINE counters from
+    # `<sourcefile>` entries, matching each package against the user-
+    # supplied `dir-prefix` arguments. A package matches a prefix when
+    # the prefix is a *segment suffix* of the package's dotted name —
+    # `saf` matches `dev.mdviewer.saf` but not `dev.mdviewer.unsafe`. Any
+    # package that doesn't match a prefix is ignored, so unrelated package
+    # output (e.g. `dev.mdviewer.ui` while gating `saf,data,render`) does
+    # not pollute the reported numbers.
+    #
+    # Why Python: JaCoCo XML is small (a few hundred KB even for large
+    # modules) and the parser is six lines of `xml.etree`. Awking the XML
+    # would require a custom tag-state machine since `<sourcefile>` /
+    # `<counter>` is hierarchical; not worth the lines.
+    XML="$REPORT"
+    if [[ -d "$REPORT" ]]; then
+        XML=$(find "$REPORT" -name "*.xml" -type f | head -n1)
+    fi
+
+    if [[ -z "$XML" || ! -f "$XML" ]]; then
+        echo "JaCoCo XML report not found at $REPORT" >&2
+        exit 2
+    fi
+
+    python3 - "$XML" "$THRESHOLD" "${PREFIXES[@]:-}" <<'PY'
+import sys, xml.etree.ElementTree as ET
+xml_path, threshold = sys.argv[1], int(sys.argv[2])
+prefixes = [p for p in sys.argv[3:] if p]
+root = ET.parse(xml_path).getroot()
+totals = {p: [0, 0] for p in prefixes} if prefixes else {"all": [0, 0]}
+for pkg in root.findall(".//package"):
+    pkg_name = pkg.get("name", "").replace("/", ".")
+    for sf in pkg.findall("./sourcefile"):
+        ctr = sf.find("./counter[@type='LINE']")
+        if ctr is None:
+            continue
+        missed = int(ctr.get("missed", 0))
+        covered = int(ctr.get("covered", 0))
+        if not prefixes:
+            totals["all"][0] += missed
+            totals["all"][1] += covered
+        else:
+            for p in prefixes:
+                # Match by segment-suffix: prefix `saf` matches package
+                # `dev.mdviewer.saf` but not `dev.mdviewer.unsafe`. We
+                # accept three forms so callers can pass either a leaf
+                # segment (`saf`) or a fully-qualified name fragment
+                # (`mdviewer.saf`). The `.{p}.` clause catches mid-tree
+                # packages like `dev.mdviewer.saf.internal` if those ever
+                # land.
+                if (
+                    pkg_name == p
+                    or pkg_name.endswith(f".{p}")
+                    or f".{p}." in pkg_name
+                ):
+                    totals[p][0] += missed
+                    totals[p][1] += covered
+failures = 0
+for k, (m, c) in totals.items():
+    pct = 100.0 * c / (m + c) if (m + c) > 0 else 0
+    if (m + c) == 0:
+        print(f"{k}: n/a (0/0) threshold={threshold}")
+    else:
+        print(f"{k}: {pct:.1f}% ({c}/{m+c}) threshold={threshold}")
+        if pct < threshold:
+            failures += 1
+sys.exit(1 if failures > 0 else 0)
+PY
 fi
