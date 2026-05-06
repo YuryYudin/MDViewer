@@ -322,9 +322,17 @@ val coverageExcludes = listOf(
     // exercising it on host-JVM is not feasible (WebView's classes throw
     // immediately under Robolectric). C4's instrumented test under
     // `androidTest/` covers the screen path on an emulator. The render
-    // package's testable surface is `AssetLoaderFactory`, which has its
-    // own host-JVM unit test.
+    // package's testable surface is `AssetLoaderFactory` and the D2
+    // SelectionBridge / SelectionJsBridge / SuppressingActionModeCallback
+    // classes, which have their own host-JVM unit tests.
     "**/render/MarkdownWebView*.*",
+    // D2: SelectionWebView is a WebView subclass that intercepts
+    // startActionMode to swap in our SuppressingActionModeCallback. Its
+    // single override delegates to super.startActionMode which Robolectric
+    // can't host (the WebView class hierarchy throws on classload). The
+    // instrumented test under `androidTest/render/` exercises the
+    // ActionMode override path on an emulator; no host-JVM surface remains.
+    "**/render/SelectionWebView*.*",
 )
 
 // ---------------------------------------------------------------------------
