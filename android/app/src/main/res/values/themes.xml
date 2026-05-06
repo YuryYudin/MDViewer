@@ -5,9 +5,17 @@
   during inflation when activity-compose's ComponentActivity asks
   AppCompat for resource resolution; using a non-AppCompat parent
   surfaces a "needs Theme.AppCompat" runtime crash on some devices.
+
+  `tools:targetApi="31"` suppresses the lint NewApi error on the splash-
+  screen attribute (introduced in API 31 / Android 12). The framework
+  silently ignores unknown style attributes on older platforms — Android
+  10 and 11 just don't draw the custom splash background — so the gating
+  is purely lint-side. Keeping the attribute (rather than dropping it)
+  matters because it's the only Android-12+ branding hook we have until
+  androidx.core.splashscreen lands in a future task.
 -->
-<resources>
+<resources xmlns:tools="http://schemas.android.com/tools">
     <style name="Theme.Mdviewer" parent="Theme.AppCompat.Light.NoActionBar">
-        <item name="android:windowSplashScreenBackground">#FFFFFF</item>
+        <item name="android:windowSplashScreenBackground" tools:targetApi="31">#FFFFFF</item>
     </style>
 </resources>

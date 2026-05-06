@@ -1,0 +1,41 @@
+          E: activity
+            A: http://schemas.android.com/apk/res/android:name(0x01010003)="dev.mdviewer.MainActivity" (Raw: "dev.mdviewer.MainActivity")
+            A: http://schemas.android.com/apk/res/android:exported(0x01010010)=true
+            A: http://schemas.android.com/apk/res/android:launchMode(0x0101001d)=2
+              E: intent-filter
+                  E: action
+                    A: http://schemas.android.com/apk/res/android:name(0x01010003)="android.intent.action.MAIN" (Raw: "android.intent.action.MAIN")
+                  E: category
+                    A: http://schemas.android.com/apk/res/android:name(0x01010003)="android.intent.category.LAUNCHER" (Raw: "android.intent.category.LAUNCHER")
+              E: intent-filter
+                  E: action
+                    A: http://schemas.android.com/apk/res/android:name(0x01010003)="android.intent.action.VIEW" (Raw: "android.intent.action.VIEW")
+                  E: category
+                    A: http://schemas.android.com/apk/res/android:name(0x01010003)="android.intent.category.DEFAULT" (Raw: "android.intent.category.DEFAULT")
+                  E: category
+                    A: http://schemas.android.com/apk/res/android:name(0x01010003)="android.intent.category.BROWSABLE" (Raw: "android.intent.category.BROWSABLE")
+                  E: data
+                    A: http://schemas.android.com/apk/res/android:scheme(0x01010027)="content" (Raw: "content")
+                  E: data
+                    A: http://schemas.android.com/apk/res/android:scheme(0x01010027)="file" (Raw: "file")
+                  E: data
+                    A: http://schemas.android.com/apk/res/android:mimeType(0x01010026)="text/markdown" (Raw: "text/markdown")
+              E: intent-filter
+                  E: action
+                    A: http://schemas.android.com/apk/res/android:name(0x01010003)="android.intent.action.VIEW" (Raw: "android.intent.action.VIEW")
+                  E: category
+                    A: http://schemas.android.com/apk/res/android:name(0x01010003)="android.intent.category.DEFAULT" (Raw: "android.intent.category.DEFAULT")
+                  E: category
+                    A: http://schemas.android.com/apk/res/android:name(0x01010003)="android.intent.category.BROWSABLE" (Raw: "android.intent.category.BROWSABLE")
+                  E: data
+                    A: http://schemas.android.com/apk/res/android:scheme(0x01010027)="content" (Raw: "content")
+                  E: data
+                    A: http://schemas.android.com/apk/res/android:scheme(0x01010027)="file" (Raw: "file")
+                  E: data
+                    A: http://schemas.android.com/apk/res/android:mimeType(0x01010026)="*/*" (Raw: "*/*")
+                  E: data
+                    A: http://schemas.android.com/apk/res/android:host(0x01010028)="*" (Raw: "*")
+                  E: data
+                    A: http://schemas.android.com/apk/res/android:pathPattern(0x0101002c)=".*\.md" (Raw: ".*\.md")
+                  E: data
+                    A: http://schemas.android.com/apk/res/android:pathPattern(0x0101002c)=".*\.markdown" (Raw: ".*\.markdown")
