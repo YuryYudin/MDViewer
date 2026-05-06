@@ -19,7 +19,10 @@
 //!   `From` impl on `CoreError::Internal` funnels them through the
 //!   UDL's `[Throws=CoreError]` channel without losing the message.
 
-use crate::anchor::Anchor as CoreAnchor;
+use crate::anchor::{
+    resolve_anchor_with_threshold as core_resolve_anchor_with_threshold, Anchor as CoreAnchor,
+    ResolveOutcome as CoreResolveOutcome,
+};
 use crate::comments::{
     merge_stores as core_merge_stores, Comment as CoreComment, CommentsStore,
     NewComment as CoreNewComment, NewThread as CoreNewThread, Thread as CoreThread,
@@ -359,6 +362,65 @@ pub fn save_sidecar_bytes(
     Ok(core_save_sidecar(&guard)?)
 }
 
+/// UDL-shaped outcome of `resolve_anchor`. Core's `ResolveOutcome` is a
+/// tagged enum (`Resolved { start, end }` | `Orphan`) which UniFFI's
+/// dictionary surface can't model directly without leaking either an
+/// optional `Range` field or a separate `interface`-flavored enum into
+/// every Kotlin call site. The flat `is_orphan` boolean keeps Kotlin
+/// callers branch-free: `if (outcome.isOrphan) skipInjection() else
+/// inject(outcome.start..outcome.end)`. Offsets are zero on the orphan
+/// branch — Kotlin treats them as undefined when `is_orphan = true`,
+/// but pinning a value avoids exposing UB-shaped sentinels.
+#[derive(Debug, Clone)]
+pub struct ResolveOutcome {
+    pub is_orphan: bool,
+    pub start: u32,
+    pub end: u32,
+}
+
+impl From<CoreResolveOutcome> for ResolveOutcome {
+    fn from(o: CoreResolveOutcome) -> Self {
+        match o {
+            CoreResolveOutcome::Resolved { start, end } => Self {
+                is_orphan: false,
+                start: u32_or_max(start),
+                end: u32_or_max(end),
+            },
+            CoreResolveOutcome::Orphan => Self {
+                is_orphan: true,
+                start: 0,
+                end: 0,
+            },
+        }
+    }
+}
+
+/// Default reattachment confidence threshold (1..=100, higher = stricter).
+/// Mirrors `src-tauri/src/workspace.rs::Workspace::resolve_anchor_for_tab`,
+/// which reads `settings.comments.reattachment_confidence` (default 75).
+/// D8 hard-wires the default at the FFI boundary so the Android client's
+/// orphan classification matches the desktop's out-of-the-box behavior.
+/// A future settings-screen task can widen the UDL to take a
+/// per-call threshold once the Android settings surface ships.
+pub const DEFAULT_REATTACHMENT_CONFIDENCE: u8 = 75;
+
+/// UDL: `[Throws=CoreError] ResolveOutcome resolve_anchor(string source, Anchor anchor);`
+///
+/// Funnels through `anchor::resolve_anchor_with_threshold` (Phase-2: exact
+/// match first, Bitap fuzzy fallback below the configured confidence).
+/// The Bitap path is CPU-bound — Kotlin callers MUST dispatch on
+/// `Dispatchers.Default` (see `DocumentViewModel.refreshAnchors`) so a
+/// large-doc resolve never lands on the UI thread.
+pub fn resolve_anchor(source: String, anchor: Anchor) -> Result<ResolveOutcome, CoreError> {
+    let core_anchor: CoreAnchor = anchor.into();
+    let outcome = core_resolve_anchor_with_threshold(
+        &source,
+        &core_anchor,
+        DEFAULT_REATTACHMENT_CONFIDENCE,
+    );
+    Ok(outcome.into())
+}
+
 /// UDL: `string sidecar_filename(string doc_filename, string pattern);`
 ///
 /// Infallible: matches the core helper's signature and the UDL omits
@@ -690,5 +752,55 @@ mod tests {
             sidecar_filename("notes.md".into(), "{name}.md.comments.json".into()),
             "notes.md.comments.json"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // D8: resolve_anchor wrapper.
+    //
+    // The wrapper is the Kotlin-facing entry point for re-anchoring
+    // threads against the live source on document open. It funnels
+    // through `anchor::resolve_anchor_with_threshold` with the
+    // desktop default (75) so the Android app's orphan-detection
+    // matches the desktop's out-of-the-box behavior. The threshold is
+    // surfaceable from settings later — D8 hard-wires the default to
+    // keep the cross-platform contract pinned at the boundary.
+    // -----------------------------------------------------------------
+
+    /// An exact match resolves with `is_orphan = false` and the
+    /// returned byte range pointing at the quote in the source.
+    #[test]
+    fn resolve_anchor_wrapper_returns_resolved_range_for_exact_match() {
+        let source = "alpha bravo charlie";
+        let anchor = Anchor {
+            selector_text: "bravo".into(),
+            context_before: "alpha ".into(),
+            context_after: " charlie".into(),
+            char_start: 6,
+            char_end: 11,
+        };
+        let outcome = resolve_anchor(source.into(), anchor).expect("resolve");
+        assert_eq!(outcome.is_orphan, false);
+        assert_eq!(outcome.start, 6);
+        assert_eq!(outcome.end, 11);
+    }
+
+    /// A quote that is no longer present in the source resolves as
+    /// orphan. start/end clamp to 0 in that case so the wire shape
+    /// stays valid (Kotlin sees `is_orphan = true` and ignores the
+    /// offsets).
+    #[test]
+    fn resolve_anchor_wrapper_returns_orphan_for_missing_quote() {
+        let source = "alpha bravo charlie";
+        let anchor = Anchor {
+            selector_text: "delta".into(),
+            context_before: String::new(),
+            context_after: String::new(),
+            char_start: 0,
+            char_end: 5,
+        };
+        let outcome = resolve_anchor(source.into(), anchor).expect("resolve");
+        assert_eq!(outcome.is_orphan, true);
+        assert_eq!(outcome.start, 0);
+        assert_eq!(outcome.end, 0);
     }
 }

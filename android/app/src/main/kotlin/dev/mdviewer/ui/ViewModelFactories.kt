@@ -37,6 +37,7 @@ import dev.mdviewer.data.DEFAULT_SIDECAR_PATTERN
 import dev.mdviewer.data.Recents
 import dev.mdviewer.render.HtmlTheme
 import dev.mdviewer.saf.DocumentRepository
+import dev.mdviewer.saf.Sidecar
 
 class DocumentViewModelFactory(
     private val ctx: Context,
@@ -52,6 +53,11 @@ class DocumentViewModelFactory(
             repo = DocumentRepository(ctx.applicationContext),
             sidecarPattern = sidecarPattern,
             recents = Recents(ctx.applicationContext),
+            // D8: Sidecar.load returns the per-doc CommentsStoreHandle
+            // the open path stashes on Loaded so the anchor-resolve
+            // pass and the future ThreadSheet integration can read it
+            // without a second open round-trip.
+            sidecar = Sidecar(ctx.applicationContext),
             theme = theme,
         ) as T
     }

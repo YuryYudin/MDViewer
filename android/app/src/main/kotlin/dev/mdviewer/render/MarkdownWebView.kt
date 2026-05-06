@@ -9,11 +9,14 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.webkit.WebViewAssetLoader
+import kotlinx.coroutines.delay
 
 /**
  * Theme variant the rendered document should display in. Maps to the
@@ -85,16 +88,40 @@ fun MarkdownWebView(
     theme: HtmlTheme,
     modifier: Modifier = Modifier,
     bridge: SelectionBridge? = null,
+    /**
+     * D8: anchor ranges to inject after the WebView settles. The list is
+     * passed straight to [HighlightInjector.inject] so the JS wrapper
+     * walks every `[data-src-offset]` carrier and wraps the matching
+     * spans in `<span class="anchored">`. An empty list (the default,
+     * Phase C call sites) leaves the document with no highlight
+     * decorations — exactly the C4 read-only mode.
+     *
+     * Re-injects on every change to the list reference: HighlightInjector's
+     * idempotency contract (every call unwraps the prior `.anchored` set
+     * before re-applying) means callers can pass the full thread list
+     * unconditionally without diffing against the prior value.
+     */
+    anchorRanges: List<AnchorRange> = emptyList(),
 ) {
     val ctx = LocalContext.current
     val loader = remember(ctx) { AssetLoaderFactory.create(ctx) }
     val template = remember(ctx) {
         ctx.assets.open(DOCUMENT_HOST_ASSET).bufferedReader().use { it.readText() }
     }
+    // Hand the WebView reference up to the LaunchedEffect below so it
+    // can call HighlightInjector.inject without recomposing the WebView.
+    // `mutableStateOf` is fine here because the `factory` lambda runs
+    // once per AndroidView host, and the LaunchedEffect re-reads the
+    // value on every key change rather than on Compose state reads.
+    val webViewRef = remember { mutableStateOf<android.webkit.WebView?>(null) }
 
     AndroidView(
         modifier = modifier,
-        factory = { c -> buildWebView(c, loader, bridge) },
+        factory = { c ->
+            val wv = buildWebView(c, loader, bridge)
+            webViewRef.value = wv
+            wv
+        },
         update = { wv ->
             val themed = template
                 .replace("__THEME__", if (theme == HtmlTheme.Dark) "dark" else "light")
@@ -108,6 +135,26 @@ fun MarkdownWebView(
             )
         },
     )
+
+    // D8: inject highlights after every anchorRanges change. We re-key
+    // on `html` too because a doc-reload reloads the WebView and the
+    // freshly-parsed DOM has no `.anchored` wrappers to begin with;
+    // re-running the effect on `html` change ensures the highlights
+    // come back after every reload.
+    LaunchedEffect(anchorRanges, html) {
+        val wv = webViewRef.value ?: return@LaunchedEffect
+        // The WebView's loadDataWithBaseURL above kicks off DOM parsing
+        // asynchronously on the chrome thread. evaluateJavascript only
+        // reaches `window.applyAnchors` after the script tag in
+        // document-host.html has finished executing. A short delay is
+        // the simplest robust gate that works across all WebView impls
+        // we ship against; the alternative (polling for
+        // `typeof applyAnchors === 'function'`) buys nothing because
+        // the script tag is sync-loaded from the asset loader and
+        // settles within one frame on every device we've tested.
+        delay(50)
+        HighlightInjector.inject(wv, anchorRanges)
+    }
 }
 
 /**

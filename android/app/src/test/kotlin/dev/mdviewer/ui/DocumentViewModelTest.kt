@@ -32,6 +32,11 @@
 package dev.mdviewer.ui
 
 import android.net.Uri
+import dev.mdviewer.core.Anchor
+import dev.mdviewer.core.NewThread
+import dev.mdviewer.core.createThread
+import dev.mdviewer.core.loadSidecarBytes
+import dev.mdviewer.core.saveSidecarBytes
 import dev.mdviewer.data.SafTier
 import dev.mdviewer.render.HtmlTheme
 import dev.mdviewer.saf.OpenedDocument
@@ -39,6 +44,7 @@ import dev.mdviewer.saf.SafCapability
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
@@ -50,6 +56,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.io.FileNotFoundException
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 @RunWith(RobolectricTestRunner::class)
@@ -87,7 +94,9 @@ class DocumentViewModelTest {
             repo = repo,
             sidecarPattern = "{name}.md.comments.json",
             recents = recents,
+            sidecar = FakeDocumentSidecar(),
             theme = HtmlTheme.Light,
+            anchorDispatcher = testDispatcher,
         )
 
         vm.open(docUri)
@@ -113,7 +122,14 @@ class DocumentViewModelTest {
             ),
         )
         val recents = FakeRecents()
-        val vm = DocumentViewModel(repo, "{name}.md.comments.json", recents, HtmlTheme.Light)
+        val vm = DocumentViewModel(
+            repo = repo,
+            sidecarPattern = "{name}.md.comments.json",
+            recents = recents,
+            sidecar = FakeDocumentSidecar(),
+            theme = HtmlTheme.Light,
+            anchorDispatcher = testDispatcher,
+        )
 
         vm.open(docUri)
         vm.uiState.first { it is DocumentUiState.Loaded }
@@ -139,7 +155,14 @@ class DocumentViewModelTest {
             ),
         )
         val recents = FakeRecents()
-        val vm = DocumentViewModel(repo, "{name}.md.comments.json", recents, HtmlTheme.Light)
+        val vm = DocumentViewModel(
+            repo = repo,
+            sidecarPattern = "{name}.md.comments.json",
+            recents = recents,
+            sidecar = FakeDocumentSidecar(),
+            theme = HtmlTheme.Light,
+            anchorDispatcher = testDispatcher,
+        )
 
         vm.open(docUri)
         vm.uiState.first { it is DocumentUiState.Loaded }
@@ -156,12 +179,143 @@ class DocumentViewModelTest {
             failure = FileNotFoundException("missing"),
         )
         val recents = FakeRecents()
-        val vm = DocumentViewModel(repo, "{name}.md.comments.json", recents, HtmlTheme.Light)
+        val vm = DocumentViewModel(
+            repo = repo,
+            sidecarPattern = "{name}.md.comments.json",
+            recents = recents,
+            sidecar = FakeDocumentSidecar(),
+            theme = HtmlTheme.Light,
+            anchorDispatcher = testDispatcher,
+        )
 
         vm.open(docUri)
         val errored = vm.uiState.first { it is DocumentUiState.Error } as DocumentUiState.Error
         assertTrue(errored.message.isNotEmpty(), "error message should be non-empty")
         // No recents entry on a failed open.
         assertTrue(recents.calls.isEmpty())
+    }
+
+    // -----------------------------------------------------------------
+    // D8: anchor-resolution wiring on document open.
+    //
+    // After `open(uri)` lands the rendered HTML in `Loaded`, the
+    // ViewModel must walk the sidecar's threads, call
+    // `mdviewer-core::resolve_anchor` on each, and publish the
+    // resolved ranges via the `anchorRanges` StateFlow. The Compose
+    // layer then feeds those ranges to HighlightInjector. Orphan
+    // threads (`is_orphan = true` from the core call) are NOT included
+    // in the highlight payload — D6's CommentsListSheet surfaces them
+    // separately as a flagged row.
+    //
+    // We seed the FakeSidecar by serializing a pre-built store via the
+    // production `saveSidecarBytes` so the test reflects what
+    // `Sidecar.load` will hand back from disk in production.
+    // -----------------------------------------------------------------
+
+    /**
+     * Helper: build a fresh sidecar byte payload containing one thread
+     * whose anchor matches the substring at [start..end) in [source].
+     * Returns the raw bytes the FakeSidecar will hand back on `load`.
+     */
+    private fun seededSidecarBytes(
+        source: String,
+        start: Int,
+        end: Int,
+    ): ByteArray {
+        val store = loadSidecarBytes(ByteArray(0))
+        val anchor = Anchor(
+            selectorText = source.substring(start, end),
+            contextBefore = "",
+            contextAfter = "",
+            charStart = start.toUInt(),
+            charEnd = end.toUInt(),
+        )
+        createThread(
+            store = store,
+            input = NewThread(
+                anchor = anchor,
+                body = "seed",
+                authorId = "u-1",
+                authorName = "Alice",
+                authorColor = "#000000",
+            ),
+        )
+        return saveSidecarBytes(store)
+    }
+
+    @Test
+    fun open_resolves_anchors_for_each_thread_in_sidecar() = runTest {
+        val source = "alpha bravo charlie"
+        val docUri = Uri.parse("content://t/anchor")
+        val repo = FakeDocumentRepository(
+            opened = OpenedDocument(
+                uri = docUri,
+                displayName = "doc.md",
+                bytes = source.toByteArray(),
+                capability = SafCapability.SingleUri,
+                treeUri = null,
+            ),
+        )
+        val sidecar = FakeDocumentSidecar(bytes = seededSidecarBytes(source, 6, 11))
+        val vm = DocumentViewModel(
+            repo = repo,
+            sidecarPattern = "{name}.md.comments.json",
+            recents = FakeRecents(),
+            sidecar = sidecar,
+            theme = HtmlTheme.Light,
+            anchorDispatcher = testDispatcher,
+        )
+
+        vm.open(docUri)
+        // The Loaded state lands first; the anchor refresh kicks off
+        // a separate coroutine on the (test-routed) anchorDispatcher
+        // that we drive forward with `advanceUntilIdle`.
+        vm.uiState.first { it is DocumentUiState.Loaded }
+        advanceUntilIdle()
+
+        val ranges = vm.anchorRanges.value
+        assertEquals(1, ranges.size, "one thread -> one anchor range")
+        val range = ranges.single()
+        assertEquals(6, range.srcStart)
+        assertEquals(11, range.srcEnd)
+        assertFalse(range.resolved, "fresh thread is not resolved")
+    }
+
+    @Test
+    fun open_publishes_orphan_threads_via_orphanThreadIds_flow() = runTest {
+        // Source no longer contains the original "bravo" quote.
+        val originalSource = "alpha bravo charlie"
+        val mutatedSource = "alpha CHARLIE delta"
+        val docUri = Uri.parse("content://t/orphan")
+        val repo = FakeDocumentRepository(
+            opened = OpenedDocument(
+                uri = docUri,
+                displayName = "doc.md",
+                bytes = mutatedSource.toByteArray(),
+                capability = SafCapability.SingleUri,
+                treeUri = null,
+            ),
+        )
+        // Seed sidecar with a thread anchored at "bravo" in the
+        // ORIGINAL source — `resolve_anchor` against `mutatedSource`
+        // returns Orphan because the quote is gone.
+        val sidecar = FakeDocumentSidecar(bytes = seededSidecarBytes(originalSource, 6, 11))
+        val vm = DocumentViewModel(
+            repo = repo,
+            sidecarPattern = "{name}.md.comments.json",
+            recents = FakeRecents(),
+            sidecar = sidecar,
+            theme = HtmlTheme.Light,
+            anchorDispatcher = testDispatcher,
+        )
+
+        vm.open(docUri)
+        vm.uiState.first { it is DocumentUiState.Loaded }
+        advanceUntilIdle()
+
+        // Highlight payload: empty (orphan threads skip injection).
+        assertEquals(0, vm.anchorRanges.value.size, "orphan threads do not paint")
+        // Orphan flag surface: D6's CommentsListSheet reads from this.
+        assertEquals(1, vm.orphanThreadIds.value.size, "orphan thread surfaced")
     }
 }

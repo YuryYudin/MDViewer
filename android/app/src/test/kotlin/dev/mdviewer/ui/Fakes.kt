@@ -1,20 +1,24 @@
 // ---------------------------------------------------------------------------
 // Test fakes for DocumentViewModelTest.
 //
-// Both fakes implement the narrowed interfaces the ViewModel depends on
-// (`DocumentRepositoryApi`, `RecentsApi`) so the test never has to
-// allocate a Context-bound DataStore or a real ContentResolver. They
-// stay tiny on purpose — the ViewModel test cares about the state
+// The fakes implement the narrowed interfaces the ViewModel depends on
+// (`DocumentRepositoryApi`, `RecentsApi`, `SidecarApi`) so the test never
+// has to allocate a Context-bound DataStore or a real ContentResolver.
+// They stay tiny on purpose — the ViewModel test cares about the state
 // machine, not about preserving the production class behavior.
 // ---------------------------------------------------------------------------
 package dev.mdviewer.ui
 
 import android.net.Uri
+import dev.mdviewer.core.CommentsStoreHandle
+import dev.mdviewer.core.loadSidecarBytes
 import dev.mdviewer.data.RecentEntry
 import dev.mdviewer.data.RecentsApi
 import dev.mdviewer.data.SafTier
 import dev.mdviewer.saf.DocumentRepositoryApi
 import dev.mdviewer.saf.OpenedDocument
+import dev.mdviewer.saf.SafCapability
+import dev.mdviewer.saf.SidecarApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -68,5 +72,54 @@ class FakeRecents : RecentsApi {
         val now = System.currentTimeMillis()
         val without = _state.value.filterNot { it.uri == uri }
         _state.value = listOf(RecentEntry(uri, displayName, now, safTier)) + without
+    }
+}
+
+/**
+ * In-memory [SidecarApi] used by [DocumentViewModelTest]. Returns the
+ * configured bytes (or empty when none provided) on `load`, and records
+ * every `save` call.
+ *
+ * Tests that need to seed the store (D8 anchor-resolution test) pass
+ * `bytes = <serialized store>`; tests that only care about the
+ * "empty-store" path can omit the parameter entirely.
+ *
+ * Distinct name from [ThreadSheetViewModelTest]'s file-private
+ * `FakeSidecar` because Kotlin top-level declarations can't share a
+ * simple name across the same package even when one is `private`.
+ * Naming this `FakeDocumentSidecar` keeps both fakes co-resident in
+ * the package without forcing one of them into a deeper sub-package.
+ */
+class FakeDocumentSidecar(
+    private val bytes: ByteArray = ByteArray(0),
+) : SidecarApi {
+
+    val saveCalls: MutableList<SaveCall> = mutableListOf()
+
+    data class SaveCall(
+        val docUri: Uri,
+        val docFilename: String,
+        val capability: SafCapability,
+        val treeUri: Uri?,
+        val pattern: String,
+    )
+
+    override suspend fun load(
+        docUri: Uri,
+        docFilename: String,
+        capability: SafCapability,
+        treeUri: Uri?,
+        pattern: String,
+    ): CommentsStoreHandle = loadSidecarBytes(bytes)
+
+    override suspend fun save(
+        docUri: Uri,
+        docFilename: String,
+        capability: SafCapability,
+        treeUri: Uri?,
+        pattern: String,
+        store: CommentsStoreHandle,
+    ) {
+        saveCalls += SaveCall(docUri, docFilename, capability, treeUri, pattern)
     }
 }

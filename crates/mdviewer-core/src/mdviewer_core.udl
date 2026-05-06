@@ -33,6 +33,15 @@ namespace mdviewer_core {
 
     string sidecar_filename(string doc_filename, string pattern);
 
+    // D8: re-anchor a thread against the live source. Funnels through
+    // anchor::resolve_anchor_with_threshold (exact match first, Bitap
+    // fuzzy fallback below the desktop default 75% confidence).
+    // Returns is_orphan = true when the quote can no longer be located —
+    // the Kotlin layer skips highlight injection but keeps the thread in
+    // CommentsListSheet flagged with an "orphan" badge.
+    [Throws=CoreError]
+    ResolveOutcome resolve_anchor(string source, Anchor anchor);
+
     [Throws=CoreError]
     Thread create_thread(CommentsStoreHandle store, NewThread input);
 
@@ -70,6 +79,17 @@ dictionary Anchor {
     string context_after;
     u32 char_start;
     u32 char_end;
+};
+
+// D8: flat outcome record from `resolve_anchor`. Core's tagged
+// `ResolveOutcome` (Resolved { start, end } | Orphan) is projected onto
+// `is_orphan: bool` + offsets so Kotlin callers stay branch-free at the
+// dictionary boundary. `start` / `end` are 0 on the orphan branch —
+// callers must check `is_orphan` before reading them.
+dictionary ResolveOutcome {
+    boolean is_orphan;
+    u32 start;
+    u32 end;
 };
 
 dictionary Comment {

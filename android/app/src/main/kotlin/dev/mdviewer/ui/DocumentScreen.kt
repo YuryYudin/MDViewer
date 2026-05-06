@@ -56,9 +56,16 @@ fun DocumentScreen(uri: Uri, vm: DocumentViewModel) {
                     if (s.capability == SafCapability.SingleUri) {
                         SafCapabilityBanner()
                     }
+                    // D8: anchorRanges flow through MarkdownWebView's
+                    // LaunchedEffect into HighlightInjector. Orphan
+                    // threads are NOT in this list — they're surfaced
+                    // separately via the orphanThreadIds StateFlow that
+                    // D6's CommentsListSheet collects.
+                    val ranges by vm.anchorRanges.collectAsState()
                     MarkdownWebView(
                         html = s.html,
                         theme = s.theme,
+                        anchorRanges = ranges,
                         modifier = Modifier.fillMaxSize(),
                     )
                 }
