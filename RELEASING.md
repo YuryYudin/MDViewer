@@ -4,17 +4,35 @@ Cutting an MDViewer release is a tag push. CI does the rest.
 
 ## What ships
 
-`.github/workflows/release.yml` runs three jobs in parallel on a tag push:
+`.github/workflows/release.yml` runs four jobs in parallel on a tag push:
 
 | Job | Runner | Bundles |
 |---|---|---|
 | macOS (Apple Silicon) | `macos-14`     | `MDViewer_<ver>_aarch64.dmg` |
 | Windows               | `windows-latest` | `MDViewer_<ver>_x64_en-US.msi` |
 | Linux                 | `ubuntu-22.04` | `MDViewer_<ver>_amd64.deb`, `MDViewer_<ver>_amd64.AppImage`, `MDViewer-<ver>-1.x86_64.rpm` |
+| Android (sideload)    | `ubuntu-latest` | `mdviewer-android-v<ver>.apk` |
 
-Each artifact is uploaded to a **draft** GitHub Release named `MDViewer v<ver>`. The release stays in draft until you click _Publish_ in the GitHub UI — that's the one-step gate that turns "I tagged a release" into "users see this exists."
+Each artifact is uploaded to a **draft** GitHub Release named `MDViewer v<ver>`. The release stays in draft until you click _Publish_ in the GitHub UI — that's the one-step gate that turns "I tagged a release" into "users see this exists." Both the desktop bundle matrix and the Android job must finish green before that Publish click ships anything; a failed Android build leaves the draft missing the APK so it's obvious before users see it.
 
-Intel macOS, code signing, and notarization are intentionally out of scope for now (see the TODO block at the bottom of `release.yml`). Unsigned DMG / MSI work; users get a one-time Gatekeeper / SmartScreen warning.
+Intel macOS, desktop code signing, and notarization are intentionally out of scope for now (see the TODO block at the bottom of `release.yml`). Unsigned DMG / MSI work; users get a one-time Gatekeeper / SmartScreen warning.
+
+### Android sideload
+
+The Android APK is signed at build time using a release keystore decoded from CI secrets (see `android/keystore/README.md` for the env-var contract). Users sideload by downloading `mdviewer-android-v<ver>.apk` from the Release page and tapping it in a file manager — Android prompts for "Install unknown apps" the first time the source app (Files / Drive / etc.) tries to launch an installer.
+
+Required CI secrets, configured under **Settings → Secrets and variables → Actions**:
+
+| Secret | Description |
+|---|---|
+| `ANDROID_RELEASE_KEYSTORE_BASE64` | base64 of the JKS keystore file (no line wrap, e.g. `base64 -w0`) |
+| `ANDROID_RELEASE_KEYSTORE_PASSWORD` | keystore password |
+| `ANDROID_RELEASE_KEY_ALIAS` | key alias inside the keystore |
+| `ANDROID_RELEASE_KEY_PASSWORD` | key password (often the same as the keystore password) |
+
+Keep the JKS file itself off the repo and out of CI logs; only the base64 and the passwords flow through Actions. The release-cut workflow decodes the keystore into `android/app/build/release-keystore.jks`, signs `app-release.apk`, and a Gradle finalizer deletes the tmp keystore on success and failure (a workflow step then fails the job if the file somehow survives — leaked keystores are a security incident).
+
+If any of the four secrets are missing, the release `signingConfig` falls back to debug signing for local convenience. The release-cut workflow still uploads the APK, but Play Protect will refuse to install it on non-developer devices — easy to spot during smoke-test before publish.
 
 ## The tag dance
 
@@ -37,7 +55,7 @@ git tag "v$NEW"
 git push origin main "v$NEW"
 ```
 
-The `tags: ['v*']` trigger fires the moment the tag lands. CI takes ~15–20 minutes cold (or ~5 min warm) to populate all three artifacts.
+The `tags: ['v*']` trigger fires the moment the tag lands. CI takes ~15–20 minutes cold (or ~5 min warm) to populate the four bundles (desktop trio + Android APK).
 
 ## After CI finishes
 
@@ -52,6 +70,13 @@ The `tags: ['v*']` trigger fires the moment the tag lands. CI takes ~15–20 min
      /Applications/MDViewer.app` for that single release. Confirm the
      status bar reads `MDViewer v$NEW`.
    - Windows / Linux: similar (Windows SmartScreen → "More info → Run anyway").
+   - Android: download `mdviewer-android-v$NEW.apk`, transfer to a phone
+     (USB / Drive / email) and tap it in a file manager. On first install
+     the system prompts for "Install unknown apps" permission for the
+     source app (Files, Drive, etc.). Open a `.md` from Drive via
+     "Open with → MDViewer" to confirm intent routing works on a real
+     device, then verify the Settings screen reads `Version v$NEW` and
+     a sample doc renders with the expected theme.
 4. Click **Publish release** when satisfied.
 
 ## Pre-release / smoke-test runs
