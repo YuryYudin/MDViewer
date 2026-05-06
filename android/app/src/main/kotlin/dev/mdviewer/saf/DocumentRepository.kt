@@ -38,9 +38,42 @@ import android.content.Intent
 import android.net.Uri
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
+import dev.mdviewer.core.CommentsStoreHandle
+import dev.mdviewer.core.mergeStores
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.FileNotFoundException
+
+/**
+ * The shape returned by [DocumentRepositoryApi.reloadWithSidecar].
+ *
+ * Carries everything the caller needs to (a) re-render the document
+ * (`opened.bytes`), (b) swap its in-memory comments store
+ * (`mergedStore`), and (c) surface the wireframe-10 snackbar copy
+ * (`addedCount` / `changedCount`).
+ *
+ * Two diff axes:
+ *   * [addedCount] — thread ids present in the merged store that were
+ *     not in the local store before the merge.
+ *   * [changedCount] — thread ids present on both sides whose comment
+ *     count or `resolved` flag differ between the local-pre-merge
+ *     snapshot and the merged-post snapshot. A reply on the desktop
+ *     side, or a desktop-side resolve, lands here.
+ *
+ * The two counts are independent dimensions; the snackbar adds them
+ * together for the user-facing "$N new comments" line because the
+ * user does not care whether a thread is brand-new or simply grew —
+ * either way "something changed".
+ */
+data class RefreshDelta(
+    val addedCount: Int,
+    val changedCount: Int,
+    val mergedStore: CommentsStoreHandle,
+    val opened: OpenedDocument,
+) {
+    /** Total surface count for the snackbar. */
+    val totalNew: Int get() = addedCount + changedCount
+}
 
 /**
  * Public seam between framework-issued document URIs and the rest of
@@ -50,7 +83,7 @@ import java.io.FileNotFoundException
  * production wiring takes a [Context] (the SAF + ContentResolver calls
  * need one), but ViewModel unit tests are cheaper and clearer when
  * they inject a Context-free fake that simply returns a pre-built
- * [OpenedDocument] (or throws). Both signatures stay suspend so the
+ * [OpenedDocument] (or throws). All signatures stay suspend so the
  * interface preserves the IO-thread dispatch contract the production
  * implementation honours via `withContext(Dispatchers.IO)`.
  */
@@ -60,9 +93,48 @@ interface DocumentRepositoryApi {
 
     /** Re-reads the document at [uri] without re-taking the persistable grant. */
     suspend fun reload(uri: Uri): OpenedDocument
+
+    /**
+     * Manual-reload entry point for D7's "Reload" affordance.
+     *
+     * Re-reads the document bytes (so the rendered HTML can pick up an
+     * out-of-band edit on the source markdown), reads the sidecar bytes
+     * via the configured [SidecarApi], parses the incoming bytes through
+     * `loadSidecarBytes`, and merges them with [currentLocalStore] using
+     * the Automerge-union semantics of `merge_stores`. Returns the
+     * [RefreshDelta] computed against the local-pre-merge snapshot.
+     *
+     * The caller — typically [dev.mdviewer.ui.DocumentViewModel.reload] —
+     * is expected to:
+     *   1. Replace its in-memory store reference with [RefreshDelta.mergedStore].
+     *   2. Re-render the HTML from [RefreshDelta.opened.bytes].
+     *   3. Surface the snackbar message derived from [RefreshDelta.totalNew].
+     *
+     * Why this lives on the repository (and not in the ViewModel):
+     * reloading is a SAF-shaped operation (re-read bytes, re-classify
+     * capability, walk the tree URI) that already belongs here; pulling
+     * the merge step in keeps the diff math close to the bytes round-trip
+     * and lets the ViewModel stay free of the `mergeStores` import.
+     */
+    suspend fun reloadWithSidecar(
+        uri: Uri,
+        capability: SafCapability,
+        treeUri: Uri?,
+        pattern: String,
+        currentLocalStore: CommentsStoreHandle,
+    ): RefreshDelta
 }
 
-class DocumentRepository(ctx: Context) : DocumentRepositoryApi {
+class DocumentRepository(
+    ctx: Context,
+    /**
+     * Sidecar IO collaborator used by [reloadWithSidecar] to fetch the
+     * incoming bytes. Defaults to a production [Sidecar] bound to the
+     * same context; tests can substitute a fake that returns pre-built
+     * [CommentsStoreHandle]s without touching the SAF tree.
+     */
+    internal val sidecar: SidecarApi = Sidecar(ctx),
+) : DocumentRepositoryApi {
 
     // Capture only the application context to avoid leaking activity
     // references through long-lived ViewModels / DI singletons.
@@ -99,6 +171,71 @@ class DocumentRepository(ctx: Context) : DocumentRepositoryApi {
      */
     override suspend fun reload(uri: Uri): OpenedDocument = withContext(Dispatchers.IO) {
         readDocument(uri, takePermission = false)
+    }
+
+    /**
+     * Re-reads the document + the on-disk sidecar, merges the sidecar
+     * with [currentLocalStore], and returns a [RefreshDelta] the caller
+     * uses to drive the snackbar + state replacement.
+     *
+     * The diff math snapshots `currentLocalStore.threads()` BEFORE the
+     * merge (so locally-posted threads are visible in the "before" set)
+     * and the merged store's threads AFTER. Added = post-only ids;
+     * changed = same id, different comment count or resolved flag. The
+     * snapshots are by thread id rather than full equality because
+     * Automerge can re-order the comments list without that being a
+     * user-visible change.
+     *
+     * Errors thrown by the sidecar load (provider exception, malformed
+     * bytes that core's `load_sidecar_bytes` rejects with `CoreError`)
+     * propagate up; the ViewModel catches them and surfaces an
+     * "Could not reload" toast rather than a silent stale state.
+     */
+    override suspend fun reloadWithSidecar(
+        uri: Uri,
+        capability: SafCapability,
+        treeUri: Uri?,
+        pattern: String,
+        currentLocalStore: CommentsStoreHandle,
+    ): RefreshDelta = withContext(Dispatchers.IO) {
+        // Re-read the document first so a sidecar read failure doesn't
+        // leave us with a partial result. open() also re-classifies
+        // capability (the user may have revoked tree access between
+        // sessions); we honour the *passed-in* capability here because
+        // the caller already snapshotted it at open time and a mid-
+        // session capability change is E3's concern, not ours.
+        val opened = readDocument(uri, takePermission = false)
+
+        // Snapshot the local store BEFORE the merge. mergeStores returns
+        // a new handle (no in-place mutation), so the local handle's
+        // threads() is still the pre-merge view at this point.
+        val before = currentLocalStore.threads().associateBy { it.id }
+
+        val incoming = sidecar.load(
+            docUri = uri,
+            docFilename = opened.displayName,
+            capability = capability,
+            treeUri = treeUri,
+            pattern = pattern,
+        )
+        val merged = mergeStores(currentLocalStore, incoming)
+        val after = merged.threads().associateBy { it.id }
+
+        val added = (after.keys - before.keys).size
+        val changed = after.values.count { aft ->
+            val bef = before[aft.id]
+            bef != null && (
+                bef.comments.size != aft.comments.size ||
+                    bef.resolved != aft.resolved
+                )
+        }
+
+        RefreshDelta(
+            addedCount = added,
+            changedCount = changed,
+            mergedStore = merged,
+            opened = opened,
+        )
     }
 
     private fun readDocument(uri: Uri, takePermission: Boolean): OpenedDocument {

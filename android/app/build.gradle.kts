@@ -319,7 +319,10 @@ tasks.withType<Test>().configureEach {
 // Pulled out as a top-level val so a future excludes drift between the two
 // is impossible.
 // ---------------------------------------------------------------------------
-val coverageExcludes = listOf(
+// Generated / non-project classes that should never be instrumented and
+// should never count toward coverage. Tests are excluded so a 100%-self-
+// covering test class doesn't inflate the denominator.
+val instrumentationExcludes = listOf(
     "**/R.class",
     "**/R$*.class",
     "**/BuildConfig.*",
@@ -331,31 +334,36 @@ val coverageExcludes = listOf(
     "**/hilt_aggregated_deps/**",
     "**/*_Hilt*.*",
     "**/*Hilt*Module*.*",
-    // Production-only SAF adapters that wrap real `androidx.documentfile`
-    // calls. They exist as a seam (see `Sidecar.kt`) so unit tests can
-    // inject in-memory fakes; running them on host-JVM would require a
-    // genuine DocumentsContract provider, which Robolectric does not
-    // ship. C3's tests cover Sidecar through `FakeTreeNode` instead, so
-    // these wrappers contribute zero testable lines and have to come out
-    // of the gate denominator.
+)
+
+// Production-only adapters that ARE instrumented and shipped to the runtime
+// classpath (other production code instantiates them) but are stripped from
+// the JacocoReport's `classDirectories` view because Robolectric cannot
+// host their underlying Android-framework surfaces. Excluding them from
+// instrumentation entirely would break the runtime classpath; excluding
+// them from the report just keeps the denominator honest about what host-
+// JVM tests can realistically reach.
+val reportOnlyExcludes = listOf(
+    // SAF adapters that wrap `androidx.documentfile`. They exist as a
+    // seam (see `Sidecar.kt`) so unit tests can inject in-memory fakes;
+    // running them on host-JVM would require a genuine DocumentsContract
+    // provider, which Robolectric does not ship. C3's tests cover
+    // Sidecar through `FakeTreeNode` instead.
     "**/saf/DocumentFileNode*.*",
     "**/saf/DocumentFileTreeAccess*.*",
     // MarkdownWebView is a Compose AndroidView wrapping a real WebView;
-    // exercising it on host-JVM is not feasible (WebView's classes throw
-    // immediately under Robolectric). C4's instrumented test under
-    // `androidTest/` covers the screen path on an emulator. The render
-    // package's testable surface is `AssetLoaderFactory` and the D2
-    // SelectionBridge / SelectionJsBridge / SuppressingActionModeCallback
-    // classes, which have their own host-JVM unit tests.
+    // WebView's classes throw immediately under Robolectric. C4's
+    // instrumented test under `androidTest/` covers the screen path on
+    // an emulator.
     "**/render/MarkdownWebView*.*",
-    // D2: SelectionWebView is a WebView subclass that intercepts
-    // startActionMode to swap in our SuppressingActionModeCallback. Its
-    // single override delegates to super.startActionMode which Robolectric
-    // can't host (the WebView class hierarchy throws on classload). The
-    // instrumented test under `androidTest/render/` exercises the
-    // ActionMode override path on an emulator; no host-JVM surface remains.
+    // D2: SelectionWebView intercepts startActionMode to swap in our
+    // SuppressingActionModeCallback. Same Robolectric/WebView limitation.
+    // The instrumented test under `androidTest/render/` exercises the
+    // ActionMode override path on an emulator.
     "**/render/SelectionWebView*.*",
 )
+
+val coverageExcludes = instrumentationExcludes + reportOnlyExcludes
 
 // ---------------------------------------------------------------------------
 // jacocoOfflineInstrument (C7) — the fix for Robolectric's coverage gap.
@@ -410,7 +418,13 @@ val jacocoOfflineInstrument by tasks.registering {
     val jacocoAntCfg = configurations["jacocoAnt"]
     inputs.files(jacocoAntCfg).withPropertyName("jacocoAnt")
 
-    val excludesCopy = coverageExcludes
+    // Only generated/non-project classes are dropped from instrumentation;
+    // the report-only excludes (DocumentFileTreeAccess, MarkdownWebView,
+    // SelectionWebView) MUST stay on the classpath because production
+    // code transitively loads them (Sidecar -> DocumentFileTreeAccess,
+    // MarkdownWebView -> SelectionWebView). The JacocoReport task below
+    // applies the full `coverageExcludes` to its denominator.
+    val excludesCopy = instrumentationExcludes
     doLast {
         val outRoot = outDir.get().asFile
         outRoot.deleteRecursively()
