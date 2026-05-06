@@ -83,7 +83,7 @@ class DocumentScreenWiringTest {
             store = store,
         )
 
-        val vm = ThreadSheetViewModelFactory.build(ctx, loaded)
+        val vm = ThreadSheetViewModelFactory.build(ctx, loaded, "{name}.md.comments.json")
 
         // The factory should hand the same store handle through (anchor
         // mutations need to land on the same `Arc<CommentsStore>` that
@@ -115,7 +115,7 @@ class DocumentScreenWiringTest {
             store = store,
         )
 
-        val vm = ThreadSheetViewModelFactory.build(ctx, loaded)
+        val vm = ThreadSheetViewModelFactory.build(ctx, loaded, "{name}.md.comments.json")
 
         assertNotNull(vm)
     }

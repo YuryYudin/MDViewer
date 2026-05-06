@@ -243,9 +243,15 @@ private fun LoadedDocumentBody(
     // different document open rebuilds the VM with the right SaveContext;
     // the store reference comes from Loaded.store which is the same
     // `Arc<CommentsStore>` handle the DocumentViewModel writes mutations
-    // through.
-    val threadSheetVm = remember(loaded.uri, loaded.store) {
-        ThreadSheetViewModelFactory.build(ctx, loaded)
+    // through. The sidecar pattern comes from SettingsStore (E2) so a
+    // user-customized pattern lands in the same place DocumentViewModel
+    // reads from on the next open — without this they would diverge and
+    // posted threads would silently disappear on reload.
+    val settingsStore = remember(ctx) { SettingsStore(ctx.applicationContext) }
+    val sidecarPattern by settingsStore.sidecarPattern
+        .collectAsState(initial = "{name}.md.comments.json")
+    val threadSheetVm = remember(loaded.uri, loaded.store, sidecarPattern) {
+        ThreadSheetViewModelFactory.build(ctx, loaded, sidecarPattern)
     }
 
     // E7: bridge → sheet. `HighlightTapped` events come from the JS
@@ -363,6 +369,7 @@ internal object ThreadSheetViewModelFactory {
     fun build(
         ctx: Context,
         loaded: DocumentUiState.Loaded,
+        sidecarPattern: String,
     ): ThreadSheetViewModel = ThreadSheetViewModel(
         store = loaded.store,
         sidecar = Sidecar(ctx.applicationContext),
@@ -372,7 +379,7 @@ internal object ThreadSheetViewModelFactory {
             docFilename = loaded.displayName,
             capability = loaded.capability,
             treeUri = loaded.treeUri,
-            sidecarPattern = "{name}.md.comments.json",
+            sidecarPattern = sidecarPattern,
         ),
     )
 }
