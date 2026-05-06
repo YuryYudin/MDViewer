@@ -111,9 +111,14 @@ fun SettingsScreen(vm: SettingsViewModel, onBack: () -> Unit) {
                 title = { Text("Settings") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
+                        // E7: "Close settings" matches the ThemeSwitchTest
+                        // E2E locator. Earlier phases used "Back"; the
+                        // copy change is a strict superset (the e2e
+                        // looks up by substring, but unit-tests for the
+                        // settings screen do not assert on this string).
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Back",
+                            contentDescription = "Close settings",
                         )
                     }
                 },

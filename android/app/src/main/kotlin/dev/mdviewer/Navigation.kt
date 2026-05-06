@@ -92,7 +92,16 @@ fun MdviewerNavHost(controller: NavHostController, startDestination: String) {
             val vm: DocumentViewModel = viewModel(
                 factory = DocumentViewModelFactory(ctx, theme),
             )
-            DocumentScreen(uri, vm)
+            DocumentScreen(
+                uri = uri,
+                vm = vm,
+                // E7: gateway to the settings screen — the Compose
+                // navigation root holds the controller so DocumentScreen
+                // stays NavController-agnostic. The route push back-
+                // stacks the document under the settings destination so
+                // popping returns to the same scrolled position.
+                onOpenSettings = { controller.navigate(Routes.Settings) },
+            )
         }
         composable(Routes.Settings) {
             val ctx = LocalContext.current
