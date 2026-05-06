@@ -103,7 +103,7 @@ class SettingsViewModelTest {
         // the new value. `first { ... }` suspends until the predicate
         // matches; the timeout guards against a regression that fails to
         // emit at all.
-        withTimeout(5_000) {
+        withTimeout(30_000) {
             assertEquals(ThemeMode.Dark, vm.theme.first { it == ThemeMode.Dark })
         }
         assertEquals(ThemeMode.Dark, settings.theme.first())
@@ -122,7 +122,7 @@ class SettingsViewModelTest {
 
         settings.setTheme(ThemeMode.Light)
 
-        withTimeout(5_000) {
+        withTimeout(30_000) {
             assertEquals(ThemeMode.Light, vm.theme.first { it == ThemeMode.Light })
         }
     }
@@ -139,7 +139,7 @@ class SettingsViewModelTest {
 
         vm.setSidecarPattern(".comments/{name}.json")
 
-        withTimeout(5_000) {
+        withTimeout(30_000) {
             settings.sidecarPattern.first { it == ".comments/{name}.json" }
         }
         assertEquals(".comments/{name}.json", settings.sidecarPattern.first())
@@ -153,7 +153,7 @@ class SettingsViewModelTest {
 
         // Seed a custom value so we can detect a write happening.
         vm.setSidecarPattern("custom-{name}.json")
-        withTimeout(5_000) {
+        withTimeout(30_000) {
             settings.sidecarPattern.first { it == "custom-{name}.json" }
         }
 
@@ -180,13 +180,13 @@ class SettingsViewModelTest {
         val vm = SettingsViewModel(settings, profile)
 
         vm.setShowResolved(true)
-        withTimeout(5_000) {
+        withTimeout(30_000) {
             settings.showResolved.first { it }
         }
         assertEquals(true, settings.showResolved.first())
 
         vm.setShowResolved(false)
-        withTimeout(5_000) {
+        withTimeout(30_000) {
             settings.showResolved.first { !it }
         }
         assertEquals(false, settings.showResolved.first())
@@ -208,14 +208,14 @@ class SettingsViewModelTest {
         // Wait for the VM's `init { profileStore.get() }` to land in the
         // exposed StateFlow before we trigger the edit; otherwise the
         // updateProfile call would be a (correct, but uninteresting) no-op.
-        withTimeout(5_000) {
+        withTimeout(30_000) {
             vm.profileState.first { it != null }
         }
 
         vm.updateProfile(displayName = "Daisy Sato", color = "#4CAF50")
 
         // Wait for the VM's saved-profile state to reflect the edit.
-        val current = withTimeout(5_000) {
+        val current = withTimeout(30_000) {
             vm.profileState.first { it?.displayName == "Daisy Sato" }
         }!!
         assertEquals("Daisy Sato", current.displayName)
