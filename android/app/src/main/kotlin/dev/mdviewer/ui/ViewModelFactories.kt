@@ -34,6 +34,7 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import dev.mdviewer.data.DEFAULT_SIDECAR_PATTERN
+import dev.mdviewer.data.ProfileStore
 import dev.mdviewer.data.Recents
 import dev.mdviewer.render.HtmlTheme
 import dev.mdviewer.saf.DocumentRepository
@@ -72,5 +73,24 @@ class RecentsViewModelFactory(
             "RecentsViewModelFactory does not produce ${modelClass.name}"
         }
         return RecentsViewModel(Recents(ctx.applicationContext)) as T
+    }
+}
+
+/**
+ * Wires the production [ProfileStore] into a [ProfileSetupViewModel]. The
+ * `applicationContext` capture mirrors the other factories' rationale —
+ * the Activity-scoped Context would leak into a ViewModel that survives
+ * configuration changes, while the application-scoped one is fine for
+ * the lifetime of the process.
+ */
+class ProfileSetupViewModelFactory(
+    private val ctx: Context,
+) : ViewModelProvider.Factory {
+    @Suppress("UNCHECKED_CAST")
+    override fun <T : ViewModel> create(modelClass: Class<T>): T {
+        require(modelClass.isAssignableFrom(ProfileSetupViewModel::class.java)) {
+            "ProfileSetupViewModelFactory does not produce ${modelClass.name}"
+        }
+        return ProfileSetupViewModel(ProfileStore(ctx.applicationContext)) as T
     }
 }

@@ -295,9 +295,14 @@ class ThreadSheetTest {
 // package even when both are private.
 // ---------------------------------------------------------------------------
 
-/** Returns the configured [profile] without touching DataStore. */
+/**
+ * Returns the configured [profile] without touching DataStore. `save` is a
+ * no-op — the ThreadSheet UI tests don't exercise the profile-mutation path
+ * (E1's `ProfileSetupViewModelTest` covers that).
+ */
 private class StubProfileStore(private val profile: Profile) : ProfileStoreApi {
     override suspend fun get(): Profile = profile
+    override suspend fun save(profile: Profile) { /* unused by ThreadSheet tests */ }
 }
 
 /**

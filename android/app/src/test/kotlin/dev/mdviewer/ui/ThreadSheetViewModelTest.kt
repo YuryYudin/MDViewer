@@ -460,7 +460,17 @@ private class FakeSidecar : SidecarApi {
     }
 }
 
-/** Returns [profile] from every `get()` call without touching DataStore. */
+/**
+ * Returns [profile] from every `get()` call without touching DataStore.
+ * `save` is a no-op — none of the ThreadSheet paths mutate the profile,
+ * so we don't bother recording the call. The ProfileSetup ViewModel test
+ * (which DOES exercise save) carries its own recording fake.
+ *
+ * Distinct name from [ThreadSheetTest]'s file-private `StubProfileStore`
+ * because Kotlin top-level declarations in the same package collide on
+ * simple name even when both are `private`.
+ */
 private class FakeProfileStore(private val profile: Profile) : ProfileStoreApi {
     override suspend fun get(): Profile = profile
+    override suspend fun save(profile: Profile) { /* unused by ThreadSheet */ }
 }

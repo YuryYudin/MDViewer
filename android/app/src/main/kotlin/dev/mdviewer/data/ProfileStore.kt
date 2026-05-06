@@ -74,15 +74,16 @@ data class Profile(
 }
 
 /**
- * Narrow interface the [dev.mdviewer.ui.ThreadSheetViewModel] consumes when
- * it needs the active [Profile] to stamp on a comment. Production wires the
- * full [ProfileStore]; ViewModel tests inject a fake (see
- * `ThreadSheetViewModelTest.FakeProfileStore`) so they don't have to spin
- * up a DataStore-backed file under a Robolectric Context.
+ * Narrow interface the [dev.mdviewer.ui.ThreadSheetViewModel] (read) and the
+ * [dev.mdviewer.ui.ProfileSetupViewModel] (read + write) consume so they
+ * don't have to spin up a DataStore-backed file under a Robolectric
+ * Context. Production wires the full [ProfileStore]; ViewModel tests
+ * inject a fake.
  *
- * The interface is deliberately read-only — the ThreadSheet path never
- * mutates the profile (E2's SettingsScreen owns that). Keeping the seam
- * narrow means the fake stays a one-liner.
+ * The interface stays narrow — only the two methods both call sites need.
+ * E2's SettingsScreen will use the same surface to mutate the profile
+ * post-setup, so the `save` member belongs on the seam itself rather than
+ * an ad-hoc widening.
  */
 interface ProfileStoreApi {
     /**
@@ -90,6 +91,13 @@ interface ProfileStoreApi {
      * the very first call. Mirrors [ProfileStore.get].
      */
     suspend fun get(): Profile
+
+    /**
+     * Persist [profile], overwriting any prior value. The setup flow calls
+     * this with either a user-typed Profile (Continue) or
+     * [Profile.anonymous] (Skip). Mirrors [ProfileStore.save].
+     */
+    suspend fun save(profile: Profile)
 }
 
 /**
@@ -136,7 +144,7 @@ class ProfileStore(
     }
 
     /** Persist the given profile, overwriting any prior value. */
-    suspend fun save(profile: Profile) {
+    override suspend fun save(profile: Profile) {
         store.edit { it[key] = json.encodeToString(Profile.serializer(), profile) }
     }
 

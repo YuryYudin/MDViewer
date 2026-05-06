@@ -12,6 +12,9 @@ import dev.mdviewer.render.HtmlTheme
 import dev.mdviewer.ui.DocumentScreen
 import dev.mdviewer.ui.DocumentViewModel
 import dev.mdviewer.ui.DocumentViewModelFactory
+import dev.mdviewer.ui.ProfileSetupScreen
+import dev.mdviewer.ui.ProfileSetupViewModel
+import dev.mdviewer.ui.ProfileSetupViewModelFactory
 import dev.mdviewer.ui.RecentsScreen
 import dev.mdviewer.ui.RecentsViewModel
 import dev.mdviewer.ui.RecentsViewModelFactory
@@ -86,6 +89,21 @@ fun MdviewerNavHost(controller: NavHostController, startDestination: String) {
             DocumentScreen(uri, vm)
         }
         composable(Routes.Settings) { Text("Settings (placeholder)") }
-        composable(Routes.ProfileSetup) { Text("Profile setup (placeholder)") }
+        composable(Routes.ProfileSetup) {
+            val ctx = LocalContext.current
+            val vm: ProfileSetupViewModel = viewModel(
+                factory = ProfileSetupViewModelFactory(ctx),
+            )
+            // E1: tapping Continue or Skip persists a profile and routes to
+            // Recents. We popUpTo(ProfileSetup, inclusive = true) so Back
+            // from Recents exits the activity rather than re-entering the
+            // setup screen — once the profile is initialised the user
+            // should never see this surface again on this install.
+            ProfileSetupScreen(vm) {
+                controller.navigate(Routes.Recents) {
+                    popUpTo(Routes.ProfileSetup) { inclusive = true }
+                }
+            }
+        }
     }
 }
