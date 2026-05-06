@@ -19,9 +19,15 @@
 //   - `mozilla.rust.android.gradle` — that plugin only belongs on :core
 //     where the cargo-ndk fan-out happens. Applying it here would
 //     trigger a redundant Rust build whenever we touched UI code.
-//   - Release signing — the release keystore comes from CI env vars
-//     in E4. Hard-coding a release config now would either commit a
-//     fake password (broken) or fail to load (broken differently).
+//
+// Release signing (E4):
+//   - The release keystore is supplied as `ANDROID_RELEASE_KEYSTORE_BASE64`
+//     in CI; the build decodes it into `app/build/release-keystore.jks`,
+//     signs the APK with the `ANDROID_RELEASE_KEY_*` env vars, and runs
+//     the `cleanupReleaseKeystore` finalizer so the tmp file is deleted
+//     on success AND failure. If the env var is missing the build falls
+//     back to debug signing (with a warning) so local `assembleRelease`
+//     still works for shrinker / lint verification.
 //
 // JaCoCo wiring (added in B5):
 //   - `enableUnitTestCoverage` and `enableAndroidTestCoverage` are debug-only.
@@ -32,6 +38,13 @@
 //     `build/reports/jacoco/`. Phase C7 layers the per-package threshold
 //     gate on top of this task; B5 only proves the report is produced.
 // ---------------------------------------------------------------------------
+
+// E4: explicit import — fully-qualified `java.util.Base64` doesn't resolve
+// inside Kotlin DSL build scripts at the call site (the script's package
+// scope shadows `java.util` for top-level lookups). The import keeps the
+// release signing block readable and matches the style used elsewhere
+// in this script for `JacocoTaskExtension` etc.
+import java.util.Base64
 
 plugins {
     alias(libs.plugins.android.application)
@@ -98,6 +111,38 @@ android {
             keyAlias = "androiddebugkey"
             keyPassword = "android"
         }
+        // Release signing is sourced from CI secrets at build time. The
+        // base64-encoded keystore is decoded into a tmp file under
+        // `app/build/release-keystore.jks`, used to sign the APK, and
+        // deleted by the `cleanupReleaseKeystore` finalizer below
+        // (runs on assembleRelease success AND failure). If the env
+        // vars are missing we fall back to debug signing so local
+        // `./gradlew :app:assembleRelease` doesn't blow up on
+        // configuration — the resulting APK is signed with an obviously
+        // non-production cert and can never be confused for a release.
+        create("release") {
+            val ksB64 = System.getenv("ANDROID_RELEASE_KEYSTORE_BASE64")
+            if (!ksB64.isNullOrBlank()) {
+                val tmp = layout.buildDirectory.file("release-keystore.jks").get().asFile.apply {
+                    parentFile.mkdirs()
+                    writeBytes(Base64.getDecoder().decode(ksB64))
+                }
+                storeFile = tmp
+                storePassword = System.getenv("ANDROID_RELEASE_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("ANDROID_RELEASE_KEY_ALIAS")
+                keyPassword = System.getenv("ANDROID_RELEASE_KEY_PASSWORD")
+            } else {
+                logger.warn(
+                    "ANDROID_RELEASE_KEYSTORE_BASE64 not set — release build will " +
+                        "fall back to debug signing. CI must export the release " +
+                        "keystore env vars; this branch is for local builds only.",
+                )
+                storeFile = file("../keystore/debug.keystore")
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
     }
 
     buildTypes {
@@ -112,13 +157,13 @@ android {
             enableAndroidTestCoverage = true
         }
         release {
+            signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
-            // signingConfig wired in E4 from env vars.
         }
     }
 
@@ -607,3 +652,41 @@ val copyCoreCss by tasks.registering(Copy::class) {
 }
 
 tasks.named("preBuild") { dependsOn(copyCoreCss) }
+
+// ---------------------------------------------------------------------------
+// Release keystore cleanup (E4).
+//
+// The release signingConfig above decodes ANDROID_RELEASE_KEYSTORE_BASE64
+// into `app/build/release-keystore.jks`. Once `assembleRelease` finishes —
+// success OR failure — the tmp file MUST be deleted so a leaked keystore
+// from a failed build never lingers on a CI worker (security incident
+// otherwise: anyone with shell access could harvest it from the workspace
+// before the next checkout cleared it).
+//
+// `finalizedBy` is the canonical Gradle pattern for this: a finalizer
+// runs whether the finalized task succeeded, failed, or was skipped. A
+// plain `doLast { ... }` only fires on success and would leak the
+// keystore on any signing/lint/R8 failure, which is the exact regime
+// we're trying to harden against.
+// ---------------------------------------------------------------------------
+val releaseKeystoreTmp = layout.buildDirectory.file("release-keystore.jks")
+
+val cleanupReleaseKeystore by tasks.registering {
+    description = "Deletes the temp release keystore decoded from " +
+        "ANDROID_RELEASE_KEYSTORE_BASE64 — runs on success AND failure."
+    doLast {
+        val tmp = releaseKeystoreTmp.get().asFile
+        if (tmp.exists()) {
+            tmp.delete()
+            logger.lifecycle("Deleted release keystore tmp: ${tmp.absolutePath}")
+        }
+    }
+}
+
+// AGP creates `assembleRelease` lazily during its `afterEvaluate` callback,
+// so referencing it via `tasks.named(...)` at top level fails at config
+// time with "Task not found". `tasks.matching` returns a live view that
+// finalizesBy gets wired into as soon as AGP registers the task.
+tasks.matching { it.name == "assembleRelease" }.configureEach {
+    finalizedBy(cleanupReleaseKeystore)
+}
