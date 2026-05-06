@@ -16,6 +16,13 @@
          (e.g. host-JVM smoke tests under Robolectric). `defer` keeps the
          attach-time listeners off the parser-blocking path. -->
     <script src="selection-bridge.js" defer></script>
+    <!-- D3: highlight-injector.js exposes window.applyAnchors(rangesJson)
+         which the JVM-side HighlightInjector calls via evaluateJavascript
+         to wrap [data-src-offset] carriers in <span class="anchored">.
+         The script self-installs once via __mdvHighlightInjectorInstalled
+         so a recomposition's reload doesn't redefine applyAnchors mid-
+         session. `defer` keeps it off the parser-blocking path. -->
+    <script src="highlight-injector.js" defer></script>
 </head>
 <body data-theme="__THEME__">
 __BODY__

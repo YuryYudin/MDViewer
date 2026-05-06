@@ -108,3 +108,38 @@
   background: var(--resolved);
   border-bottom-color: transparent;
 }
+
+/* D3 (Android in-document highlight wrappers).
+ * The Android WebView's `highlight-injector.js` walks
+ * `[data-src-offset]` carriers and wraps the matching ones in a
+ * `<span class="anchored" data-thread-id=... [data-resolved]>`. These
+ * rules style that wrapper.
+ *
+ * Why these are NOT scoped under `[data-region='render']`: the Android
+ * WebView template (`document-host.html`) renders the document body
+ * directly, NOT inside a `[data-region='render']` ancestor. The desktop
+ * shell wraps its renderer in that data-region; Android does not.
+ * Scoping here would silently no-op on Android.
+ *
+ * The colors mirror the existing `--highlight` / `--resolved` tokens
+ * the desktop already ships, but are inlined as RGBA literals because
+ * Android's WebView template does not import `theme.css` (the desktop
+ * carries those tokens via that file; the document.css we share is a
+ * single-file stylesheet by design).
+ */
+.anchored {
+  background-color: rgba(124, 58, 237, 0.18);
+  border-radius: 2px;
+  cursor: pointer;
+}
+.anchored[data-resolved] {
+  background-color: rgba(156, 163, 175, 0.18);
+  text-decoration: line-through;
+  text-decoration-color: rgba(156, 163, 175, 0.6);
+}
+body[data-theme='dark'] .anchored {
+  background-color: rgba(167, 139, 250, 0.22);
+}
+body[data-theme='dark'] .anchored[data-resolved] {
+  background-color: rgba(120, 122, 130, 0.22);
+}
