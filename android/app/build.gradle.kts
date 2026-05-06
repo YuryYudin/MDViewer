@@ -224,6 +224,28 @@ dependencies {
     // classes resolve their imports.
     testImplementation(libs.androidx.test.core)
     testImplementation(libs.androidx.test.ext.junit)
+    // D4: host-JVM Compose UI test rule for SelectionPopoverTest. The
+    // `createComposeRule()` factory needs the BOM-resolved
+    // `ui-test-junit4` artifact at unit-test compile + runtime, plus the
+    // `ui-test-manifest` artifact at runtime to satisfy
+    // ComponentActivity lookup inside Robolectric's host-JVM
+    // sandbox. Without `ui-test-manifest`, `setContent` blows up at
+    // first composition complaining the test activity is not
+    // declared in any AndroidManifest reachable from the test's
+    // classloader. Both artifacts inherit their version from the
+    // Compose BOM the same way the main-source compose deps do.
+    testImplementation(platform(libs.compose.bom))
+    testImplementation(libs.compose.ui.test.junit4)
+    // `ui-test-manifest` MUST go on `debugImplementation` (not
+    // `testImplementation`). The artifact is a tiny AAR whose only job
+    // is to ship a manifest declaring `androidx.activity.ComponentActivity`
+    // so Robolectric's `ActivityScenario.launch(ComponentActivity::class)`
+    // call inside `createComposeRule()` can resolve the launching intent.
+    // Manifest merging only applies to build-type source sets — putting
+    // this on `testImplementation` produces zero merged entries and the
+    // tests fail with `Unable to resolve activity for Intent { ... cmp=
+    // dev.mdviewer/androidx.activity.ComponentActivity }`.
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.test.rules)
