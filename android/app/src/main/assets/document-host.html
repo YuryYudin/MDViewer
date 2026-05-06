@@ -9,6 +9,13 @@
         body[data-theme="dark"] { background: #0f0f10; color: #e4e4e7; }
         body[data-theme="light"] { background: #ffffff; color: #1f2937; }
     </style>
+    <!-- D2: selection-bridge.js wires the browser's selectionchange and
+         click events to the MdvSelection JavaScriptInterface. The script
+         no-ops if the interface is absent, so the template stays valid for
+         scenarios where MarkdownWebView is mounted without a SelectionBridge
+         (e.g. host-JVM smoke tests under Robolectric). `defer` keeps the
+         attach-time listeners off the parser-blocking path. -->
+    <script src="selection-bridge.js" defer></script>
 </head>
 <body data-theme="__THEME__">
 __BODY__

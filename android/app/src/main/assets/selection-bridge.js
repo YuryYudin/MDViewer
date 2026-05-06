@@ -1,0 +1,130 @@
+// selection-bridge.js — runs inside the Android WebView. Sole purpose:
+// translate two browser events (`selectionchange` + click on a thread span)
+// into typed JSON messages forwarded to the JVM via the
+// `MdvSelection.onMessage` `@JavascriptInterface`.
+//
+// Why an IIFE with a "already installed" guard:
+//   - The host loads the same template every recomposition (the
+//     `loadDataWithBaseURL` in MarkdownWebView.update fires on every
+//     `update` lambda invocation). Without the guard, each reload would
+//     attach another listener on the document, multiplying outbound
+//     messages by the recomposition count.
+//
+// Why `data-src-end` (not `data-src-offset` of the next element):
+//   - `mdviewer-core::document::render_markdown` writes both attributes
+//     on every text-bearing inline carrier, scoped to the carrier's own
+//     byte range in the source. Treating the end offset as the carrier's
+//     own `data-src-end` keeps the bridge agnostic of sibling layout.
+//
+// Why throttle at 50ms:
+//   - The browser's selectionchange event fires per-pixel during a drag.
+//     50ms (~20 Hz) is enough to keep the popover position responsive
+//     while keeping JNI traffic low.
+//
+// Why we don't bridge mouse coordinates:
+//   - The JVM uses ActionMode.Callback2.onGetContentRect to anchor the
+//     popover. Re-deriving rects from JS would duplicate work and
+//     desynchronize from the OS-supplied rect.
+(function () {
+    'use strict';
+    if (window.__mdvSelectionBridgeInstalled) return;
+    window.__mdvSelectionBridgeInstalled = true;
+
+    var BRIDGE_NAME = 'MdvSelection';
+    var THROTTLE_MS = 50;
+
+    function post(msg) {
+        var bridge = window[BRIDGE_NAME];
+        if (bridge && typeof bridge.onMessage === 'function') {
+            try {
+                bridge.onMessage(JSON.stringify(msg));
+            } catch (e) {
+                // The JVM-side bridge never throws (see SelectionJsBridge),
+                // but we still defend the renderer thread from a future
+                // mistake on the JS side that could escape JSON.stringify
+                // (cyclic refs, etc.).
+            }
+        }
+    }
+
+    function closestWithAttr(node, attr) {
+        // `Range.startContainer` is often a Text node, which has no
+        // `closest`. Walk up to the parent element and search from there.
+        var el = node;
+        if (el && el.nodeType === 3 /* TEXT_NODE */) el = el.parentElement;
+        if (!el || typeof el.closest !== 'function') return null;
+        return el.closest('[' + attr + ']');
+    }
+
+    var lastFire = 0;
+
+    document.addEventListener('selectionchange', function () {
+        var sel = window.getSelection && window.getSelection();
+        if (!sel || sel.rangeCount === 0) {
+            post({ kind: 'selectionCollapsed' });
+            return;
+        }
+        if (sel.isCollapsed) {
+            post({ kind: 'selectionCollapsed' });
+            return;
+        }
+
+        // Throttle high-frequency selectionchange events. Run the throttle
+        // BEFORE anchor lookup so we don't pay for closest() walks we'll
+        // discard.
+        var now = (window.performance && performance.now) ? performance.now() : Date.now();
+        if (now - lastFire < THROTTLE_MS) return;
+        lastFire = now;
+
+        var range = sel.getRangeAt(0);
+        var startSpan = closestWithAttr(range.startContainer, 'data-src-offset');
+        // For the end of the selection prefer `data-src-end` (the exclusive
+        // end byte offset emitted by mdviewer-core); fall back to
+        // `data-src-offset` so a stray end-container outside an annotated
+        // span still has *some* anchor before we declare the range
+        // unanchorable.
+        var endSpan = closestWithAttr(range.endContainer, 'data-src-end')
+            || closestWithAttr(range.endContainer, 'data-src-offset');
+
+        if (!startSpan || !endSpan) {
+            post({ kind: 'selectionUnanchorable' });
+            return;
+        }
+
+        var srcStart = parseInt(startSpan.getAttribute('data-src-offset'), 10);
+        var endAttr = endSpan.getAttribute('data-src-end');
+        var srcEnd = endAttr !== null
+            ? parseInt(endAttr, 10)
+            // No data-src-end on the end container; fall back to the
+            // start of its data-src-offset span. This is wrong by the span
+            // length but at least gives the JVM a non-NaN integer and the
+            // anchor algorithm degrades gracefully (it'll snap to the
+            // start of that span's range).
+            : parseInt(endSpan.getAttribute('data-src-offset'), 10);
+
+        if (isNaN(srcStart) || isNaN(srcEnd)) {
+            post({ kind: 'selectionUnanchorable' });
+            return;
+        }
+
+        post({
+            kind: 'selectionchange',
+            text: sel.toString(),
+            srcStart: srcStart,
+            srcEnd: srcEnd,
+        });
+    });
+
+    // Capture-phase click listener so the highlight tap fires before any
+    // page-level handler that might call stopPropagation(). The thread-id
+    // span is emitted by mdviewer-core whenever the user has resolved a
+    // comment thread to a particular range.
+    document.addEventListener('click', function (e) {
+        var target = e && e.target;
+        if (!target || typeof target.closest !== 'function') return;
+        var span = target.closest('[data-thread-id]');
+        if (!span) return;
+        var tid = span.getAttribute('data-thread-id');
+        if (tid) post({ kind: 'highlightTap', threadId: tid });
+    }, /* useCapture = */ true);
+})();
