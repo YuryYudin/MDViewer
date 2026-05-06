@@ -42,7 +42,27 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.FileNotFoundException
 
-class DocumentRepository(ctx: Context) {
+/**
+ * Public seam between framework-issued document URIs and the rest of
+ * the app, narrowed to the read pathway used by the UI/ViewModel layer.
+ *
+ * Why a separate interface above the concrete [DocumentRepository]:
+ * production wiring takes a [Context] (the SAF + ContentResolver calls
+ * need one), but ViewModel unit tests are cheaper and clearer when
+ * they inject a Context-free fake that simply returns a pre-built
+ * [OpenedDocument] (or throws). Both signatures stay suspend so the
+ * interface preserves the IO-thread dispatch contract the production
+ * implementation honours via `withContext(Dispatchers.IO)`.
+ */
+interface DocumentRepositoryApi {
+    /** Reads + classifies the document at [uri]. */
+    suspend fun open(uri: Uri): OpenedDocument
+
+    /** Re-reads the document at [uri] without re-taking the persistable grant. */
+    suspend fun reload(uri: Uri): OpenedDocument
+}
+
+class DocumentRepository(ctx: Context) : DocumentRepositoryApi {
 
     // Capture only the application context to avoid leaking activity
     // references through long-lived ViewModels / DI singletons.
@@ -63,7 +83,7 @@ class DocumentRepository(ctx: Context) {
      * intent URIs deny persistence by design); they don't affect the
      * capability classification or the read result.
      */
-    suspend fun open(uri: Uri): OpenedDocument = withContext(Dispatchers.IO) {
+    override suspend fun open(uri: Uri): OpenedDocument = withContext(Dispatchers.IO) {
         readDocument(uri, takePermission = true)
     }
 
@@ -77,7 +97,7 @@ class DocumentRepository(ctx: Context) {
      * Used by the manual-reload affordance in D7 and by the resume path
      * when the document changes underneath us.
      */
-    suspend fun reload(uri: Uri): OpenedDocument = withContext(Dispatchers.IO) {
+    override suspend fun reload(uri: Uri): OpenedDocument = withContext(Dispatchers.IO) {
         readDocument(uri, takePermission = false)
     }
 

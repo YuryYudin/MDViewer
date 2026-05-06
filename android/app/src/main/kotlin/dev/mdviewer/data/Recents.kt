@@ -59,6 +59,36 @@ data class RecentEntry(
 )
 
 /**
+ * Public surface of [Recents] consumed by the UI/ViewModel layer.
+ *
+ * Why an interface above a single concrete class: the production
+ * [Recents] takes a [Context] in its constructor (DataStore needs it to
+ * resolve `filesDir/datastore/`) which is awkward to fake under a host-
+ * JVM unit test. Extracting the interface lets ViewModels depend on
+ * exactly the methods they need, and the C5 unit tests inject a
+ * Context-free fake. The methods listed here mirror the subset of
+ * [Recents] that crosses the data/UI seam — lower-level helpers like
+ * `remove()` stay on the concrete class for now and can be promoted
+ * later if the UI needs them.
+ */
+interface RecentsApi {
+    /**
+     * Compose-friendly observable view of the list. Subscribers re-render
+     * whenever a write lands.
+     */
+    val flow: Flow<List<RecentEntry>>
+
+    /** Snapshot of the current list, most-recent-first. */
+    suspend fun list(): List<RecentEntry>
+
+    /**
+     * Promote (or insert) an entry to the front of the list, refreshing
+     * its [displayName] and [safTier] in the process.
+     */
+    suspend fun recordOpen(uri: String, displayName: String, safTier: SafTier)
+}
+
+/**
  * DataStore-Preferences-backed recents list.
  *
  * @param ctx Application or activity context — only `applicationContext`
@@ -75,7 +105,7 @@ class Recents(
     ctx: Context,
     prefsName: String = "recents",
     private val maxEntries: Int = 50,
-) {
+) : RecentsApi {
     // We capture only the application context to keep this class safe to
     // hold from any scope (singletons, ViewModels, BroadcastReceivers).
     private val appCtx = ctx.applicationContext
@@ -101,13 +131,13 @@ class Recents(
 
     // Compose-friendly observable view of the list. Subscribers re-render
     // whenever a `recordOpen` or `remove` lands a new write.
-    val flow: Flow<List<RecentEntry>> = store.data.map { prefs ->
+    override val flow: Flow<List<RecentEntry>> = store.data.map { prefs ->
         decode(prefs[key])
     }
 
     /** Snapshot of the current list, most-recent-first. Suspend so the
      *  caller threads through a coroutine instead of blocking the UI. */
-    suspend fun list(): List<RecentEntry> = flow.first()
+    override suspend fun list(): List<RecentEntry> = flow.first()
 
     /** Returns the entry whose `uri` matches, or null if absent. */
     suspend fun get(uri: String): RecentEntry? = list().firstOrNull { it.uri == uri }
@@ -121,7 +151,7 @@ class Recents(
      * The size cap is applied *after* the new entry is prepended so the
      * tail (oldest) entries fall off, never the head we just wrote.
      */
-    suspend fun recordOpen(uri: String, displayName: String, safTier: SafTier) {
+    override suspend fun recordOpen(uri: String, displayName: String, safTier: SafTier) {
         val now = System.currentTimeMillis()
         store.edit { prefs ->
             val current = decode(prefs[key])
