@@ -1,23 +1,24 @@
 package dev.mdviewer
 
-import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
-import dev.mdviewer.render.HtmlTheme
 import dev.mdviewer.ui.DocumentScreen
 import dev.mdviewer.ui.DocumentViewModel
 import dev.mdviewer.ui.DocumentViewModelFactory
+import dev.mdviewer.ui.LocalHtmlTheme
 import dev.mdviewer.ui.ProfileSetupScreen
 import dev.mdviewer.ui.ProfileSetupViewModel
 import dev.mdviewer.ui.ProfileSetupViewModelFactory
 import dev.mdviewer.ui.RecentsScreen
 import dev.mdviewer.ui.RecentsViewModel
 import dev.mdviewer.ui.RecentsViewModelFactory
+import dev.mdviewer.ui.SettingsScreen
+import dev.mdviewer.ui.SettingsViewModel
+import dev.mdviewer.ui.SettingsViewModelFactory
 
 /**
  * Compose Navigation route registry.
@@ -79,16 +80,27 @@ fun MdviewerNavHost(controller: NavHostController, startDestination: String) {
             val encoded = entry.arguments?.getString("uri") ?: return@composable
             val uri = android.net.Uri.parse(android.net.Uri.decode(encoded))
             val ctx = LocalContext.current
-            // Resolve the system theme to a concrete HtmlTheme at the
-            // call site so the ViewModel never has to depend on Compose
-            // for the theme bit. Settings overrides arrive in D7.
-            val theme = if (isSystemInDarkTheme()) HtmlTheme.Dark else HtmlTheme.Light
+            // E2: theme is now provided via LocalHtmlTheme by MdviewerApp,
+            // which derives it from the persisted SettingsStore preference
+            // + system-dark bit. We still pass the resolved HtmlTheme into
+            // the ViewModel constructor (so it can stamp the initial
+            // Loaded.theme), but the WebView itself reads the live value
+            // from the CompositionLocal and dispatches an
+            // `evaluateJavascript` swap when it changes — no
+            // re-render, no lost scroll position.
+            val theme = LocalHtmlTheme.current
             val vm: DocumentViewModel = viewModel(
                 factory = DocumentViewModelFactory(ctx, theme),
             )
             DocumentScreen(uri, vm)
         }
-        composable(Routes.Settings) { Text("Settings (placeholder)") }
+        composable(Routes.Settings) {
+            val ctx = LocalContext.current
+            val vm: SettingsViewModel = viewModel(
+                factory = SettingsViewModelFactory(ctx),
+            )
+            SettingsScreen(vm) { controller.popBackStack() }
+        }
         composable(Routes.ProfileSetup) {
             val ctx = LocalContext.current
             val vm: ProfileSetupViewModel = viewModel(

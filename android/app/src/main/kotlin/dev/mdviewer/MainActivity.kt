@@ -5,6 +5,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.navigation.compose.rememberNavController
 import dev.mdviewer.data.ProfileStore
+import dev.mdviewer.data.SettingsStore
 import kotlinx.coroutines.runBlocking
 
 /**
@@ -51,8 +52,16 @@ class MainActivity : ComponentActivity() {
         val destination = IntentDispatcher.resolve(intent, hasProfile)
         val startRoute = routeFor(destination)
 
+        // E2: hand the SettingsStore to MdviewerApp so the persisted
+        // theme drives both MaterialTheme and the WebView CSS swap. We
+        // share a single instance per Activity — the SettingsStore's
+        // process-wide cache (keyed by prefsName) means a second
+        // construction at any other call site returns the same backing
+        // DataStore, but capturing once avoids redundant init plumbing.
+        val settings = SettingsStore(applicationContext)
+
         setContent {
-            MdviewerApp {
+            MdviewerApp(settings) {
                 val nav = rememberNavController()
                 MdviewerNavHost(controller = nav, startDestination = startRoute)
             }

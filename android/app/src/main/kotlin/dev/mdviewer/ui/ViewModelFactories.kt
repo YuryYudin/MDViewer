@@ -36,6 +36,7 @@ import androidx.lifecycle.ViewModelProvider
 import dev.mdviewer.data.DEFAULT_SIDECAR_PATTERN
 import dev.mdviewer.data.ProfileStore
 import dev.mdviewer.data.Recents
+import dev.mdviewer.data.SettingsStore
 import dev.mdviewer.render.HtmlTheme
 import dev.mdviewer.saf.DocumentRepository
 import dev.mdviewer.saf.Sidecar
@@ -92,5 +93,30 @@ class ProfileSetupViewModelFactory(
             "ProfileSetupViewModelFactory does not produce ${modelClass.name}"
         }
         return ProfileSetupViewModel(ProfileStore(ctx.applicationContext)) as T
+    }
+}
+
+/**
+ * Wires the production [SettingsStore] + [ProfileStore] into a
+ * [SettingsViewModel] for the E2 settings route. Both stores are keyed on
+ * `applicationContext`'s prefs path so this factory shares state with
+ * the [SettingsStore] instance MainActivity hands to [MdviewerApp]
+ * (DataStore-Preferences is process-singleton'd by file name —
+ * `SettingsStore.companion.stores` and `ProfileStore.companion.stores`
+ * both cache by prefsName, so two `SettingsStore(ctx)` calls return
+ * handles to the same DataStore).
+ */
+class SettingsViewModelFactory(
+    private val ctx: Context,
+) : ViewModelProvider.Factory {
+    @Suppress("UNCHECKED_CAST")
+    override fun <T : ViewModel> create(modelClass: Class<T>): T {
+        require(modelClass.isAssignableFrom(SettingsViewModel::class.java)) {
+            "SettingsViewModelFactory does not produce ${modelClass.name}"
+        }
+        return SettingsViewModel(
+            settings = SettingsStore(ctx.applicationContext),
+            profileStore = ProfileStore(ctx.applicationContext),
+        ) as T
     }
 }
