@@ -70,28 +70,38 @@ class SelectionJsBridge(
 
     /**
      * Hand-rolled parser. Returns null for any failure mode (malformed JSON,
-     * missing discriminator, unknown discriminator, missing required field).
+     * missing discriminator, unknown discriminator, missing required field,
+     * wrong field type — e.g. `text` arriving as an object instead of a
+     * string). The whole body runs inside `runCatching` so per-field accessors
+     * like `jsonPrimitive` (which throws `IllegalArgumentException` when the
+     * underlying element is a JsonObject/JsonArray/JsonNull) cannot escape
+     * past the `@JavascriptInterface` boundary and crash the WebView
+     * renderer thread.
      */
-    private fun parse(json: String): JsMessage? {
-        val obj = runCatching { JSON.parseToJsonElement(json).jsonObject }.getOrNull()
-            ?: return null
-        val kind = (obj["kind"] as? JsonPrimitive)?.contentOrNull ?: return null
-        return when (kind) {
+    private fun parse(json: String): JsMessage? = runCatching {
+        val obj = JSON.parseToJsonElement(json).jsonObject
+        val kind = (obj["kind"] as? JsonPrimitive)?.contentOrNull
+            ?: return@runCatching null
+        when (kind) {
             "selectionCollapsed" -> JsMessage.SelectionCollapsed
             "selectionUnanchorable" -> JsMessage.SelectionUnanchorable
             "selectionchange" -> {
-                val text = obj["text"]?.jsonPrimitive?.contentOrNull ?: return null
-                val srcStart = obj["srcStart"]?.jsonPrimitive?.intOrNull ?: return null
-                val srcEnd = obj["srcEnd"]?.jsonPrimitive?.intOrNull ?: return null
+                val text = (obj["text"] as? JsonPrimitive)?.contentOrNull
+                    ?: return@runCatching null
+                val srcStart = (obj["srcStart"] as? JsonPrimitive)?.intOrNull
+                    ?: return@runCatching null
+                val srcEnd = (obj["srcEnd"] as? JsonPrimitive)?.intOrNull
+                    ?: return@runCatching null
                 JsMessage.SelectionChanged(text = text, srcStart = srcStart, srcEnd = srcEnd)
             }
             "highlightTap" -> {
-                val tid = obj["threadId"]?.jsonPrimitive?.contentOrNull ?: return null
+                val tid = (obj["threadId"] as? JsonPrimitive)?.contentOrNull
+                    ?: return@runCatching null
                 JsMessage.HighlightTap(threadId = tid)
             }
             else -> null
         }
-    }
+    }.getOrNull()
 
     private companion object {
         // Lenient JSON: tolerate trailing commas / unquoted keys that future

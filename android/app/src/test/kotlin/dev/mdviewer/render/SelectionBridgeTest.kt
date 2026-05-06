@@ -148,6 +148,29 @@ class SelectionBridgeTest {
     }
 
     @Test
+    fun js_bridge_drops_wrong_typed_payload_silently() = runTest {
+        // Regression: kotlinx-serialization's `jsonPrimitive` extension throws
+        // IllegalArgumentException when the underlying element is a
+        // JsonObject/JsonArray/JsonNull — without a runCatching around the
+        // whole parse body, the exception escapes onMessage and crashes the
+        // WebView renderer thread. Lock in the silent-drop contract for each
+        // shape that takes a typed field.
+        val received = mutableListOf<JsMessage>()
+        val js = SelectionJsBridge { received += it }
+        // selectionchange.text arrives as an object instead of a string.
+        js.onMessage("""{"kind":"selectionchange","text":{},"srcStart":0,"srcEnd":1}""")
+        // selectionchange.srcStart arrives as an array.
+        js.onMessage("""{"kind":"selectionchange","text":"x","srcStart":[1,2],"srcEnd":3}""")
+        // highlightTap.threadId arrives as an object.
+        js.onMessage("""{"kind":"highlightTap","threadId":{}}""")
+        // kind itself is the wrong shape (object, not string).
+        js.onMessage("""{"kind":{},"x":1}""")
+        // Mixed JSON-element types in one payload.
+        js.onMessage("""{"kind":"selectionchange","text":null,"srcStart":null,"srcEnd":null}""")
+        assertTrue(received.isEmpty())
+    }
+
+    @Test
     fun suppressing_action_mode_callback_returns_false_on_create() {
         val bridge = SelectionBridge()
         val cb = SuppressingActionModeCallback(bridge)
