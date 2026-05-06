@@ -48,6 +48,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import dev.mdviewer.render.MarkdownWebView
 import dev.mdviewer.saf.SafCapability
+// E2: LocalHtmlTheme is provided by MdviewerApp at the activity root and
+// derived live from SettingsStore + system dark-mode. Reading it here
+// instead of using the per-Loaded-state `theme` field means a theme
+// flip while the document is on-screen propagates through Compose
+// recomposition into MarkdownWebView's evaluateJavascript swap.
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -108,9 +113,18 @@ fun DocumentScreen(uri: Uri, vm: DocumentViewModel) {
                     // separately via the orphanThreadIds StateFlow that
                     // D6's CommentsListSheet collects.
                     val ranges by vm.anchorRanges.collectAsState()
+                    // E2: read the live HtmlTheme from the composition
+                    // local rather than the static `s.theme` field. The
+                    // local re-emits when SettingsStore.theme changes,
+                    // so a theme flip in the Settings screen propagates
+                    // here via recomposition; MarkdownWebView's
+                    // LaunchedEffect on the new value calls
+                    // evaluateJavascript to swap the body's data-theme
+                    // attribute without re-rendering the doc.
+                    val liveTheme = LocalHtmlTheme.current
                     MarkdownWebView(
                         html = s.html,
-                        theme = s.theme,
+                        theme = liveTheme,
                         anchorRanges = ranges,
                         modifier = Modifier.fillMaxSize(),
                     )
