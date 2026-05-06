@@ -218,6 +218,30 @@ impl CommentsStore {
         Ok(())
     }
 
+    /// Symmetric counterpart to `resolve_thread`. Clears the resolved
+    /// flag and the audit fields so a re-opened thread looks
+    /// indistinguishable from a never-resolved one. The Android UI's
+    /// "Reopen" affordance (D5) calls this; the desktop UI doesn't yet
+    /// — keeping it on the store rather than the IPC layer means the
+    /// desktop can pick it up without a second migration.
+    ///
+    /// Emits `ChangeEvent::ThreadResolved` (the same event resolve emits)
+    /// because subscribers redraw on resolved-state changes regardless of
+    /// direction; introducing a second variant would force every existing
+    /// subscriber to grow a new arm without any new behavior.
+    pub fn unresolve_thread(&mut self, thread_id: &str) -> Result<(), &'static str> {
+        let t = self
+            .threads
+            .iter_mut()
+            .find(|t| t.id == thread_id)
+            .ok_or("thread not found")?;
+        t.resolved = false;
+        t.resolved_at = None;
+        t.resolved_by = None;
+        self.emit(ChangeEvent::ThreadResolved);
+        Ok(())
+    }
+
     /// Replace all threads atomically (sidecar adoption path). Emits
     /// `ChangeEvent::Bulk` so subscribers redraw rather than diff per-thread.
     pub fn replace_all(&mut self, threads: Vec<Thread>) {

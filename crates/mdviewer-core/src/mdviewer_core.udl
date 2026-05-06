@@ -1,11 +1,12 @@
 // UniFFI interface for mdviewer-core.
 //
-// The Phase B1 surface covers the *read* path of the comments model:
-// render Markdown, load a sidecar from raw bytes, save it back to raw
-// bytes, list the threads from a loaded store, and resolve the sidecar
-// filename for a given document filename + pattern. Mutation methods
-// (create_thread, post_reply, resolve_thread, merge_stores) come in D1
-// when the Android UI layer needs them.
+// The Phase B1 surface covered the *read* path of the comments model.
+// D1 layered the *write* path on top: create_thread, post_reply,
+// resolve_thread, unresolve_thread, merge_stores. Every mutation takes
+// an `Arc<CommentsStoreHandle>` and reaches the inner `CommentsStore`
+// through its Mutex — UniFFI doesn't model `&mut self`, and exposing
+// shared mutability through the handle keeps Kotlin call sites from
+// having to thread a freshly-rebuilt store back through every action.
 //
 // The UDL deliberately mirrors the Rust shape declared in
 // `mdviewer_core::uniffi_bindings` rather than the per-module Anchor /
@@ -31,6 +32,20 @@ namespace mdviewer_core {
     bytes save_sidecar_bytes(CommentsStoreHandle store);
 
     string sidecar_filename(string doc_filename, string pattern);
+
+    [Throws=CoreError]
+    Thread create_thread(CommentsStoreHandle store, NewThread input);
+
+    [Throws=CoreError]
+    Comment post_reply(CommentsStoreHandle store, string thread_id, NewComment input);
+
+    [Throws=CoreError]
+    void resolve_thread(CommentsStoreHandle store, string thread_id);
+
+    [Throws=CoreError]
+    void unresolve_thread(CommentsStoreHandle store, string thread_id);
+
+    CommentsStoreHandle merge_stores(CommentsStoreHandle local, CommentsStoreHandle incoming);
 };
 
 dictionary RenderOptions {
@@ -74,6 +89,27 @@ dictionary Thread {
     string created_at;
 };
 
+// D1: input shape for `create_thread`. The first comment is inlined as
+// flat fields rather than a nested NewComment because the Kotlin call
+// site (PostThreadSheet) collects "anchor + body + author" in a single
+// form; nesting would force an awkward two-step constructor.
+dictionary NewThread {
+    Anchor anchor;
+    string body;
+    string author_id;
+    string author_name;
+    string author_color;
+};
+
+// D1: input shape for `post_reply`. Mirrors NewThread minus the anchor
+// (the parent thread already owns the anchor).
+dictionary NewComment {
+    string body;
+    string author_id;
+    string author_name;
+    string author_color;
+};
+
 interface CommentsStoreHandle {
     sequence<Thread> threads();
 };
@@ -84,4 +120,5 @@ enum CoreError {
     "Schema",
     "Automerge",
     "Internal",
+    "NotFound",
 };

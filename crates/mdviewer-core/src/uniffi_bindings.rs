@@ -20,7 +20,10 @@
 //!   UDL's `[Throws=CoreError]` channel without losing the message.
 
 use crate::anchor::Anchor as CoreAnchor;
-use crate::comments::{Comment as CoreComment, CommentsStore, Thread as CoreThread};
+use crate::comments::{
+    merge_stores as core_merge_stores, Comment as CoreComment, CommentsStore,
+    NewComment as CoreNewComment, NewThread as CoreNewThread, Thread as CoreThread,
+};
 use crate::document::{
     render_markdown as core_render, RenderOptions as CoreRenderOptions,
     RenderResult as CoreRenderResult,
@@ -59,6 +62,12 @@ pub enum CoreError {
     Automerge(String),
     #[error("internal: {0}")]
     Internal(String),
+    /// D1: surfaced when a mutation references a `thread_id` that no
+    /// longer exists in the store. Distinct from `Internal` so the
+    /// Kotlin layer can route the error to a "thread no longer exists"
+    /// toast rather than a generic crash banner.
+    #[error("not found: {0}")]
+    NotFound(String),
 }
 
 impl From<anyhow::Error> for CoreError {
@@ -143,6 +152,24 @@ impl From<CoreAnchor> for Anchor {
     }
 }
 
+/// D1: reverse direction so the mutation entry points (`create_thread`)
+/// can take a UDL-shaped `Anchor` from Kotlin and feed it into core's
+/// `CommentsStore::create_thread` without forcing the call site to
+/// build a `CoreAnchor` directly. The `u32 -> usize` cast is always
+/// widening (target_pointer_width >= 32 is a Rust language guarantee),
+/// so no fallibility.
+impl From<Anchor> for CoreAnchor {
+    fn from(a: Anchor) -> Self {
+        Self {
+            start: a.char_start as usize,
+            end: a.char_end as usize,
+            exact: a.selector_text,
+            prefix: a.context_before,
+            suffix: a.context_after,
+        }
+    }
+}
+
 /// UDL-shaped Comment. Core's `Comment` carries Drive-side optional
 /// fields (`author_email`, `drive_id`) that B1 doesn't surface. The
 /// Kotlin side gets the minimum it needs to render a thread; D1 widens
@@ -203,6 +230,64 @@ impl From<CoreThread> for Thread {
             comments: t.comments.into_iter().map(Comment::from).collect(),
             resolved: t.resolved,
             created_at,
+        }
+    }
+}
+
+/// UDL-shaped input for `create_thread`. Flattens the core type's
+/// nested `first_comment: NewComment` into top-level fields because
+/// the Kotlin call site collects "anchor + body + author" from a
+/// single form (PostThreadSheet) and a nested struct would force a
+/// two-step constructor. The `From` impl below maps back to the core
+/// shape so the existing `CommentsStore::create_thread` body is
+/// re-used verbatim.
+///
+/// The `author_id` field is recorded in the synthesized first comment's
+/// `author` slot today. When the desktop schema grows a separate
+/// per-author identity field (Drive-side, see `author_email` in
+/// `comments.rs`), this wrapper will route `author_id` there instead.
+#[derive(Debug, Clone)]
+pub struct NewThread {
+    pub anchor: Anchor,
+    pub body: String,
+    pub author_id: String,
+    pub author_name: String,
+    pub author_color: String,
+}
+
+impl From<NewThread> for CoreNewThread {
+    fn from(n: NewThread) -> Self {
+        Self {
+            anchor: n.anchor.into(),
+            first_comment: CoreNewComment {
+                // The legacy v1 schema squashes author identity into a
+                // single `author` string; until D-phase widens it we
+                // prefer `author_name` here so the rendered thread
+                // shows the human-readable label rather than an opaque id.
+                author: n.author_name,
+                color: n.author_color,
+                body: n.body,
+            },
+        }
+    }
+}
+
+/// UDL-shaped input for `post_reply`. Mirrors `NewThread` minus the
+/// anchor (the parent thread already owns the anchor).
+#[derive(Debug, Clone)]
+pub struct NewComment {
+    pub body: String,
+    pub author_id: String,
+    pub author_name: String,
+    pub author_color: String,
+}
+
+impl From<NewComment> for CoreNewComment {
+    fn from(n: NewComment) -> Self {
+        Self {
+            author: n.author_name,
+            color: n.author_color,
+            body: n.body,
         }
     }
 }
@@ -280,6 +365,131 @@ pub fn save_sidecar_bytes(
 /// `[Throws=CoreError]` accordingly.
 pub fn sidecar_filename(doc_filename: String, pattern: String) -> String {
     core_sidecar_filename(&doc_filename, &pattern)
+}
+
+// ---------------------------------------------------------------------------
+// D1: thread mutation surface.
+// ---------------------------------------------------------------------------
+//
+// Each mutation takes the `Arc<CommentsStoreHandle>` Kotlin already
+// owns and reaches the inner `CommentsStore` through its `Mutex`.
+// UniFFI does not model `&mut self` on interface methods, so we expose
+// these as top-level functions in the namespace and let the lock
+// scope match each call.
+//
+// Returning `Thread` / `Comment` (rather than `()`) is deliberate: the
+// caller wants the freshly-minted `id` + `created_at` to push back into
+// the UI without a second `threads()` round-trip.
+//
+// Errors funnel through `CoreError::NotFound("thread")` so the Kotlin
+// layer can disambiguate "your thread no longer exists" from a
+// generic `Internal`.
+
+/// UDL: `[Throws=CoreError] Thread create_thread(CommentsStoreHandle store, NewThread input);`
+pub fn create_thread(
+    store: Arc<CommentsStoreHandle>,
+    input: NewThread,
+) -> Result<Thread, CoreError> {
+    let mut guard = store
+        .inner
+        .lock()
+        .expect("CommentsStoreHandle mutex poisoned");
+    let core_thread = guard.create_thread(input.into());
+    Ok(core_thread.into())
+}
+
+/// UDL: `[Throws=CoreError] Comment post_reply(CommentsStoreHandle store, string thread_id, NewComment input);`
+///
+/// Returns the freshly-appended comment so Kotlin can render it
+/// without a second snapshot. `CoreError::NotFound("thread")` covers
+/// the "user clicked Post on a thread that was just deleted on
+/// another device" race.
+pub fn post_reply(
+    store: Arc<CommentsStoreHandle>,
+    thread_id: String,
+    input: NewComment,
+) -> Result<Comment, CoreError> {
+    let mut guard = store
+        .inner
+        .lock()
+        .expect("CommentsStoreHandle mutex poisoned");
+    guard
+        .post_reply(&thread_id, input.into())
+        .map_err(|_| CoreError::NotFound("thread".into()))?;
+    // post_reply on the core type returns `Result<()>`; pull the
+    // freshly-appended comment by reading the last entry of the matching
+    // thread. Single-threaded view because we still hold the Mutex guard.
+    let last = guard
+        .get_thread(&thread_id)
+        .and_then(|t| t.comments.last().cloned())
+        .ok_or_else(|| CoreError::NotFound("thread".into()))?;
+    Ok(last.into())
+}
+
+/// UDL: `[Throws=CoreError] void resolve_thread(CommentsStoreHandle store, string thread_id);`
+///
+/// `by` (the resolver's display name) is sourced from the thread's
+/// last comment author. The desktop tracks resolver identity per call
+/// from the IPC layer; the Android UI doesn't yet split commenter
+/// identity from resolver identity, so the last-comment-author is the
+/// closest stable proxy without leaking a synthetic "system" author.
+pub fn resolve_thread(
+    store: Arc<CommentsStoreHandle>,
+    thread_id: String,
+) -> Result<(), CoreError> {
+    let mut guard = store
+        .inner
+        .lock()
+        .expect("CommentsStoreHandle mutex poisoned");
+    let by = guard
+        .get_thread(&thread_id)
+        .and_then(|t| t.comments.last().map(|c| c.author.clone()))
+        .unwrap_or_default();
+    guard
+        .resolve_thread(&thread_id, &by)
+        .map_err(|_| CoreError::NotFound("thread".into()))?;
+    Ok(())
+}
+
+/// UDL: `[Throws=CoreError] void unresolve_thread(CommentsStoreHandle store, string thread_id);`
+pub fn unresolve_thread(
+    store: Arc<CommentsStoreHandle>,
+    thread_id: String,
+) -> Result<(), CoreError> {
+    let mut guard = store
+        .inner
+        .lock()
+        .expect("CommentsStoreHandle mutex poisoned");
+    guard
+        .unresolve_thread(&thread_id)
+        .map_err(|_| CoreError::NotFound("thread".into()))?;
+    Ok(())
+}
+
+/// UDL: `CommentsStoreHandle merge_stores(CommentsStoreHandle local, CommentsStoreHandle incoming);`
+///
+/// Wraps `mdviewer_core::comments::merge_stores` — the same Automerge
+/// merge the desktop already uses. Returns a NEW handle (not a
+/// mutation of `local`) because the Kotlin call site is the
+/// auto-merge=Always reload path: it builds a new handle from the
+/// merged store and re-renders, dropping the prior local handle.
+///
+/// Infallible at the UDL level: `merge_stores` falls back to `local`
+/// on encode/decode failures, so there is no error to surface.
+pub fn merge_stores(
+    local: Arc<CommentsStoreHandle>,
+    incoming: Arc<CommentsStoreHandle>,
+) -> Arc<CommentsStoreHandle> {
+    let lg = local
+        .inner
+        .lock()
+        .expect("CommentsStoreHandle mutex poisoned");
+    let ig = incoming
+        .inner
+        .lock()
+        .expect("CommentsStoreHandle mutex poisoned");
+    let merged = core_merge_stores(&lg, &ig);
+    Arc::new(CommentsStoreHandle::from_store(merged))
 }
 
 // ---------------------------------------------------------------------------

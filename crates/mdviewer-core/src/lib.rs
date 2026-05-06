@@ -40,10 +40,16 @@ pub mod uniffi_bindings;
 // at this exact include point and resolves identifiers against the
 // surrounding scope. Re-export the wrappers from `uniffi_bindings` so
 // those names are visible to the macro expansion below.
+//
+// D1 grew the surface with `create_thread` / `post_reply` /
+// `resolve_thread` / `unresolve_thread` / `merge_stores` plus
+// `NewThread` / `NewComment` dictionaries — every name the
+// scaffolding sees here must match the UDL.
 #[cfg(feature = "uniffi")]
 use crate::uniffi_bindings::{
-    load_sidecar_bytes, render_markdown, save_sidecar_bytes, sidecar_filename, Anchor, Comment,
-    CommentsStoreHandle, CoreError, RenderOptions, RenderResult, SrcSpan, Thread,
+    create_thread, load_sidecar_bytes, merge_stores, post_reply, render_markdown, resolve_thread,
+    save_sidecar_bytes, sidecar_filename, unresolve_thread, Anchor, Comment, CommentsStoreHandle,
+    CoreError, NewComment, NewThread, RenderOptions, RenderResult, SrcSpan, Thread,
 };
 
 // `include_scaffolding!` hands UniFFI's macro the path stem of the UDL
