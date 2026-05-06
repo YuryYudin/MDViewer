@@ -42,6 +42,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Shadows
+import org.robolectric.annotation.Config
 import java.io.IOException
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -49,6 +50,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 
 @RunWith(AndroidJUnit4::class)
+@Config(sdk = [33])
 class DocumentRepositoryTest {
     private lateinit var ctx: Context
     private lateinit var repo: DocumentRepository
@@ -148,5 +150,126 @@ class DocumentRepositoryTest {
         Shadows.shadowOf(cr).registerInputStream(uri, "second".byteInputStream())
         val second = repo.reload(uri)
         assertEquals("second", String(second.bytes))
+    }
+
+    @Test
+    fun reload_with_sidecar_returns_zero_delta_for_unchanged_store() = runTest {
+        // D7 manual-reload path: when the incoming sidecar bytes match
+        // the local store, merge_stores returns the same threads and the
+        // delta is (added=0, changed=0). Exercises the production
+        // reloadWithSidecar body with a fake SidecarApi seam (the Sidecar
+        // production wiring is covered separately by SidecarMirrorTest /
+        // SidecarTreeTest).
+        val uri = Uri.parse("content://com.test.docs/document/d.md")
+        Shadows.shadowOf(cr).registerInputStream(uri, "# Doc".byteInputStream())
+
+        val local = dev.mdviewer.core.loadSidecarBytes(ByteArray(0))
+        // Build a 1-thread store on both sides via the same UDL surface.
+        dev.mdviewer.core.createThread(
+            store = local,
+            input = dev.mdviewer.core.NewThread(
+                anchor = dev.mdviewer.core.Anchor(
+                    selectorText = "x",
+                    contextBefore = "",
+                    contextAfter = "",
+                    charStart = 0u,
+                    charEnd = 1u,
+                ),
+                body = "first",
+                authorId = "u-test",
+                authorName = "Tester",
+                authorColor = "#FF0066",
+            ),
+        )
+        val incomingBytes = dev.mdviewer.core.saveSidecarBytes(local)
+        val fakeSidecar = object : SidecarApi {
+            override suspend fun load(
+                docUri: Uri,
+                docFilename: String,
+                capability: SafCapability,
+                treeUri: Uri?,
+                pattern: String,
+            ): dev.mdviewer.core.CommentsStoreHandle =
+                dev.mdviewer.core.loadSidecarBytes(incomingBytes)
+
+            override suspend fun save(
+                docUri: Uri,
+                docFilename: String,
+                capability: SafCapability,
+                treeUri: Uri?,
+                pattern: String,
+                store: dev.mdviewer.core.CommentsStoreHandle,
+            ) = Unit
+        }
+        val repoWithFake = DocumentRepository(ctx, sidecar = fakeSidecar)
+
+        val delta = repoWithFake.reloadWithSidecar(
+            uri = uri,
+            capability = SafCapability.SingleUri,
+            treeUri = null,
+            pattern = "{name}.md.comments.json",
+            currentLocalStore = local,
+        )
+
+        assertEquals(0, delta.addedCount)
+        assertEquals(0, delta.changedCount)
+        assertEquals("# Doc", String(delta.opened.bytes))
+    }
+
+    @Test
+    fun reload_with_sidecar_counts_added_thread_from_incoming() = runTest {
+        val uri = Uri.parse("content://com.test.docs/document/e.md")
+        Shadows.shadowOf(cr).registerInputStream(uri, "# E".byteInputStream())
+
+        val local = dev.mdviewer.core.loadSidecarBytes(ByteArray(0))
+        // Incoming sidecar has one thread that local doesn't.
+        val incoming = dev.mdviewer.core.loadSidecarBytes(ByteArray(0))
+        dev.mdviewer.core.createThread(
+            store = incoming,
+            input = dev.mdviewer.core.NewThread(
+                anchor = dev.mdviewer.core.Anchor(
+                    selectorText = "y",
+                    contextBefore = "",
+                    contextAfter = "",
+                    charStart = 0u,
+                    charEnd = 1u,
+                ),
+                body = "from desktop",
+                authorId = "u-desk",
+                authorName = "Desktop",
+                authorColor = "#00FF00",
+            ),
+        )
+        val incomingBytes = dev.mdviewer.core.saveSidecarBytes(incoming)
+        val fakeSidecar = object : SidecarApi {
+            override suspend fun load(
+                docUri: Uri,
+                docFilename: String,
+                capability: SafCapability,
+                treeUri: Uri?,
+                pattern: String,
+            ) = dev.mdviewer.core.loadSidecarBytes(incomingBytes)
+
+            override suspend fun save(
+                docUri: Uri,
+                docFilename: String,
+                capability: SafCapability,
+                treeUri: Uri?,
+                pattern: String,
+                store: dev.mdviewer.core.CommentsStoreHandle,
+            ) = Unit
+        }
+        val repoWithFake = DocumentRepository(ctx, sidecar = fakeSidecar)
+
+        val delta = repoWithFake.reloadWithSidecar(
+            uri = uri,
+            capability = SafCapability.SingleUri,
+            treeUri = null,
+            pattern = "{name}.md.comments.json",
+            currentLocalStore = local,
+        )
+
+        assertEquals(1, delta.addedCount)
+        assertEquals(0, delta.changedCount)
     }
 }

@@ -17,6 +17,7 @@ import dev.mdviewer.data.RecentsApi
 import dev.mdviewer.data.SafTier
 import dev.mdviewer.saf.DocumentRepositoryApi
 import dev.mdviewer.saf.OpenedDocument
+import dev.mdviewer.saf.RefreshDelta
 import dev.mdviewer.saf.SafCapability
 import dev.mdviewer.saf.SidecarApi
 import kotlinx.coroutines.flow.Flow
@@ -44,6 +45,27 @@ class FakeDocumentRepository(
     }
 
     override suspend fun reload(uri: Uri): OpenedDocument = open(uri)
+
+    /**
+     * D7 reload path. The default fake produces an empty merged store and
+     * a zero delta — tests that exercise the snackbar copy / merge path
+     * substitute their own [DocumentRepositoryApi] implementation
+     * (see ReloadActionTest's StubReloadRepo) rather than reaching for a
+     * configurable knob here. This default keeps DocumentViewModelTest
+     * source-compatible without forcing every call site to opt in.
+     */
+    override suspend fun reloadWithSidecar(
+        uri: Uri,
+        capability: SafCapability,
+        treeUri: Uri?,
+        pattern: String,
+        currentLocalStore: CommentsStoreHandle,
+    ): RefreshDelta = RefreshDelta(
+        addedCount = 0,
+        changedCount = 0,
+        mergedStore = loadSidecarBytes(ByteArray(0)),
+        opened = opened ?: error("FakeDocumentRepository: configure opened for reloadWithSidecar"),
+    )
 }
 
 /**
