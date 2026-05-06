@@ -91,7 +91,10 @@ fun RecentsScreen(vm: RecentsViewModel, onOpen: (android.net.Uri) -> Unit) {
                 Text("No documents yet")
                 Spacer(Modifier.height(8.dp))
                 Text("Open a .md from Drive or your file manager to get started.")
-                // DriveNudgeCard rendered here in E5.
+                Spacer(Modifier.height(16.dp))
+                // E5: instructional Drive nudge card. Empty-state only —
+                // see DriveNudgeCard's header for the rationale.
+                DriveNudgeCard()
             }
         } else {
             LazyColumn(Modifier.fillMaxSize().padding(padding)) {

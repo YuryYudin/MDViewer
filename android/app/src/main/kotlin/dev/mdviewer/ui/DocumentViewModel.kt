@@ -239,7 +239,12 @@ class DocumentViewModel(
                     SafCapability.TreeAccess -> SafTier.TreeAccess
                     SafCapability.SingleUri -> SafTier.SingleUri
                 }
-                recents.recordOpen(
+                // E5: openOrTouch (vs. recordOpen) also enforces the
+                // persistable-URI cap by releasing the oldest grant when
+                // we'd cross PERSISTABLE_URI_CAP. Production opens fan in
+                // here, so this is the single point that needs the
+                // housekeeping.
+                recents.openOrTouch(
                     uri = opened.uri.toString(),
                     displayName = opened.displayName,
                     safTier = tier,

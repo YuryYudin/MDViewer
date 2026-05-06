@@ -29,6 +29,8 @@
 package dev.mdviewer.data
 
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
@@ -86,6 +88,18 @@ interface RecentsApi {
      * its [displayName] and [safTier] in the process.
      */
     suspend fun recordOpen(uri: String, displayName: String, safTier: SafTier)
+
+    /**
+     * E5 surface: same dedupe-promote semantics as [recordOpen], but also
+     * enforces the persistable-URI grant cap by releasing the *oldest*
+     * persistable URI grant whenever a new entry would push the
+     * persisted-list past [Recents.PERSISTABLE_URI_CAP]. Default impl
+     * delegates to [recordOpen] so test fakes that don't model the OS
+     * grant cap stay source-compatible.
+     */
+    suspend fun openOrTouch(uri: String, displayName: String, safTier: SafTier) {
+        recordOpen(uri, displayName, safTier)
+    }
 }
 
 /**
@@ -105,6 +119,22 @@ class Recents(
     ctx: Context,
     prefsName: String = "recents",
     private val maxEntries: Int = 50,
+    /**
+     * Soft cap on the number of persistable URI grants we keep alive at a
+     * time; defaults to [PERSISTABLE_URI_CAP] (480), the spec-mandated
+     * 20-grant headroom under Android's ~500 ceiling. Tests override this
+     * with a small value (e.g. 3) so the eviction path can be exercised
+     * without fabricating 480 entries.
+     *
+     * The cap is enforced inside [openOrTouch]: when a fresh URI would
+     * push the count past `persistableUriCap`, the oldest entry is
+     * dropped from the in-memory list AND its grant is released via
+     * `ContentResolver.releasePersistableUriPermission` so the OS-side
+     * counter drops in lockstep. Skipping the OS-side release would leak
+     * the grant — the row would be gone from DataStore but the OS would
+     * still count it against our quota.
+     */
+    private val persistableUriCap: Int = PERSISTABLE_URI_CAP,
 ) : RecentsApi {
     // We capture only the application context to keep this class safe to
     // hold from any scope (singletons, ViewModels, BroadcastReceivers).
@@ -159,6 +189,80 @@ class Recents(
             val updated = (listOf(RecentEntry(uri, displayName, now, safTier)) + without)
                 .take(maxEntries)
             prefs[key] = json.encodeToString(serializer, updated)
+        }
+    }
+
+    /**
+     * E5: promote (or insert) `uri` and, when the resulting list would
+     * cross [persistableUriCap], evict the *oldest* entries (lowest
+     * `lastOpenedEpochMs`) AND release their persistable URI grants via
+     * [android.content.ContentResolver.releasePersistableUriPermission]
+     * so the OS-side counter stays in lockstep with our DataStore.
+     *
+     * Invariants:
+     *   * The entry being inserted is never evicted — the list is sorted
+     *     newest-first, then trimmed from the tail.
+     *   * `releasePersistableUriPermission` raises `SecurityException` if
+     *     we never held the grant (e.g. a transient share-intent URI).
+     *     The eviction loop swallows that — the row eviction is the
+     *     load-bearing outcome.
+     *   * The trim runs *only* when crossing `persistableUriCap`. Below
+     *     the cap we pay the same cost as plain [recordOpen] so the
+     *     happy path doesn't churn DataStore.
+     */
+    override suspend fun openOrTouch(uri: String, displayName: String, safTier: SafTier) {
+        val now = System.currentTimeMillis()
+        val toRelease = mutableListOf<String>()
+        store.edit { prefs ->
+            val current = decode(prefs[key])
+            val without = current.filterNot { it.uri == uri }
+            val promoted = listOf(RecentEntry(uri, displayName, now, safTier)) + without
+
+            // Apply the in-memory cap first (same semantics as recordOpen)
+            // so we don't carry orphan rows past `maxEntries` even when
+            // `persistableUriCap > maxEntries`.
+            var trimmed = promoted.take(maxEntries)
+
+            // Then apply the persistable-URI cap, collecting the URIs we
+            // need to release outside the `edit { }` closure (release
+            // calls do IO and shouldn't run inside the DataStore write).
+            if (trimmed.size > persistableUriCap) {
+                // Sort newest-first by timestamp, drop the tail. Stable
+                // sort keeps insertion-order ties in the same order they
+                // were prepended.
+                val sortedNewestFirst = trimmed.sortedByDescending { it.lastOpenedEpochMs }
+                val keep = sortedNewestFirst.take(persistableUriCap)
+                val drop = sortedNewestFirst.drop(persistableUriCap)
+                drop.forEach { toRelease += it.uri }
+                trimmed = keep
+            }
+
+            prefs[key] = json.encodeToString(serializer, trimmed)
+        }
+        // Release evicted grants outside the DataStore write so a
+        // SecurityException from one release doesn't roll back the
+        // DataStore mutation. Each release is independent.
+        toRelease.forEach { releaseGrant(it) }
+    }
+
+    /**
+     * Releases both read and write persistable grants on [uriString] if
+     * they exist. SecurityException is swallowed because:
+     *
+     *   * A transient URI never had a persistable grant in the first
+     *     place — the eviction is purely in-memory, no leak.
+     *   * The OS may have already released the grant on its own (e.g.
+     *     after process death + revoked permission) — re-releasing is
+     *     a no-op from our perspective.
+     */
+    private fun releaseGrant(uriString: String) {
+        try {
+            appCtx.contentResolver.releasePersistableUriPermission(
+                Uri.parse(uriString),
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+            )
+        } catch (_: SecurityException) {
+            // Grant already absent; row eviction stands.
         }
     }
 
