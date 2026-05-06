@@ -10,10 +10,13 @@ name: android
 #
 # Why Linux + KVM: macOS runners are ~10x more expensive and the emulator
 # runner action supports nested virtualization on ubuntu-latest since v2.
-# Why `cargo build --workspace` before Gradle: catches Rust-side regressions
+# Why a scoped `cargo build` before Gradle: catches Rust-side regressions
 # (UniFFI scaffolding, version-catalog drift) on the same job that builds
-# the Android artifacts, instead of surfacing only when someone runs Gradle
-# locally.
+# the Android artifacts. We deliberately exclude the desktop `mdviewer`
+# (Tauri) crate from the Android job's cargo step because it depends on
+# GTK/WebKit2 system libs that aren't installed on this runner — that
+# crate is the desktop CI's responsibility, and the Android job has no
+# need for its build artifacts.
 
 on:
   push:
@@ -75,8 +78,8 @@ jobs:
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
 
-      - name: Cargo build (workspace)
-        run: cargo build --workspace --release
+      - name: Cargo build (Android-relevant crates)
+        run: cargo build -p mdviewer-core -p mdviewer-jni --features uniffi --release
 
       # A1 contract: the 10 e2e specs must remain on disk so RED→GREEN can
       # be tracked. If someone deletes one to "fix" CI, fail loudly here.
