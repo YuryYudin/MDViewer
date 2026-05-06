@@ -51,11 +51,45 @@ import dev.mdviewer.core.sidecarFilename
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
+/**
+ * Narrow interface the [dev.mdviewer.ui.ThreadSheetViewModel] (and any future
+ * mutation surface — D7's ReloadAction, E3's SaveSidecarToSource) calls into
+ * for sidecar IO. The real implementation lives on [Sidecar]; tests inject a
+ * fake (see `ThreadSheetViewModelTest.FakeSidecar`) so they don't have to
+ * carry a Context or a Robolectric-friendly TreeAccess shim.
+ *
+ * Why an interface here (and not on the call sites of ViewModels-that-just-
+ * happen-to-use-Sidecar): the production Sidecar's collaborators
+ * (TreeAccess, SidecarMirror) are themselves test seams already, so a
+ * second seam at the ViewModel boundary feels redundant — except that
+ * the ViewModel test cares only about *whether* save was called with the
+ * right params, not about exercising the bytes round-trip again. Adding
+ * a one-method-per-direction interface here keeps that test focused.
+ */
+interface SidecarApi {
+    suspend fun load(
+        docUri: Uri,
+        docFilename: String,
+        capability: SafCapability,
+        treeUri: Uri?,
+        pattern: String,
+    ): CommentsStoreHandle
+
+    suspend fun save(
+        docUri: Uri,
+        docFilename: String,
+        capability: SafCapability,
+        treeUri: Uri?,
+        pattern: String,
+        store: CommentsStoreHandle,
+    )
+}
+
 class Sidecar(
     ctx: Context,
     private val mirror: SidecarMirror = SidecarMirror(ctx),
     private val treeAccess: TreeAccess = DocumentFileTreeAccess(ctx),
-) {
+) : SidecarApi {
 
     // Application context kept for any future need (logging, etc); the
     // real IO happens through `mirror` and `treeAccess`, both of which
@@ -77,7 +111,7 @@ class Sidecar(
      * The "absent -> empty store" path is load-bearing: it lets the
      * first-open-of-fresh-doc UX skip an extra branch in the caller.
      */
-    suspend fun load(
+    override suspend fun load(
         docUri: Uri,
         docFilename: String,
         capability: SafCapability,
@@ -113,14 +147,14 @@ class Sidecar(
      * binding so the desktop and Android builds agree on the wire-level
      * filename pattern with no Kotlin-side duplication.
      */
-    suspend fun save(
+    override suspend fun save(
         docUri: Uri,
         docFilename: String,
         capability: SafCapability,
         treeUri: Uri?,
         pattern: String,
         store: CommentsStoreHandle,
-    ) = withContext(Dispatchers.IO) {
+    ): Unit = withContext(Dispatchers.IO) {
         val bytes = saveSidecarBytes(store)
         val sidecarName = sidecarFilename(docFilename, pattern)
         when (capability) {

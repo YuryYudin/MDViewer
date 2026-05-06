@@ -74,13 +74,32 @@ data class Profile(
 }
 
 /**
+ * Narrow interface the [dev.mdviewer.ui.ThreadSheetViewModel] consumes when
+ * it needs the active [Profile] to stamp on a comment. Production wires the
+ * full [ProfileStore]; ViewModel tests inject a fake (see
+ * `ThreadSheetViewModelTest.FakeProfileStore`) so they don't have to spin
+ * up a DataStore-backed file under a Robolectric Context.
+ *
+ * The interface is deliberately read-only — the ThreadSheet path never
+ * mutates the profile (E2's SettingsScreen owns that). Keeping the seam
+ * narrow means the fake stays a one-liner.
+ */
+interface ProfileStoreApi {
+    /**
+     * Returns the persisted profile, minting + saving an Anonymous one on
+     * the very first call. Mirrors [ProfileStore.get].
+     */
+    suspend fun get(): Profile
+}
+
+/**
  * DataStore-backed singleton-style profile store. See [Recents] for the
  * `prefsName` injection rationale; same pattern applies here.
  */
 class ProfileStore(
     ctx: Context,
     prefsName: String = "profile",
-) {
+) : ProfileStoreApi {
     private val appCtx = ctx.applicationContext
 
     // See Recents for the rationale behind the per-file memoisation —
@@ -108,7 +127,7 @@ class ProfileStore(
      * `anonymous()` and the next `get()` doesn't leak a fresh UUID per
      * restart.
      */
-    suspend fun get(): Profile {
+    override suspend fun get(): Profile {
         val raw = store.data.map { it[key] }.first()
         decode(raw)?.let { return it }
         val fresh = Profile.anonymous()
