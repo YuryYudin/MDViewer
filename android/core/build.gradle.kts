@@ -33,12 +33,13 @@ plugins {
 android {
     namespace = "dev.mdviewer.core"
     compileSdk = 34
-    // Pin the NDK side-by-side install AGP picks up from
-    // `$ANDROID_HOME/ndk/<version>/`. The cargo-ndk Gradle plugin
-    // delegates to AGP's resolved NDK path, so this also fixes the
-    // cargo cross-compile invocation. r26d ships the API-26 sysroot
-    // we target via `minSdk = 26`.
-    ndkVersion = "26.3.11579264"
+    // No `ndkVersion` pin. AGP resolves the highest-installed side-by-side
+    // NDK under `$ANDROID_HOME/ndk/`; the cargo-ndk Gradle plugin reuses
+    // that path. Pinning to an exact version forces every contributor to
+    // download those exact bytes and ages badly (NDK side-by-side bumps
+    // are routine). CI installs a known-good NDK explicitly and exports
+    // ANDROID_NDK_HOME via a glob so it doesn't have to repeat a version
+    // string here.
 
     defaultConfig {
         minSdk = 26
