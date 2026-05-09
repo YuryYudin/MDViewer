@@ -6,7 +6,13 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 const binaryName = process.platform === 'win32' ? 'mdviewer.exe' : 'mdviewer';
-const binaryPath = path.resolve('src-tauri/target/debug', binaryName);
+// Workspace conversion (commit 88a228b, 2026-05-05) moved the cargo
+// target dir from `src-tauri/target/` to the workspace root's `target/`,
+// because workspace members share a single target tree. The previous
+// `src-tauri/target/debug` path silently pointed at a stale pre-
+// conversion build locally and at nothing on fresh CI checkouts —
+// every E2E (macOS) job has been red since the workspace landed.
+const binaryPath = path.resolve('target/debug', binaryName);
 
 // Per-run data directory the spawned mdviewer binaries point at. Prevents
 // the e2e suite from clobbering the developer's real ~/Library/.../com.mdviewer.app/.
