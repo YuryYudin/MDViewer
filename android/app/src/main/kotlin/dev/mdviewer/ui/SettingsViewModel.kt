@@ -53,6 +53,7 @@ import dev.mdviewer.data.Profile
 import dev.mdviewer.data.ProfileStoreApi
 import dev.mdviewer.data.SettingsStore
 import dev.mdviewer.data.ThemeMode
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -109,25 +110,41 @@ class SettingsViewModel(
         }
     }
 
+    // The setters return the launched [Job] so tests can `.join()` and
+    // observe a deterministic post-write state without racing the
+    // Compose-side fire-and-forget contract. Compose call sites discard
+    // the return via Kotlin's Unit-coercion in `(T) -> Unit` lambdas
+    // (method references — `vm::setTheme` — would NOT coerce, so
+    // SettingsScreen wraps each in `{ ... }` to make the discard explicit).
+    //
+    // The earlier `Unit`-returning shape made the VM untestable without
+    // a timed flow.first { } race: there was no completion handle for a
+    // test to await, so we polled a downstream Flow with a real-clock
+    // withTimeout that JaCoCo offline instrumentation regularly blew
+    // through on CI runners.
+
     /** Persist the chosen theme. The flow re-emits and Compose recomposes. */
-    fun setTheme(mode: ThemeMode) {
+    fun setTheme(mode: ThemeMode): Job =
         viewModelScope.launch { settings.setTheme(mode) }
-    }
 
     /**
      * Persist the sidecar pattern. Blank values are rejected so the
      * sidecar resolver downstream never sees "" as a sibling filename.
      * The screen disables Apply on blank, but the VM enforces the rule
      * independently in case a future call site bypasses the UI gate.
+     *
+     * The blank check runs inside the launch so the returned Job
+     * completes uniformly (including for the no-op case) — callers
+     * `.join()`ing don't have to special-case a synthetic completed job.
      */
-    fun setSidecarPattern(pattern: String) {
-        if (pattern.isBlank()) return
-        viewModelScope.launch { settings.setSidecarPattern(pattern) }
-    }
+    fun setSidecarPattern(pattern: String): Job =
+        viewModelScope.launch {
+            if (pattern.isBlank()) return@launch
+            settings.setSidecarPattern(pattern)
+        }
 
-    fun setShowResolved(value: Boolean) {
+    fun setShowResolved(value: Boolean): Job =
         viewModelScope.launch { settings.setShowResolved(value) }
-    }
 
     /**
      * Persist a new display name + color for the current user, preserving
@@ -138,16 +155,15 @@ class SettingsViewModel(
      * No-op when the initial profile load has not yet completed —
      * minting a fresh UUID here would orphan the existing identity.
      */
-    fun updateProfile(displayName: String, color: String) {
-        val current = _profile.value ?: return
-        val updated = current.copy(
-            displayName = displayName,
-            color = color,
-            isAnonymous = false,
-        )
+    fun updateProfile(displayName: String, color: String): Job =
         viewModelScope.launch {
+            val current = _profile.value ?: return@launch
+            val updated = current.copy(
+                displayName = displayName,
+                color = color,
+                isAnonymous = false,
+            )
             profileStore.save(updated)
             _profile.value = updated
         }
-    }
 }

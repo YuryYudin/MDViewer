@@ -133,7 +133,13 @@ fun SettingsScreen(vm: SettingsViewModel, onBack: () -> Unit) {
                 .padding(horizontal = 24.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            ThemeSection(current = theme, onSelect = vm::setTheme)
+            // Lambda wrappers (rather than `vm::setTheme` method references)
+            // because the VM setters now return Job — Kotlin's Unit-coercion
+            // handles that for `(T) -> Unit` lambda-typed callbacks, but
+            // does NOT apply to bound-method references, which would be
+            // typed as `(T) -> Job` and fail the lambda type check at
+            // each call site.
+            ThemeSection(current = theme, onSelect = { vm.setTheme(it) })
 
             HorizontalDivider()
 
@@ -146,9 +152,9 @@ fun SettingsScreen(vm: SettingsViewModel, onBack: () -> Unit) {
 
             CommentsSection(
                 sidecarPattern = sidecarPattern,
-                onApplyPattern = vm::setSidecarPattern,
+                onApplyPattern = { vm.setSidecarPattern(it) },
                 showResolved = showResolved,
-                onToggleShowResolved = vm::setShowResolved,
+                onToggleShowResolved = { vm.setShowResolved(it) },
             )
 
             HorizontalDivider()

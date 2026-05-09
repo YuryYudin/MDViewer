@@ -28,15 +28,20 @@
 //      Compose recomposition + the WebView CSS swap.
 //
 // Why `runBlocking` instead of `runTest` here (unlike most other VM
-// tests in this package): the VM's setters are non-suspending — they
-// schedule a `viewModelScope.launch` that calls into [SettingsStore]'s
-// suspending writes, which dispatch to DataStore's internal scope on
-// `Dispatchers.IO`. `runTest`'s virtual-time scheduler doesn't drive the
-// real `Dispatchers.IO` worker, so a `runTest { vm.setTheme(...);
-// advanceUntilIdle(); assert(...) }` would race against the still-in-
-// flight IO write. `runBlocking` lets the assertion's `flow.first { ... }`
-// suspend on real wall-clock time until DataStore re-emits — the only
-// reliable way to observe the write under a real IO dispatcher.
+// tests in this package): the VM's setters return the launched [Job] —
+// they fire-and-forget at the Compose call site but expose a
+// completion handle for tests to `.join()`. `runBlocking` lets that
+// `.join()` suspend on real wall-clock time until DataStore's IO
+// write completes; `runTest`'s virtual-time scheduler doesn't drive
+// the real `Dispatchers.IO` worker, so it would race against the
+// still-in-flight write.
+//
+// The earlier shape (Unit-returning setters, polled flows under a
+// real-clock withTimeout) was flake-prone on CI under JaCoCo offline
+// instrumentation: the round-trip cost of a single DataStore write +
+// flow re-emit regularly exceeded 30 seconds, blowing past the
+// timeout. `.join()` removes the polling race entirely — the test
+// resumes the moment the launch's body completes.
 //
 // Robolectric @Config(sdk = 33) keeps the shadow framework on the same
 // API level the C-phase tests use; it's needed because [SettingsStore]
@@ -96,17 +101,19 @@ class SettingsViewModelTest {
         val profile = SeededProfileStore(seed = Profile.anonymous())
         val vm = SettingsViewModel(settings, profile)
 
-        vm.setTheme(ThemeMode.Dark)
+        // `.join()` waits for the launched setter to finish persisting;
+        // after that, both the underlying SettingsStore and (after
+        // upstream propagation through stateIn) the VM's theme flow
+        // surface the new value.
+        vm.setTheme(ThemeMode.Dark).join()
 
-        // The VM's theme flow is downstream of settings.theme; once the IO
-        // write lands and DataStore re-emits, the VM stateIn flow surfaces
-        // the new value. `first { ... }` suspends until the predicate
-        // matches; the timeout guards against a regression that fails to
-        // emit at all.
-        withTimeout(30_000) {
+        assertEquals(ThemeMode.Dark, settings.theme.first())
+        // The VM's stateIn flow is lazy (WhileSubscribed); a `first { }`
+        // predicate read forces a subscription and waits up to 5s for
+        // upstream propagation under heavy CI runners.
+        withTimeout(5_000) {
             assertEquals(ThemeMode.Dark, vm.theme.first { it == ThemeMode.Dark })
         }
-        assertEquals(ThemeMode.Dark, settings.theme.first())
     }
 
     @Test
@@ -120,9 +127,13 @@ class SettingsViewModelTest {
         val profile = SeededProfileStore(seed = Profile.anonymous())
         val vm = SettingsViewModel(settings, profile)
 
+        // Direct SettingsStore.setTheme is already suspending and awaits
+        // the IO write — no VM-launch indirection here, so the only
+        // remaining wait is upstream-propagation latency for the VM's
+        // lazy stateIn subscriber.
         settings.setTheme(ThemeMode.Light)
 
-        withTimeout(30_000) {
+        withTimeout(5_000) {
             assertEquals(ThemeMode.Light, vm.theme.first { it == ThemeMode.Light })
         }
     }
@@ -137,11 +148,8 @@ class SettingsViewModelTest {
         val profile = SeededProfileStore(seed = Profile.anonymous())
         val vm = SettingsViewModel(settings, profile)
 
-        vm.setSidecarPattern(".comments/{name}.json")
+        vm.setSidecarPattern(".comments/{name}.json").join()
 
-        withTimeout(30_000) {
-            settings.sidecarPattern.first { it == ".comments/{name}.json" }
-        }
         assertEquals(".comments/{name}.json", settings.sidecarPattern.first())
     }
 
@@ -151,21 +159,18 @@ class SettingsViewModelTest {
         val profile = SeededProfileStore(seed = Profile.anonymous())
         val vm = SettingsViewModel(settings, profile)
 
-        // Seed a custom value so we can detect a write happening.
-        vm.setSidecarPattern("custom-{name}.json")
-        withTimeout(30_000) {
-            settings.sidecarPattern.first { it == "custom-{name}.json" }
-        }
+        // Seed a custom value so we can detect (or rather, assert the
+        // absence of) a subsequent write.
+        vm.setSidecarPattern("custom-{name}.json").join()
+        assertEquals("custom-{name}.json", settings.sidecarPattern.first())
 
         // Blank value is a no-op — the prior value survives. The screen
         // disables the Apply button, but the VM must guard the rule
         // independently in case a future caller bypasses the disabled
-        // state.
-        vm.setSidecarPattern("   ")
-        // No write was scheduled, so we just give the test scheduler a
-        // brief real-time window to confirm nothing changed. A second
-        // first() read returns the same custom value.
-        kotlinx.coroutines.delay(50)
+        // state. The launch still completes (the blank-check is inside
+        // the launch), so `.join()` returns; the assertion then verifies
+        // the SettingsStore was untouched.
+        vm.setSidecarPattern("   ").join()
         assertEquals("custom-{name}.json", settings.sidecarPattern.first())
     }
 
@@ -179,16 +184,10 @@ class SettingsViewModelTest {
         val profile = SeededProfileStore(seed = Profile.anonymous())
         val vm = SettingsViewModel(settings, profile)
 
-        vm.setShowResolved(true)
-        withTimeout(30_000) {
-            settings.showResolved.first { it }
-        }
+        vm.setShowResolved(true).join()
         assertEquals(true, settings.showResolved.first())
 
-        vm.setShowResolved(false)
-        withTimeout(30_000) {
-            settings.showResolved.first { !it }
-        }
+        vm.setShowResolved(false).join()
         assertEquals(false, settings.showResolved.first())
     }
 
@@ -208,16 +207,15 @@ class SettingsViewModelTest {
         // Wait for the VM's `init { profileStore.get() }` to land in the
         // exposed StateFlow before we trigger the edit; otherwise the
         // updateProfile call would be a (correct, but uninteresting) no-op.
-        withTimeout(30_000) {
+        // The init load is itself a `viewModelScope.launch`; this poll is
+        // tiny and runs in well under a second.
+        withTimeout(5_000) {
             vm.profileState.first { it != null }
         }
 
-        vm.updateProfile(displayName = "Daisy Sato", color = "#4CAF50")
+        vm.updateProfile(displayName = "Daisy Sato", color = "#4CAF50").join()
 
-        // Wait for the VM's saved-profile state to reflect the edit.
-        val current = withTimeout(30_000) {
-            vm.profileState.first { it?.displayName == "Daisy Sato" }
-        }!!
+        val current = vm.profileState.value!!
         assertEquals("Daisy Sato", current.displayName)
         assertEquals("#4CAF50", current.color)
         assertFalse(current.isAnonymous, "saving from the editor must clear the anonymous flag")
@@ -241,13 +239,11 @@ class SettingsViewModelTest {
         val profile = LatchedSettingsProfileStore()
         val vm = SettingsViewModel(settings, profile)
 
-        // Do NOT wait for the load — the latched store's get() never
-        // returns, so _profile stays null.
-        vm.updateProfile("Reviewer", "#16A34A")
-
-        // Give the launch a chance to run (it should early-return on the
-        // null check). 100ms is well past the dispatch-and-no-op latency.
-        kotlinx.coroutines.delay(100)
+        // The latched store's `get()` never returns, so the init load
+        // never lands in `_profile`. `updateProfile` launches anyway,
+        // hits the null-check inside the launch, and returns without
+        // calling `save`. `.join()` waits for that no-op to complete.
+        vm.updateProfile("Reviewer", "#16A34A").join()
 
         assertTrue(profile.saved.isEmpty(), "updateProfile must not save before profile loads")
     }
