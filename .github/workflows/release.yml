@@ -135,25 +135,26 @@ jobs:
 
       - uses: android-actions/setup-android@v3
 
-      - name: Resolve preinstalled NDK + install cmake
+      - name: Install AGP-compatible NDK + cmake
         run: |
-          # Same approach as android.yml: use the runner image's
-          # preinstalled stable NDK rather than installing one via
-          # sdkmanager. sdkmanager's default channel surfaces preview
-          # NDKs (e.g. r30 beta1 = 30.0.14904198) that AGP rejects as
-          # "NDK is not installed", and `--channel=0` does not subset
-          # the listing in cmdline-tools 16.x. The runner image's
-          # preinstalled NDK is always GA and AGP-supported.
-          ndk_dir="$(ls -d "$ANDROID_HOME"/ndk/*/ 2>/dev/null | sort -V | tail -n1)"
-          ndk_dir="${ndk_dir%/}"
-          if [ -z "$ndk_dir" ]; then
-            echo "::error::No NDK preinstalled at $ANDROID_HOME/ndk/"
+          # Same approach as android.yml: install a specific AGP-
+          # compatible NDK (r27.2.12479018 for AGP 8.5). AGP validates
+          # the NDK at ANDROID_NDK_HOME against its internal compat list,
+          # and the runner image preinstalls r29 + sdkmanager surfaces
+          # r30 beta1 — both fail validation with "NDK is not installed".
+          # Bump NDK_VERSION when bumping AGP. android/core/build.gradle.kts
+          # stays unpinned so local contributors aren't bound to this
+          # exact version.
+          NDK_VERSION="27.2.12479018"
+          sdkmanager --install "ndk;$NDK_VERSION" "cmake;3.22.1" >/dev/null
+          ndk_dir="$ANDROID_HOME/ndk/$NDK_VERSION"
+          if [ ! -d "$ndk_dir" ]; then
+            echo "::error::NDK install failed: $ndk_dir not present after sdkmanager"
             exit 1
           fi
           echo "ANDROID_NDK_HOME=$ndk_dir" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_ROOT=$ndk_dir" >> "$GITHUB_ENV"
-          echo "Using preinstalled NDK: $ndk_dir"
-          sdkmanager --install "cmake;3.22.1" >/dev/null
+          echo "Resolved NDK: $ndk_dir"
 
       - name: Assemble release APK
         working-directory: android

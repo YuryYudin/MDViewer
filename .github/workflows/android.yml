@@ -70,43 +70,40 @@ jobs:
       - name: Setup Android SDK + NDK
         uses: android-actions/setup-android@v3
 
-      - name: Resolve preinstalled NDK + install cmake
+      - name: Install AGP-compatible NDK + cmake
         run: |
-          # Use the NDK that ships preinstalled in the runner image rather
-          # than running `sdkmanager --install`. Background:
+          # AGP 8.5 (see android/gradle/libs.versions.toml::agp) validates
+          # the NDK at $ANDROID_NDK_HOME against its internal compatibility
+          # list. Preview NDKs (r29, r30 beta) fail that validation with
+          # "NDK is not installed" even when ANDROID_NDK_HOME points at a
+          # successfully-installed directory.
           #
-          # `sdkmanager --list` (default channel) surfaces NDK r30 beta1
-          # (30.0.14904198) as the highest-version package even though it
-          # is not GA, and `--channel=0` does NOT subset to stable in
-          # cmdline-tools 16.x — the flag adds channel 0 rather than
-          # restricting to it, so it has no effect when called against
-          # the default-canary listing. Installing 30.0.14904198 succeeds
-          # but AGP rejects it via NdkInstallStatus with "NDK is not
-          # installed", because the beta isn't in AGP's accepted range.
+          # The runner image preinstalls r29 (30.0.14206865 today) and
+          # sdkmanager --list's default channel surfaces r30 beta1
+          # (30.0.14904198) as the highest version. `--channel=0` does
+          # NOT subset to stable in cmdline-tools 16.x — it adds channel
+          # 0 rather than restricting to it — so neither glob-the-runner
+          # nor pick-highest-from-sdkmanager works.
           #
-          # The GitHub-hosted ubuntu runner image always ships at least
-          # one stable, AGP-supported NDK preinstalled under
-          # $ANDROID_HOME/ndk/ (currently 27.2.12479018). Using that
-          # directly is robust against the channel-filter quirk above and
-          # against future preview drops sdkmanager exposes — preview
-          # NDKs aren't preinstalled. A new GA in the runner image flows
-          # through automatically because we glob the highest-version
-          # subdirectory.
-          ndk_dir="$(ls -d "$ANDROID_HOME"/ndk/*/ 2>/dev/null | sort -V | tail -n1)"
-          ndk_dir="${ndk_dir%/}"
-          if [ -z "$ndk_dir" ]; then
-            echo "::error::No NDK preinstalled at $ANDROID_HOME/ndk/"
+          # The proper fix is a specific AGP-supported NDK pin, scoped to
+          # CI only. android/core/build.gradle.kts intentionally leaves
+          # ndkVersion unpinned so contributors aren't blocked on having
+          # this exact byte-identical NDK locally; CI uses
+          # ANDROID_NDK_HOME to direct AGP at the version we install.
+          #
+          # Bump NDK_VERSION when bumping AGP — AGP release notes specify
+          # the supported NDK range. AGP 8.5 → 27.2.12479018 (latest r27
+          # GA, well within AGP 8.5's accepted range).
+          NDK_VERSION="27.2.12479018"
+          sdkmanager --install "ndk;$NDK_VERSION" "cmake;3.22.1" >/dev/null
+          ndk_dir="$ANDROID_HOME/ndk/$NDK_VERSION"
+          if [ ! -d "$ndk_dir" ]; then
+            echo "::error::NDK install failed: $ndk_dir not present after sdkmanager"
             exit 1
           fi
           echo "ANDROID_NDK_HOME=$ndk_dir" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_ROOT=$ndk_dir" >> "$GITHUB_ENV"
-          echo "Using preinstalled NDK: $ndk_dir"
-
-          # cmake at the AGP-pinned version is not always preinstalled,
-          # so install it explicitly. Stable channel only by package
-          # name; sdkmanager --install with an exact version takes the
-          # GA build whenever one exists at that version string.
-          sdkmanager --install "cmake;3.22.1" >/dev/null
+          echo "Resolved NDK: $ndk_dir"
 
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
@@ -195,43 +192,40 @@ jobs:
       - name: Setup Android SDK + NDK
         uses: android-actions/setup-android@v3
 
-      - name: Resolve preinstalled NDK + install cmake
+      - name: Install AGP-compatible NDK + cmake
         run: |
-          # Use the NDK that ships preinstalled in the runner image rather
-          # than running `sdkmanager --install`. Background:
+          # AGP 8.5 (see android/gradle/libs.versions.toml::agp) validates
+          # the NDK at $ANDROID_NDK_HOME against its internal compatibility
+          # list. Preview NDKs (r29, r30 beta) fail that validation with
+          # "NDK is not installed" even when ANDROID_NDK_HOME points at a
+          # successfully-installed directory.
           #
-          # `sdkmanager --list` (default channel) surfaces NDK r30 beta1
-          # (30.0.14904198) as the highest-version package even though it
-          # is not GA, and `--channel=0` does NOT subset to stable in
-          # cmdline-tools 16.x — the flag adds channel 0 rather than
-          # restricting to it, so it has no effect when called against
-          # the default-canary listing. Installing 30.0.14904198 succeeds
-          # but AGP rejects it via NdkInstallStatus with "NDK is not
-          # installed", because the beta isn't in AGP's accepted range.
+          # The runner image preinstalls r29 (30.0.14206865 today) and
+          # sdkmanager --list's default channel surfaces r30 beta1
+          # (30.0.14904198) as the highest version. `--channel=0` does
+          # NOT subset to stable in cmdline-tools 16.x — it adds channel
+          # 0 rather than restricting to it — so neither glob-the-runner
+          # nor pick-highest-from-sdkmanager works.
           #
-          # The GitHub-hosted ubuntu runner image always ships at least
-          # one stable, AGP-supported NDK preinstalled under
-          # $ANDROID_HOME/ndk/ (currently 27.2.12479018). Using that
-          # directly is robust against the channel-filter quirk above and
-          # against future preview drops sdkmanager exposes — preview
-          # NDKs aren't preinstalled. A new GA in the runner image flows
-          # through automatically because we glob the highest-version
-          # subdirectory.
-          ndk_dir="$(ls -d "$ANDROID_HOME"/ndk/*/ 2>/dev/null | sort -V | tail -n1)"
-          ndk_dir="${ndk_dir%/}"
-          if [ -z "$ndk_dir" ]; then
-            echo "::error::No NDK preinstalled at $ANDROID_HOME/ndk/"
+          # The proper fix is a specific AGP-supported NDK pin, scoped to
+          # CI only. android/core/build.gradle.kts intentionally leaves
+          # ndkVersion unpinned so contributors aren't blocked on having
+          # this exact byte-identical NDK locally; CI uses
+          # ANDROID_NDK_HOME to direct AGP at the version we install.
+          #
+          # Bump NDK_VERSION when bumping AGP — AGP release notes specify
+          # the supported NDK range. AGP 8.5 → 27.2.12479018 (latest r27
+          # GA, well within AGP 8.5's accepted range).
+          NDK_VERSION="27.2.12479018"
+          sdkmanager --install "ndk;$NDK_VERSION" "cmake;3.22.1" >/dev/null
+          ndk_dir="$ANDROID_HOME/ndk/$NDK_VERSION"
+          if [ ! -d "$ndk_dir" ]; then
+            echo "::error::NDK install failed: $ndk_dir not present after sdkmanager"
             exit 1
           fi
           echo "ANDROID_NDK_HOME=$ndk_dir" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_ROOT=$ndk_dir" >> "$GITHUB_ENV"
-          echo "Using preinstalled NDK: $ndk_dir"
-
-          # cmake at the AGP-pinned version is not always preinstalled,
-          # so install it explicitly. Stable channel only by package
-          # name; sdkmanager --install with an exact version takes the
-          # GA build whenever one exists at that version string.
-          sdkmanager --install "cmake;3.22.1" >/dev/null
+          echo "Resolved NDK: $ndk_dir"
 
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
@@ -314,43 +308,40 @@ jobs:
       - name: Setup Android SDK + NDK
         uses: android-actions/setup-android@v3
 
-      - name: Resolve preinstalled NDK + install cmake
+      - name: Install AGP-compatible NDK + cmake
         run: |
-          # Use the NDK that ships preinstalled in the runner image rather
-          # than running `sdkmanager --install`. Background:
+          # AGP 8.5 (see android/gradle/libs.versions.toml::agp) validates
+          # the NDK at $ANDROID_NDK_HOME against its internal compatibility
+          # list. Preview NDKs (r29, r30 beta) fail that validation with
+          # "NDK is not installed" even when ANDROID_NDK_HOME points at a
+          # successfully-installed directory.
           #
-          # `sdkmanager --list` (default channel) surfaces NDK r30 beta1
-          # (30.0.14904198) as the highest-version package even though it
-          # is not GA, and `--channel=0` does NOT subset to stable in
-          # cmdline-tools 16.x — the flag adds channel 0 rather than
-          # restricting to it, so it has no effect when called against
-          # the default-canary listing. Installing 30.0.14904198 succeeds
-          # but AGP rejects it via NdkInstallStatus with "NDK is not
-          # installed", because the beta isn't in AGP's accepted range.
+          # The runner image preinstalls r29 (30.0.14206865 today) and
+          # sdkmanager --list's default channel surfaces r30 beta1
+          # (30.0.14904198) as the highest version. `--channel=0` does
+          # NOT subset to stable in cmdline-tools 16.x — it adds channel
+          # 0 rather than restricting to it — so neither glob-the-runner
+          # nor pick-highest-from-sdkmanager works.
           #
-          # The GitHub-hosted ubuntu runner image always ships at least
-          # one stable, AGP-supported NDK preinstalled under
-          # $ANDROID_HOME/ndk/ (currently 27.2.12479018). Using that
-          # directly is robust against the channel-filter quirk above and
-          # against future preview drops sdkmanager exposes — preview
-          # NDKs aren't preinstalled. A new GA in the runner image flows
-          # through automatically because we glob the highest-version
-          # subdirectory.
-          ndk_dir="$(ls -d "$ANDROID_HOME"/ndk/*/ 2>/dev/null | sort -V | tail -n1)"
-          ndk_dir="${ndk_dir%/}"
-          if [ -z "$ndk_dir" ]; then
-            echo "::error::No NDK preinstalled at $ANDROID_HOME/ndk/"
+          # The proper fix is a specific AGP-supported NDK pin, scoped to
+          # CI only. android/core/build.gradle.kts intentionally leaves
+          # ndkVersion unpinned so contributors aren't blocked on having
+          # this exact byte-identical NDK locally; CI uses
+          # ANDROID_NDK_HOME to direct AGP at the version we install.
+          #
+          # Bump NDK_VERSION when bumping AGP — AGP release notes specify
+          # the supported NDK range. AGP 8.5 → 27.2.12479018 (latest r27
+          # GA, well within AGP 8.5's accepted range).
+          NDK_VERSION="27.2.12479018"
+          sdkmanager --install "ndk;$NDK_VERSION" "cmake;3.22.1" >/dev/null
+          ndk_dir="$ANDROID_HOME/ndk/$NDK_VERSION"
+          if [ ! -d "$ndk_dir" ]; then
+            echo "::error::NDK install failed: $ndk_dir not present after sdkmanager"
             exit 1
           fi
           echo "ANDROID_NDK_HOME=$ndk_dir" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_ROOT=$ndk_dir" >> "$GITHUB_ENV"
-          echo "Using preinstalled NDK: $ndk_dir"
-
-          # cmake at the AGP-pinned version is not always preinstalled,
-          # so install it explicitly. Stable channel only by package
-          # name; sdkmanager --install with an exact version takes the
-          # GA build whenever one exists at that version string.
-          sdkmanager --install "cmake;3.22.1" >/dev/null
+          echo "Resolved NDK: $ndk_dir"
 
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
