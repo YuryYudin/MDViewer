@@ -33,13 +33,21 @@ plugins {
 android {
     namespace = "dev.mdviewer.core"
     compileSdk = 34
-    // No `ndkVersion` pin. AGP resolves the highest-installed side-by-side
-    // NDK under `$ANDROID_HOME/ndk/`; the cargo-ndk Gradle plugin reuses
-    // that path. Pinning to an exact version forces every contributor to
-    // download those exact bytes and ages badly (NDK side-by-side bumps
-    // are routine). CI installs a known-good NDK explicitly and exports
-    // ANDROID_NDK_HOME via a glob so it doesn't have to repeat a version
-    // string here.
+    // ndkVersion is pinned because AGP and the mozilla rust-android-gradle
+    // plugin both resolve the NDK via BaseExtension.ndkDirectory, which:
+    //   - if ndkVersion is set, looks for $ANDROID_HOME/ndk/<version>/
+    //   - if ndkVersion is unset, falls back to AGP's compiled-in default
+    //     and IGNORES ANDROID_NDK_HOME / ANDROID_NDK_ROOT entirely.
+    // Leaving this unpinned was the cause of "NDK is not installed"
+    // failures whenever the runner image's preinstalled NDK didn't
+    // match AGP 8.5's compiled-in default (e.g. when the image started
+    // shipping r29 preview, AGP couldn't find its r26-class default and
+    // refused to use the r29 anyway because previews fail validation).
+    //
+    // Bump this version when bumping AGP — AGP release notes specify
+    // the supported NDK range. AGP 8.5 → r27.2.12479018 (latest r27 GA,
+    // accepted by AGP 8.5 when explicitly pinned).
+    ndkVersion = "27.2.12479018"
 
     defaultConfig {
         minSdk = 26
