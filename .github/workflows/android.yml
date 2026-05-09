@@ -72,11 +72,17 @@ jobs:
 
       - name: Install latest NDK (side-by-side) + cmake
         run: |
-          # Discover the highest ndk;<ver> package the runner's sdkmanager
-          # knows about and install it. No hardcoded version: a new NDK
-          # GA doesn't break this job, and contributors' local AGP picks
-          # up whichever side-by-side NDK they happen to have.
-          ndk_pkg="$(sdkmanager --list 2>/dev/null \
+          # Discover the highest STABLE ndk;<ver> package and install it.
+          # No hardcoded version so a new NDK GA doesn't break this job,
+          # and contributors' local AGP picks up whichever side-by-side
+          # NDK they happen to have.
+          #
+          # --channel=0 restricts the listing to the stable channel.
+          # Without it sdkmanager defaults to the canary channel and
+          # surfaces preview NDKs (e.g. r30 beta1 = 30.0.14904198), which
+          # AGP refuses to recognize as a valid installed NDK and the
+          # build fails with "NDK is not installed".
+          ndk_pkg="$(sdkmanager --list --channel=0 2>/dev/null \
             | awk '/^  ndk;[0-9]/ {print $1}' \
             | sort -V \
             | tail -n1)"
@@ -183,11 +189,17 @@ jobs:
 
       - name: Install latest NDK (side-by-side) + cmake
         run: |
-          # Discover the highest ndk;<ver> package the runner's sdkmanager
-          # knows about and install it. No hardcoded version: a new NDK
-          # GA doesn't break this job, and contributors' local AGP picks
-          # up whichever side-by-side NDK they happen to have.
-          ndk_pkg="$(sdkmanager --list 2>/dev/null \
+          # Discover the highest STABLE ndk;<ver> package and install it.
+          # No hardcoded version so a new NDK GA doesn't break this job,
+          # and contributors' local AGP picks up whichever side-by-side
+          # NDK they happen to have.
+          #
+          # --channel=0 restricts the listing to the stable channel.
+          # Without it sdkmanager defaults to the canary channel and
+          # surfaces preview NDKs (e.g. r30 beta1 = 30.0.14904198), which
+          # AGP refuses to recognize as a valid installed NDK and the
+          # build fails with "NDK is not installed".
+          ndk_pkg="$(sdkmanager --list --channel=0 2>/dev/null \
             | awk '/^  ndk;[0-9]/ {print $1}' \
             | sort -V \
             | tail -n1)"
@@ -288,11 +300,17 @@ jobs:
 
       - name: Install latest NDK (side-by-side) + cmake
         run: |
-          # Discover the highest ndk;<ver> package the runner's sdkmanager
-          # knows about and install it. No hardcoded version: a new NDK
-          # GA doesn't break this job, and contributors' local AGP picks
-          # up whichever side-by-side NDK they happen to have.
-          ndk_pkg="$(sdkmanager --list 2>/dev/null \
+          # Discover the highest STABLE ndk;<ver> package and install it.
+          # No hardcoded version so a new NDK GA doesn't break this job,
+          # and contributors' local AGP picks up whichever side-by-side
+          # NDK they happen to have.
+          #
+          # --channel=0 restricts the listing to the stable channel.
+          # Without it sdkmanager defaults to the canary channel and
+          # surfaces preview NDKs (e.g. r30 beta1 = 30.0.14904198), which
+          # AGP refuses to recognize as a valid installed NDK and the
+          # build fails with "NDK is not installed".
+          ndk_pkg="$(sdkmanager --list --channel=0 2>/dev/null \
             | awk '/^  ndk;[0-9]/ {print $1}' \
             | sort -V \
             | tail -n1)"

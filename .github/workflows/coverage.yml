@@ -7,6 +7,24 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with: { components: llvm-tools-preview }
+      # `cargo llvm-cov --workspace` builds the full dep graph including
+      # src-tauri, which transitively requires glib/gtk/webkit on Linux.
+      # Without these system libs, glib-sys's pkg-config probe fails with
+      # "Package glib-2.0 was not found in the pkg-config search path"
+      # and the whole workspace coverage run aborts. Same package list as
+      # ci.yml's gen-types and test-rust jobs — keeping them in sync.
+      - name: Linux build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libsoup-3.0-dev \
+            libssl-dev \
+            build-essential \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libayatana-appindicator3-dev \
+            libxdo-dev
       - run: cargo install cargo-llvm-cov --locked
       - run: cargo llvm-cov --workspace --lcov --output-path coverage.lcov
       - name: Self-test the coverage gate script

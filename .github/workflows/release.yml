@@ -137,10 +137,14 @@ jobs:
 
       - name: Install latest NDK (side-by-side) + cmake
         run: |
-          # Same approach as android.yml: discover the highest ndk;<ver>
-          # the runner's sdkmanager offers and install that. No version
-          # pin to age out.
-          ndk_pkg="$(sdkmanager --list 2>/dev/null \
+          # Same approach as android.yml: discover the highest stable
+          # ndk;<ver> the runner's sdkmanager offers and install that.
+          # No version pin to age out.
+          #
+          # --channel=0 restricts to the stable channel; sdkmanager's
+          # default surfaces preview NDKs (e.g. r30 beta1) that AGP
+          # refuses to recognize as a valid installed NDK.
+          ndk_pkg="$(sdkmanager --list --channel=0 2>/dev/null \
             | awk '/^  ndk;[0-9]/ {print $1}' \
             | sort -V \
             | tail -n1)"
