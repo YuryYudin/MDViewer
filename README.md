@@ -83,8 +83,7 @@ npm run tauri dev
 
 ### Open files from the command line
 
-After installing the packaged app, the binary takes one or more `.md`
-paths and opens each as a tab:
+The packaged binary takes one or more `.md` paths and opens each as a tab:
 
 ```bash
 mdviewer notes.md                  # one tab
@@ -92,10 +91,27 @@ mdviewer ~/docs/a.md ~/docs/b.md   # two tabs
 ```
 
 If MDViewer is already running, the second invocation is forwarded to the
-existing window — you don't get duplicate processes. On macOS, `.md` is
-also registered as a Launch Services owner so double-clicking a file in
-Finder, "Open With → MDViewer", and dragging a file onto the Dock icon
-all route to the same code path.
+existing window — you don't get duplicate processes.
+
+How `mdviewer` ends up on your `$PATH` depends on the install method:
+
+- **Linux (.deb / .rpm)**: installed at `/usr/bin/mdviewer` automatically by
+  `apt install ./MDViewer_*.deb` (or the equivalent `rpm -i`). No extra step.
+- **Linux (AppImage)**: AppImages don't auto-install. After downloading,
+  `chmod +x MDViewer-*.AppImage` and either run it directly or symlink it
+  yourself: `sudo ln -s /full/path/to/MDViewer-*.AppImage /usr/local/bin/mdviewer`.
+- **macOS (.dmg)**: after dragging `MDViewer.app` to `/Applications`,
+  open the **MDViewer** menu → **Install 'mdviewer' Command in PATH…**.
+  You'll get an admin password prompt, after which `/usr/local/bin/mdviewer`
+  is a symlink to the running binary. Use **Uninstall 'mdviewer' Command…**
+  in the same menu to remove it.
+- **Windows (.msi)**: the MSI installer adds the install directory to PATH;
+  open a new terminal after install and `mdviewer` will resolve.
+
+On macOS, `.md` is also registered as a Launch Services owner so
+double-clicking a file in Finder, "Open With → MDViewer", and dragging a
+file onto the Dock icon all route to the same code path. From Terminal,
+`open -a MDViewer foo.md` works without any of the above PATH setup.
 
 `npm run tauri dev` does three things in sequence:
 

@@ -55,6 +55,11 @@ use mdviewer_lib::{
 };
 use std::path::Path;
 
+// macOS-only: the CLI symlink installer is a no-op on other platforms
+// (deb/rpm/msi handle it via the package manager) so the import is gated.
+#[cfg(target_os = "macos")]
+use mdviewer_lib::cli_install;
+
 type Ws = Mutex<Workspace>;
 
 #[tauri::command]
@@ -833,6 +838,170 @@ async fn is_drive_desktop_path(path: String) -> bool {
     .is_some()
 }
 
+/// macOS-only: shell out to `osascript` to install or remove the
+/// `/usr/local/bin/mdviewer` symlink, then surface a native dialog with the
+/// result. Cancellations stay silent so a user who clicks Cancel on the
+/// admin prompt isn't nagged with a confirmation popup. Spawns nothing
+/// itself — call from a worker thread, because the AppleScript
+/// `with administrator privileges` blocks until the user dismisses the
+/// auth dialog.
+#[cfg(target_os = "macos")]
+fn handle_cli_install_click(app: &tauri::AppHandle, menu_id: &str) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+
+    let is_install = menu_id == menu::MENU_ID_INSTALL_CLI;
+
+    let outcome = if is_install {
+        cli_install::install_symlink().map(Some)
+    } else {
+        cli_install::uninstall_symlink().map(|()| None)
+    };
+
+    match outcome {
+        Ok(Some(path)) => {
+            app.dialog()
+                .message(format!(
+                    "`mdviewer` is now available on your PATH at {}.\n\nYou can now run `mdviewer file.md` from any terminal.",
+                    path.display()
+                ))
+                .title("Command line tool installed")
+                .kind(MessageDialogKind::Info)
+                .blocking_show();
+        }
+        Ok(None) => {
+            app.dialog()
+                .message(format!(
+                    "Removed {}.",
+                    cli_install::SYMLINK_PATH
+                ))
+                .title("Command line tool uninstalled")
+                .kind(MessageDialogKind::Info)
+                .blocking_show();
+        }
+        Err(cli_install::CliInstallError::Cancelled) => {
+            // User dismissed the admin prompt. No-op.
+        }
+        Err(cli_install::CliInstallError::Failed(msg)) => {
+            tracing::warn!("cli_install {} failed: {msg}", if is_install { "install" } else { "uninstall" });
+            let action = if is_install { "install" } else { "uninstall" };
+            app.dialog()
+                .message(format!(
+                    "Failed to {action} the command line tool:\n\n{msg}"
+                ))
+                .title("Command line tool")
+                .kind(MessageDialogKind::Error)
+                .blocking_show();
+        }
+    }
+}
+
+/// macOS-only: first-launch nudge to install the `mdviewer` PATH symlink.
+/// Skips silently when (a) a symlink already exists at the canonical path,
+/// or (b) the user has already seen and answered this prompt for the
+/// current `CURRENT_CLI_INSTALL_PROMPT_VERSION`.
+///
+/// Three terminal states for the user's answer:
+///
+/// 1. "Install" → admin auth prompt → on success, record seen-for and
+///    show a confirmation. On admin-prompt cancel, leave seen-for unset
+///    (they didn't really decide). On failure, record seen-for so we
+///    don't loop on a broken environment, and surface the error.
+/// 2. "Not now" → record seen-for. The menu still offers install/uninstall.
+/// 3. Dialog dismissed without answering (rare; users normally pick a
+///    button) → leave seen-for unset, ask again next launch.
+#[cfg(target_os = "macos")]
+fn run_first_run_cli_prompt(app: &tauri::AppHandle) {
+    use mdviewer_lib::settings::CURRENT_CLI_INSTALL_PROMPT_VERSION;
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    let ws_state = app.state::<Mutex<Workspace>>();
+    let seen_for = match ws_state.lock() {
+        Ok(ws) => ws
+            .settings_store()
+            .get()
+            .onboarding
+            .cli_install_prompt_seen_for
+            .clone(),
+        Err(_) => return,
+    };
+
+    // `symlink_metadata` (not `metadata`) so a dangling symlink still counts
+    // as "something is here" — we don't want to clobber a user's broken-by-
+    // upgrade symlink without their consent.
+    let symlink_present = std::path::Path::new(cli_install::SYMLINK_PATH)
+        .symlink_metadata()
+        .is_ok();
+
+    if !cli_install::should_show_first_run_prompt(
+        &seen_for,
+        CURRENT_CLI_INSTALL_PROMPT_VERSION,
+        symlink_present,
+    ) {
+        return;
+    }
+
+    let mark_seen = || {
+        if let Ok(ws) = ws_state.lock() {
+            let _ = ws.settings_store().update(|s| {
+                s.onboarding.cli_install_prompt_seen_for =
+                    CURRENT_CLI_INSTALL_PROMPT_VERSION.to_string();
+            });
+        }
+    };
+
+    let install_chosen = app
+        .dialog()
+        .message(
+            "MDViewer can install an 'mdviewer' command in your PATH so you can open files from the terminal:\n\n\
+             mdviewer notes.md\n\n\
+             You'll be asked for your administrator password.\n\
+             You can change this later from the MDViewer menu.",
+        )
+        .title("Install command line tool?")
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Install".into(),
+            "Not now".into(),
+        ))
+        .kind(MessageDialogKind::Info)
+        .blocking_show();
+
+    if !install_chosen {
+        // User picked "Not now" — they answered, so don't pester again.
+        mark_seen();
+        return;
+    }
+
+    match cli_install::install_symlink() {
+        Ok(path) => {
+            mark_seen();
+            app.dialog()
+                .message(format!(
+                    "'mdviewer' is now available on your PATH at {}.",
+                    path.display()
+                ))
+                .title("Command line tool installed")
+                .kind(MessageDialogKind::Info)
+                .blocking_show();
+        }
+        Err(cli_install::CliInstallError::Cancelled) => {
+            // Admin prompt cancelled. They didn't really commit either way;
+            // ask again next launch so a typo on the password isn't a
+            // permanent decision.
+        }
+        Err(cli_install::CliInstallError::Failed(msg)) => {
+            tracing::warn!("first-run cli install failed: {msg}");
+            mark_seen();
+            app.dialog()
+                .message(format!(
+                    "Failed to install command line tool:\n\n{msg}\n\nYou can retry from the MDViewer menu."
+                ))
+                .title("Install failed")
+                .kind(MessageDialogKind::Error)
+                .blocking_show();
+        }
+    }
+}
+
 fn main() {
     // C3: lightweight CLI dispatch before the Tauri runtime spins up. The
     // subcommand intentionally bypasses tauri::Builder so it can be used
@@ -935,11 +1104,29 @@ fn main() {
 
     builder
         .on_menu_event(|app, event| {
+            let id = event.id().as_ref();
+
+            // macOS-only: the shell-tool installer items are handled
+            // entirely Rust-side (osascript admin prompt → result dialog)
+            // so they never reach the frontend bridge. Run on a worker
+            // thread because `osascript with administrator privileges`
+            // blocks until the user dismisses the auth dialog and we
+            // don't want to stall the menu callback.
+            #[cfg(target_os = "macos")]
+            if id == menu::MENU_ID_INSTALL_CLI || id == menu::MENU_ID_UNINSTALL_CLI {
+                let app = app.clone();
+                let id_owned = id.to_string();
+                std::thread::spawn(move || {
+                    handle_cli_install_click(&app, &id_owned);
+                });
+                return;
+            }
+
             // Native menu clicks → tauri event the WebView listener
             // translates into the existing mdviewer:* CustomEvents. The
             // pure id↔action mapping lives in `mdviewer_lib::menu` so it
             // can be unit-tested without an AppHandle.
-            if let Some(action) = menu::menu_id_to_action(event.id().as_ref()) {
+            if let Some(action) = menu::menu_id_to_action(id) {
                 let _ = app.emit(menu::MENU_EVENT, action);
             }
         })
@@ -1029,6 +1216,22 @@ fn main() {
             let initial_behavior = ws.settings_store().get().editor.external_change_behavior;
             let settings_rx = ws.settings_store().subscribe();
             app.manage(Mutex::new(ws));
+
+            // macOS-only: first-launch CLI-install nudge. Spawned on a
+            // worker so neither the Tauri event loop nor app startup
+            // blocks on the dialog (or, if the user picks "Install",
+            // on the admin auth prompt that follows). The 600ms delay
+            // lets the main window appear first so the dialog has a
+            // visible parent context — without it the dialog can pop
+            // before the WebView paints, which feels jarring.
+            #[cfg(target_os = "macos")]
+            {
+                let app_handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(600));
+                    run_first_run_cli_prompt(&app_handle);
+                });
+            }
 
             // Construct the file watcher and register it as managed state
             // alongside the workspace. B3's `save_document` IPC handler

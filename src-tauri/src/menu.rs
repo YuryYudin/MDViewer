@@ -23,9 +23,21 @@ use tauri::{AppHandle, Runtime};
 /// (`mdviewer:<action>` minus the prefix).
 pub const MENU_EVENT: &str = "menu-action";
 
+/// Menu item id for the macOS "Install 'mdviewer' Command in PATH…" item.
+/// Unlike the entries in `menu_id_to_action`, this one is handled entirely
+/// in the Rust `on_menu_event` closure (it shells out to `osascript`) and
+/// does not emit a frontend CustomEvent.
+pub const MENU_ID_INSTALL_CLI: &str = "menu-install-cli";
+
+/// Menu item id for the macOS "Uninstall 'mdviewer' Command…" companion.
+/// Same Rust-side handling as the install item.
+pub const MENU_ID_UNINSTALL_CLI: &str = "menu-uninstall-cli";
+
 /// Pure mapping from menu-item id to the frontend action it triggers.
 /// Unknown ids return None and are silently dropped — predefined items
 /// (cut, copy, etc.) are handled by the OS and never reach this path.
+/// The `menu-install-cli` / `menu-uninstall-cli` ids also return None
+/// because their handler runs Rust-side (no frontend involvement).
 pub fn menu_id_to_action(id: &str) -> Option<&'static str> {
     match id {
         "menu-open-file" => Some("open-file"),
@@ -51,7 +63,11 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     // Windows/Linux the menu bar starts with File, but we still include
     // `Settings…` here because muda hides the platform-irrelevant items
     // (about/services/hide) automatically.
-    let app_menu = SubmenuBuilder::new(app, "MDViewer")
+    // `mut` is consumed by the macOS-only block below; on other platforms
+    // it's unused, so silence the warning rather than #[cfg]-fork the whole
+    // builder chain.
+    #[allow(unused_mut)]
+    let mut app_menu_builder = SubmenuBuilder::new(app, "MDViewer")
         .item(&PredefinedMenuItem::about(app, None, None)?)
         .separator()
         .item(&MenuItem::with_id(
@@ -60,7 +76,36 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             "Settings…",
             true,
             Some("CmdOrCtrl+,"),
-        )?)
+        )?);
+
+    // macOS-only: shell-tool installer entries. The dmg can't run a
+    // postinstall, so we follow the VS Code / iTerm2 convention of
+    // exposing an in-app menu that drops `/usr/local/bin/mdviewer`. On
+    // Linux the deb/rpm install already lands at `/usr/bin/mdviewer`
+    // (locked via `mainBinaryName` in tauri.conf.json), and on Windows
+    // the MSI installer puts the binary on PATH — so we don't surface
+    // these items there.
+    #[cfg(target_os = "macos")]
+    {
+        app_menu_builder = app_menu_builder
+            .separator()
+            .item(&MenuItem::with_id(
+                app,
+                MENU_ID_INSTALL_CLI,
+                "Install 'mdviewer' Command in PATH…",
+                true,
+                None::<&str>,
+            )?)
+            .item(&MenuItem::with_id(
+                app,
+                MENU_ID_UNINSTALL_CLI,
+                "Uninstall 'mdviewer' Command…",
+                true,
+                None::<&str>,
+            )?);
+    }
+
+    let app_menu = app_menu_builder
         .separator()
         .item(&PredefinedMenuItem::services(app, None)?)
         .separator()
@@ -216,8 +261,23 @@ mod tests {
             "services",
             "menu-unknown",
             "MENU-OPEN-FILE", // case-sensitive
+            // The CLI installer items live on the same `on_menu_event`
+            // bus but are intentionally NOT bridged into the frontend
+            // — their handler shells out to osascript Rust-side. Pin
+            // that they stay out of `menu_id_to_action`.
+            MENU_ID_INSTALL_CLI,
+            MENU_ID_UNINSTALL_CLI,
         ] {
             assert_eq!(menu_id_to_action(id), None, "id={:?} should be unknown", id);
         }
+    }
+
+    /// The CLI-installer ids are the contract between menu.rs and main.rs's
+    /// on_menu_event closure. Pin them here so a rename can't slip past the
+    /// type system unnoticed.
+    #[test]
+    fn cli_installer_menu_ids_are_stable() {
+        assert_eq!(MENU_ID_INSTALL_CLI, "menu-install-cli");
+        assert_eq!(MENU_ID_UNINSTALL_CLI, "menu-uninstall-cli");
     }
 }

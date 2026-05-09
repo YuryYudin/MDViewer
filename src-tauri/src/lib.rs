@@ -65,6 +65,7 @@ pub use mdviewer_core::{auto_merge, sidecar_path};
 
 pub mod anchor;
 pub mod cli;
+pub mod cli_install;
 pub mod comments;
 pub mod conflict;
 pub mod doc_prefs;

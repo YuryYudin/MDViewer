@@ -271,6 +271,30 @@ pub fn drive_kill_switch_active(s: &Settings) -> bool {
     !s.cloud.drive.feature_enabled
 }
 
+/// One-time onboarding nudges. Today the only field is the CLI-installer
+/// prompt tracker, but future first-run UX (welcome tour, tip-of-the-day
+/// toggles, etc.) belongs here too.
+///
+/// `cli_install_prompt_seen_for` stores a *prompt-version* string rather
+/// than a bool so a future release can re-prompt by bumping
+/// `CURRENT_CLI_INSTALL_PROMPT_VERSION` (e.g. if we change the symlink
+/// path or want to nag users who declined a year ago to reconsider). An
+/// empty string means "never asked" — that's what every existing user
+/// will deserialize to thanks to `#[serde(default)]`, so the current
+/// release's first launch shows the prompt automatically.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
+pub struct OnboardingState {
+    #[serde(default)]
+    pub cli_install_prompt_seen_for: String,
+}
+
+/// Bump this when we want every user to see the CLI-install prompt
+/// again on their next launch. Keeping the constant in code (rather than
+/// auto-derived from `Cargo.toml::version`) means a routine version bump
+/// doesn't accidentally re-nag users — only an explicit edit here does.
+pub const CURRENT_CLI_INSTALL_PROMPT_VERSION: &str = "v1";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[ts(export)]
 pub struct Settings {
@@ -282,6 +306,8 @@ pub struct Settings {
     pub shortcuts: BTreeMap<String, String>, // action → keybinding
     #[serde(default)]
     pub cloud: CloudSettings,
+    #[serde(default)]
+    pub onboarding: OnboardingState,
 }
 
 impl Default for Settings {
@@ -322,6 +348,7 @@ impl Default for Settings {
             },
             shortcuts: default_shortcuts(),
             cloud: CloudSettings::default(),
+            onboarding: OnboardingState::default(),
         }
     }
 }
@@ -369,6 +396,7 @@ pub enum ChangeEvent {
     Advanced,
     Shortcuts,
     Cloud,
+    Onboarding,
 }
 
 pub struct SettingsStore {
@@ -482,6 +510,9 @@ fn diff_event(a: &Settings, b: &Settings) -> Option<ChangeEvent> {
     }
     if a.cloud != b.cloud {
         return Some(ChangeEvent::Cloud);
+    }
+    if a.onboarding != b.onboarding {
+        return Some(ChangeEvent::Onboarding);
     }
     None
 }

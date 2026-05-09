@@ -49,6 +49,7 @@ function defaultSettings(): Settings {
         detect_toast_suppressed: false,
       },
     },
+    onboarding: { cli_install_prompt_seen_for: '' },
   };
 }
 

@@ -53,6 +53,7 @@ function settings(): import('../../src/ipc').Settings {
     },
     advanced: { sync_provider: null, verbose_logs: false },
     shortcuts: {},
+    onboarding: { cli_install_prompt_seen_for: '' },
   };
 }
 
