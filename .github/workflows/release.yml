@@ -135,30 +135,25 @@ jobs:
 
       - uses: android-actions/setup-android@v3
 
-      - name: Install latest NDK (side-by-side) + cmake
+      - name: Resolve preinstalled NDK + install cmake
         run: |
-          # Same approach as android.yml: discover the highest stable
-          # ndk;<ver> the runner's sdkmanager offers and install that.
-          # No version pin to age out.
-          #
-          # --channel=0 restricts to the stable channel; sdkmanager's
-          # default surfaces preview NDKs (e.g. r30 beta1) that AGP
-          # refuses to recognize as a valid installed NDK.
-          ndk_pkg="$(sdkmanager --list --channel=0 2>/dev/null \
-            | awk '/^  ndk;[0-9]/ {print $1}' \
-            | sort -V \
-            | tail -n1)"
-          if [ -z "$ndk_pkg" ]; then
-            echo "::error::Could not discover any ndk;<ver> package via sdkmanager"
+          # Same approach as android.yml: use the runner image's
+          # preinstalled stable NDK rather than installing one via
+          # sdkmanager. sdkmanager's default channel surfaces preview
+          # NDKs (e.g. r30 beta1 = 30.0.14904198) that AGP rejects as
+          # "NDK is not installed", and `--channel=0` does not subset
+          # the listing in cmdline-tools 16.x. The runner image's
+          # preinstalled NDK is always GA and AGP-supported.
+          ndk_dir="$(ls -d "$ANDROID_HOME"/ndk/*/ 2>/dev/null | sort -V | tail -n1)"
+          ndk_dir="${ndk_dir%/}"
+          if [ -z "$ndk_dir" ]; then
+            echo "::error::No NDK preinstalled at $ANDROID_HOME/ndk/"
             exit 1
           fi
-          echo "Installing $ndk_pkg + cmake;3.22.1"
-          sdkmanager --install "$ndk_pkg" "cmake;3.22.1" >/dev/null
-          ndk_dir="$(ls -d "$ANDROID_HOME"/ndk/*/ | sort -V | tail -n1)"
-          ndk_dir="${ndk_dir%/}"
           echo "ANDROID_NDK_HOME=$ndk_dir" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_ROOT=$ndk_dir" >> "$GITHUB_ENV"
-          echo "Resolved NDK: $ndk_dir"
+          echo "Using preinstalled NDK: $ndk_dir"
+          sdkmanager --install "cmake;3.22.1" >/dev/null
 
       - name: Assemble release APK
         working-directory: android
