@@ -72,28 +72,19 @@ jobs:
 
       - name: Install AGP-compatible NDK + cmake
         run: |
-          # AGP 8.5 (see android/gradle/libs.versions.toml::agp) validates
-          # the NDK at $ANDROID_NDK_HOME against its internal compatibility
-          # list. Preview NDKs (r29, r30 beta) fail that validation with
-          # "NDK is not installed" even when ANDROID_NDK_HOME points at a
-          # successfully-installed directory.
+          # The version-selection logic lives in
+          # android/core/build.gradle.kts: it globs $ANDROID_HOME/ndk/
+          # and picks the highest-installed AGP-supported NDK, falling
+          # back to a hard-coded version when nothing compatible is
+          # installed. The runner image preinstalls a too-new preview
+          # NDK (currently r29) which the glob filters out, and the
+          # gradle fallback hits the same hard-coded value as below.
           #
-          # The runner image preinstalls r29 (30.0.14206865 today) and
-          # sdkmanager --list's default channel surfaces r30 beta1
-          # (30.0.14904198) as the highest version. `--channel=0` does
-          # NOT subset to stable in cmdline-tools 16.x — it adds channel
-          # 0 rather than restricting to it — so neither glob-the-runner
-          # nor pick-highest-from-sdkmanager works.
-          #
-          # The proper fix is a specific AGP-supported NDK pin, scoped to
-          # CI only. android/core/build.gradle.kts intentionally leaves
-          # ndkVersion unpinned so contributors aren't blocked on having
-          # this exact byte-identical NDK locally; CI uses
-          # ANDROID_NDK_HOME to direct AGP at the version we install.
-          #
-          # Bump NDK_VERSION when bumping AGP — AGP release notes specify
-          # the supported NDK range. AGP 8.5 → 27.2.12479018 (latest r27
-          # GA, well within AGP 8.5's accepted range).
+          # CI's job is just to make sure that version is on disk before
+          # gradle runs — installing it via sdkmanager is the only way
+          # to guarantee that, since the runner image doesn't ship it.
+          # Bump this in lockstep with the gradle-side fallback when
+          # bumping AGP.
           NDK_VERSION="27.2.12479018"
           sdkmanager --install "ndk;$NDK_VERSION" "cmake;3.22.1" >/dev/null
           ndk_dir="$ANDROID_HOME/ndk/$NDK_VERSION"
@@ -194,28 +185,19 @@ jobs:
 
       - name: Install AGP-compatible NDK + cmake
         run: |
-          # AGP 8.5 (see android/gradle/libs.versions.toml::agp) validates
-          # the NDK at $ANDROID_NDK_HOME against its internal compatibility
-          # list. Preview NDKs (r29, r30 beta) fail that validation with
-          # "NDK is not installed" even when ANDROID_NDK_HOME points at a
-          # successfully-installed directory.
+          # The version-selection logic lives in
+          # android/core/build.gradle.kts: it globs $ANDROID_HOME/ndk/
+          # and picks the highest-installed AGP-supported NDK, falling
+          # back to a hard-coded version when nothing compatible is
+          # installed. The runner image preinstalls a too-new preview
+          # NDK (currently r29) which the glob filters out, and the
+          # gradle fallback hits the same hard-coded value as below.
           #
-          # The runner image preinstalls r29 (30.0.14206865 today) and
-          # sdkmanager --list's default channel surfaces r30 beta1
-          # (30.0.14904198) as the highest version. `--channel=0` does
-          # NOT subset to stable in cmdline-tools 16.x — it adds channel
-          # 0 rather than restricting to it — so neither glob-the-runner
-          # nor pick-highest-from-sdkmanager works.
-          #
-          # The proper fix is a specific AGP-supported NDK pin, scoped to
-          # CI only. android/core/build.gradle.kts intentionally leaves
-          # ndkVersion unpinned so contributors aren't blocked on having
-          # this exact byte-identical NDK locally; CI uses
-          # ANDROID_NDK_HOME to direct AGP at the version we install.
-          #
-          # Bump NDK_VERSION when bumping AGP — AGP release notes specify
-          # the supported NDK range. AGP 8.5 → 27.2.12479018 (latest r27
-          # GA, well within AGP 8.5's accepted range).
+          # CI's job is just to make sure that version is on disk before
+          # gradle runs — installing it via sdkmanager is the only way
+          # to guarantee that, since the runner image doesn't ship it.
+          # Bump this in lockstep with the gradle-side fallback when
+          # bumping AGP.
           NDK_VERSION="27.2.12479018"
           sdkmanager --install "ndk;$NDK_VERSION" "cmake;3.22.1" >/dev/null
           ndk_dir="$ANDROID_HOME/ndk/$NDK_VERSION"
@@ -310,28 +292,19 @@ jobs:
 
       - name: Install AGP-compatible NDK + cmake
         run: |
-          # AGP 8.5 (see android/gradle/libs.versions.toml::agp) validates
-          # the NDK at $ANDROID_NDK_HOME against its internal compatibility
-          # list. Preview NDKs (r29, r30 beta) fail that validation with
-          # "NDK is not installed" even when ANDROID_NDK_HOME points at a
-          # successfully-installed directory.
+          # The version-selection logic lives in
+          # android/core/build.gradle.kts: it globs $ANDROID_HOME/ndk/
+          # and picks the highest-installed AGP-supported NDK, falling
+          # back to a hard-coded version when nothing compatible is
+          # installed. The runner image preinstalls a too-new preview
+          # NDK (currently r29) which the glob filters out, and the
+          # gradle fallback hits the same hard-coded value as below.
           #
-          # The runner image preinstalls r29 (30.0.14206865 today) and
-          # sdkmanager --list's default channel surfaces r30 beta1
-          # (30.0.14904198) as the highest version. `--channel=0` does
-          # NOT subset to stable in cmdline-tools 16.x — it adds channel
-          # 0 rather than restricting to it — so neither glob-the-runner
-          # nor pick-highest-from-sdkmanager works.
-          #
-          # The proper fix is a specific AGP-supported NDK pin, scoped to
-          # CI only. android/core/build.gradle.kts intentionally leaves
-          # ndkVersion unpinned so contributors aren't blocked on having
-          # this exact byte-identical NDK locally; CI uses
-          # ANDROID_NDK_HOME to direct AGP at the version we install.
-          #
-          # Bump NDK_VERSION when bumping AGP — AGP release notes specify
-          # the supported NDK range. AGP 8.5 → 27.2.12479018 (latest r27
-          # GA, well within AGP 8.5's accepted range).
+          # CI's job is just to make sure that version is on disk before
+          # gradle runs — installing it via sdkmanager is the only way
+          # to guarantee that, since the runner image doesn't ship it.
+          # Bump this in lockstep with the gradle-side fallback when
+          # bumping AGP.
           NDK_VERSION="27.2.12479018"
           sdkmanager --install "ndk;$NDK_VERSION" "cmake;3.22.1" >/dev/null
           ndk_dir="$ANDROID_HOME/ndk/$NDK_VERSION"
