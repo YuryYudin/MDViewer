@@ -24,6 +24,7 @@
 //     traces harder to read.
 // ---------------------------------------------------------------------------
 
+import java.io.File
 import java.util.Properties
 
 plugins {
@@ -71,30 +72,35 @@ plugins {
 private val supportedNdkMajors = 25..27
 private val fallbackNdkVersion = "27.2.12479018"
 
-private fun resolveAndroidSdkRoot(rootProj: org.gradle.api.Project): String? =
-    System.getenv("ANDROID_HOME")
-        ?: System.getenv("ANDROID_SDK_ROOT")
-        ?: rootProj.file("local.properties")
-            .takeIf { it.exists() }
-            ?.let { f ->
-                Properties().apply { f.inputStream().use { load(it) } }
-                    .getProperty("sdk.dir")
-            }
+private fun resolveAndroidSdkRoot(rootProj: org.gradle.api.Project): String? {
+    val env = System.getenv("ANDROID_HOME") ?: System.getenv("ANDROID_SDK_ROOT")
+    if (env != null) return env
+    val localProps = rootProj.file("local.properties")
+    if (!localProps.exists()) return null
+    val props = Properties()
+    localProps.inputStream().use { props.load(it) }
+    return props.getProperty("sdk.dir")
+}
 
-private fun pickInstalledNdk(sdkRoot: String?): String? = sdkRoot
-    ?.let { java.io.File(it, "ndk").listFiles { f -> f.isDirectory } }
-    ?.map { it.name }
-    ?.filter { name ->
-        val major = name.substringBefore(".").toIntOrNull() ?: -1
-        major in supportedNdkMajors
-    }
-    // Lex-sort with each segment zero-padded so "27.2.12479018" sorts
-    // higher than "27.2.9519653" (10 chars vs 7 chars in last segment;
-    // raw string sort would put the shorter one ahead).
-    ?.sortedWith(compareBy { name ->
-        name.split(".").map { it.padStart(10, '0') }.joinToString(".")
-    })
-    ?.lastOrNull()
+// Lex-sort key with each segment zero-padded so "27.2.12479018" sorts
+// higher than "27.2.9519653" (10 chars vs 7 chars in last segment;
+// raw string sort would put the shorter one ahead).
+private fun ndkSortKey(name: String): String =
+    name.split(".").joinToString(".") { it.padStart(10, '0') }
+
+private fun pickInstalledNdk(sdkRoot: String?): String? {
+    if (sdkRoot == null) return null
+    val children = File(sdkRoot, "ndk").listFiles { f: File -> f.isDirectory }
+        ?: return null
+    return children
+        .map { it.name }
+        .filter { name ->
+            val major = name.substringBefore(".").toIntOrNull() ?: -1
+            major in supportedNdkMajors
+        }
+        .sortedBy { ndkSortKey(it) }
+        .lastOrNull()
+}
 
 android {
     namespace = "dev.mdviewer.core"
