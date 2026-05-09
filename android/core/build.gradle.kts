@@ -24,30 +24,84 @@
 //     traces harder to read.
 // ---------------------------------------------------------------------------
 
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.mozilla.rust.android.gradle)
 }
 
+// ---------------------------------------------------------------------------
+// NDK resolution — glob what's installed, fall back to a CI-tracked pin.
+//
+// AGP and the mozilla rust-android-gradle plugin both resolve the NDK via
+// BaseExtension.ndkDirectory, which:
+//   - if `ndkVersion` is set, looks for $ANDROID_HOME/ndk/<version>/.
+//   - if `ndkVersion` is unset, falls back to AGP's compiled-in default
+//     and IGNORES $ANDROID_NDK_HOME / $ANDROID_NDK_ROOT entirely.
+//
+// Two failure modes we have to thread between:
+//
+//   (a) Pinning an exact version (the pre-b189f8e state) forced every
+//       contributor to download exactly that byte-identical NDK. NDK
+//       releases churn quarterly and a stale pin ages badly: any
+//       developer opening the project in Android Studio without that
+//       exact version got "NDK is not installed" rather than building.
+//
+//   (b) Leaving `ndkVersion` unset (b189f8e's attempt) made AGP fall
+//       back to its compiled-in default and ignore $ANDROID_NDK_HOME.
+//       Whenever the runner image happened to ship a different NDK
+//       (currently r29 preview, which AGP 8.5 rejects anyway), the
+//       build failed regardless of how we set env vars.
+//
+// What works for both: glob $ANDROID_HOME/ndk/ ourselves, pick the
+// highest-installed AGP-compatible NDK, and only fall back to a hard
+// pin when nothing compatible is installed. CI installs r27.2.12479018
+// explicitly so the glob picks that there. Locally, contributors who
+// already have any NDK in the supported range build immediately; those
+// who don't get Android Studio's standard "Install NDK <X>" prompt
+// rather than an unhelpful "NDK is not installed" failure (because
+// `ndkVersion` always ends up set to a specific version, and AS knows
+// how to offer the SDK Manager install for an unset NDK).
+//
+// Bump `supportedNdkMajors` and `fallbackNdkVersion` together when
+// bumping AGP — AGP release notes specify the supported NDK range. AGP
+// 8.5 accepts r25 through r27; latest r27 GA is r27.2.12479018.
+private val supportedNdkMajors = 25..27
+private val fallbackNdkVersion = "27.2.12479018"
+
+private fun resolveAndroidSdkRoot(rootProj: org.gradle.api.Project): String? =
+    System.getenv("ANDROID_HOME")
+        ?: System.getenv("ANDROID_SDK_ROOT")
+        ?: rootProj.file("local.properties")
+            .takeIf { it.exists() }
+            ?.let { f ->
+                Properties().apply { f.inputStream().use { load(it) } }
+                    .getProperty("sdk.dir")
+            }
+
+private fun pickInstalledNdk(sdkRoot: String?): String? = sdkRoot
+    ?.let { java.io.File(it, "ndk").listFiles { f -> f.isDirectory } }
+    ?.map { it.name }
+    ?.filter { name ->
+        val major = name.substringBefore(".").toIntOrNull() ?: -1
+        major in supportedNdkMajors
+    }
+    // Lex-sort with each segment zero-padded so "27.2.12479018" sorts
+    // higher than "27.2.9519653" (10 chars vs 7 chars in last segment;
+    // raw string sort would put the shorter one ahead).
+    ?.sortedWith(compareBy { name ->
+        name.split(".").map { it.padStart(10, '0') }.joinToString(".")
+    })
+    ?.lastOrNull()
+
 android {
     namespace = "dev.mdviewer.core"
     compileSdk = 34
-    // ndkVersion is pinned because AGP and the mozilla rust-android-gradle
-    // plugin both resolve the NDK via BaseExtension.ndkDirectory, which:
-    //   - if ndkVersion is set, looks for $ANDROID_HOME/ndk/<version>/
-    //   - if ndkVersion is unset, falls back to AGP's compiled-in default
-    //     and IGNORES ANDROID_NDK_HOME / ANDROID_NDK_ROOT entirely.
-    // Leaving this unpinned was the cause of "NDK is not installed"
-    // failures whenever the runner image's preinstalled NDK didn't
-    // match AGP 8.5's compiled-in default (e.g. when the image started
-    // shipping r29 preview, AGP couldn't find its r26-class default and
-    // refused to use the r29 anyway because previews fail validation).
-    //
-    // Bump this version when bumping AGP — AGP release notes specify
-    // the supported NDK range. AGP 8.5 → r27.2.12479018 (latest r27 GA,
-    // accepted by AGP 8.5 when explicitly pinned).
-    ndkVersion = "27.2.12479018"
+
+    ndkVersion = pickInstalledNdk(resolveAndroidSdkRoot(rootProject))
+        ?: fallbackNdkVersion
 
     defaultConfig {
         minSdk = 26

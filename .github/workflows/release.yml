@@ -137,14 +137,14 @@ jobs:
 
       - name: Install AGP-compatible NDK + cmake
         run: |
-          # Same approach as android.yml: install a specific AGP-
-          # compatible NDK (r27.2.12479018 for AGP 8.5). AGP validates
-          # the NDK at ANDROID_NDK_HOME against its internal compat list,
-          # and the runner image preinstalls r29 + sdkmanager surfaces
-          # r30 beta1 — both fail validation with "NDK is not installed".
-          # Bump NDK_VERSION when bumping AGP. android/core/build.gradle.kts
-          # stays unpinned so local contributors aren't bound to this
-          # exact version.
+          # Mirrors android.yml's install step: gradle's NDK selection
+          # in android/core/build.gradle.kts globs $ANDROID_HOME/ndk/
+          # and picks the highest AGP-supported version installed,
+          # falling back to a hard pin when nothing compatible is
+          # there. The runner image's preinstalled NDK is too-new
+          # preview, so we install the fallback version explicitly to
+          # ensure gradle finds it. Bump in lockstep with the gradle
+          # fallback when bumping AGP.
           NDK_VERSION="27.2.12479018"
           sdkmanager --install "ndk;$NDK_VERSION" "cmake;3.22.1" >/dev/null
           ndk_dir="$ANDROID_HOME/ndk/$NDK_VERSION"
