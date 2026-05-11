@@ -336,6 +336,25 @@ tasks.withType<Test>().configureEach {
 }
 
 // ---------------------------------------------------------------------------
+// Host-JVM unit tests are a debug-variant-only contract. The Compose UI
+// tests rely on `androidx.compose.ui:ui-test-manifest` which is wired via
+// `debugImplementation` (see the long comment in the dependencies block)
+// because manifest merging only happens on build-type source sets. Running
+// `:app:testReleaseUnitTest` therefore fails ~50 UI tests with
+// `Unable to resolve activity for Intent { ... cmp=
+// dev.mdviewer/androidx.activity.ComponentActivity }` — the activity
+// declaration is simply absent from the release manifest by design.
+//
+// `./gradlew build` aggregates `check`, which would fan out to both
+// variants and fail every time. Disable the release-variant unit test
+// task so `build` stays green on the documented debug-only flow without
+// pretending the release variant has working host-JVM tests.
+// ---------------------------------------------------------------------------
+tasks.matching { it.name == "testReleaseUnitTest" }.configureEach {
+    enabled = false
+}
+
+// ---------------------------------------------------------------------------
 // JacocoReport aggregator (B5).
 //
 // AGP's `enableUnitTestCoverage` instruments classes and emits a per-test
