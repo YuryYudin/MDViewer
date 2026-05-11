@@ -191,6 +191,30 @@ cargo {
 }
 
 // ---------------------------------------------------------------------------
+// Python 3.13 removed the `pipes` stdlib module (PEP 594). The
+// rust-android-gradle 0.9.4 linker wrapper still does `import pipes`
+// and calls `pipes.quote`, so on Homebrew Python 3.13+ the link step
+// dies with `ModuleNotFoundError: No module named 'pipes'`. The plugin
+// is unmaintained — no fixed release exists.
+//
+// `pipes.quote` was just an alias for `shlex.quote` since Python 3.3,
+// so rewriting the import is a behavior-preserving fix. We patch the
+// freshly-generated file every time `generateLinkerWrapper` runs.
+// Idempotent: re-running on an already-patched file is a no-op.
+// ---------------------------------------------------------------------------
+rootProject.tasks.matching { it.name == "generateLinkerWrapper" }.configureEach {
+    doLast {
+        val py = rootProject.layout.buildDirectory
+            .file("linker-wrapper/linker-wrapper.py").get().asFile
+        if (py.exists()) {
+            val before = py.readText()
+            val after = before.replace("import pipes", "import shlex as pipes")
+            if (before != after) py.writeText(after)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // UniFFI Kotlin codegen. Invokes the `uniffi-bindgen` host bin we
 // expose from `crates/mdviewer-core/Cargo.toml` so the bindgen version
 // stays pinned to the same Cargo.lock resolution as the scaffolding
