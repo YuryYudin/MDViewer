@@ -651,6 +651,16 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
         activeTabId: tab.tabId ?? state.activeId ?? undefined,
         backend: driveBacking?.backend,
         collaborators,
+        // Wire orphan "Delete": call the Rust-side delete_thread IPC (which
+        // rewrites the sidecar) and then refresh the sidebar so the card
+        // disappears. Without this, OrphanComments dispatches a bubbling
+        // `mdviewer:delete-thread` event into the void — the confirm
+        // dialog appears, the user clicks OK, nothing happens.
+        onDeleteOrphan: (id: string) => {
+          const tid = activeTab.tabId ?? state.activeId;
+          if (!tid) return;
+          void ipc.deleteThread(tid, id).then(refreshThreads);
+        },
       });
       if (driveBacking) {
         const sidebarHeader = sidebarRoot.querySelector<HTMLElement>(

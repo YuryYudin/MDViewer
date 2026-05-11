@@ -123,6 +123,40 @@ fn resolve_thread_unknown_id_returns_error() {
 }
 
 #[test]
+fn delete_thread_removes_id_and_emits_change_event() {
+    // Verifies the mdviewer_lib re-export of CommentsStore::delete_thread —
+    // a regression where `pub use crate::comments::*` drops the new method
+    // would surface here (the crate-internal test in
+    // crates/mdviewer-core/tests/comments_smoke.rs wouldn't catch a missing
+    // Tauri-side re-export). Also confirms `ChangeEvent::ThreadDeleted`
+    // fires so subscribers can react.
+    let mut store = CommentsStore::new();
+    let rx = store.subscribe();
+    let t = store.create_thread(NewThread {
+        anchor: anchor(),
+        first_comment: NewComment {
+            author: "Alice".into(),
+            color: "#f80".into(),
+            body: "to be deleted".into(),
+        },
+    });
+    // Drain the ThreadCreated event before we look for ThreadDeleted.
+    let _ = rx.recv();
+
+    store.delete_thread(&t.id).expect("delete known id");
+    assert!(store.list_threads().is_empty());
+    let ev = rx.recv().expect("delete should emit");
+    assert!(matches!(ev, ChangeEvent::ThreadDeleted));
+}
+
+#[test]
+fn delete_thread_unknown_id_returns_error() {
+    let mut store = CommentsStore::new();
+    let err = store.delete_thread("nonexistent").unwrap_err();
+    assert!(err.contains("thread not found"));
+}
+
+#[test]
 fn get_thread_returns_none_for_unknown_id() {
     let store = CommentsStore::new();
     assert!(store.get_thread("missing").is_none());

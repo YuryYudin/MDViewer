@@ -64,7 +64,15 @@ export function mountCommentsSidebar(
   },
 ): void {
   root.replaceChildren();
-  root.setAttribute('data-view', 'sidebar-comments');
+  // The outer `data-region="sidebar"` element (created by Workspace.ts) owns
+  // the 320 px column layout and `overflow: hidden`. The inner scroll host
+  // takes `[data-view='sidebar-comments']` so its `overflow: auto` rule wins
+  // — when this used to live on `root` directly, the outer `overflow: hidden`
+  // selector beat it on specificity and the sidebar silently clipped instead
+  // of scrolling once content exceeded the viewport.
+  const scrollHost = document.createElement('div');
+  scrollHost.setAttribute('data-view', 'sidebar-comments');
+  root.appendChild(scrollHost);
 
   // Header row with a close (×) button. Clicking dispatches the same
   // `mdviewer:toggle-sidebar` event the View menu / Cmd+Shift+S keymap
@@ -101,7 +109,7 @@ export function mountCommentsSidebar(
     document.dispatchEvent(new CustomEvent('mdviewer:toggle-sidebar'));
   });
   header.append(title, reloadBtn, closeBtn);
-  root.appendChild(header);
+  scrollHost.appendChild(header);
 
   // Orphan section sits at the top so it's visible without scrolling, which
   // is the wireframe-09 layout. Suppressed entirely when the list is empty.
@@ -119,19 +127,19 @@ export function mountCommentsSidebar(
         // Phase C will wire the actual relocate UX; the bubbling event lets
         // Workspace re-route into a relocate dialog without coupling the
         // sidebar to that view.
-        root.dispatchEvent(
+        scrollHost.dispatchEvent(
           new CustomEvent('mdviewer:relocate-orphan', { bubbles: true, detail: { id } }),
         );
       },
       onKeep: (id) => opts.onKeepOrphan?.(id),
       onDelete: (id) => {
         opts.onDeleteOrphan?.(id);
-        root.dispatchEvent(
+        scrollHost.dispatchEvent(
           new CustomEvent('mdviewer:delete-thread', { bubbles: true, detail: { id } }),
         );
       },
     });
-    root.appendChild(orphanRegion);
+    scrollHost.appendChild(orphanRegion);
   }
 
   // Count badges for spec/UI parity (wireframe-05): how many threads
@@ -150,7 +158,7 @@ export function mountCommentsSidebar(
     orphaned.setAttribute('data-test', 'orphaned-count');
     orphaned.textContent = String(orphanedCount);
     counts.append(anchored, orphaned);
-    root.appendChild(counts);
+    scrollHost.appendChild(counts);
   }
 
   const visible = threads.filter((t) => opts.showResolved || !t.resolved);
@@ -158,7 +166,7 @@ export function mountCommentsSidebar(
     const empty = document.createElement('div');
     empty.setAttribute('data-empty', 'true');
     empty.textContent = 'No comments yet';
-    root.appendChild(empty);
+    scrollHost.appendChild(empty);
     return;
   }
 
@@ -242,6 +250,6 @@ export function mountCommentsSidebar(
       body.textContent = t.comments[0]?.body ?? '';
       article.appendChild(body);
     }
-    root.appendChild(article);
+    scrollHost.appendChild(article);
   }
 }

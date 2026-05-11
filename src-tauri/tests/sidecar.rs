@@ -47,6 +47,70 @@ fn round_trips_through_disk_with_schema_v2_header() {
     assert_eq!(loaded.list_threads().len(), 1);
 }
 
+/// End-to-end regression test for the Tauri `delete_thread` command's
+/// behavior: mutate the in-memory store via `delete_thread`, persist via
+/// `save_sidecar` (exactly what the Tauri command's `persist_sidecar`
+/// helper does), and verify a fresh `load_sidecar` no longer sees the
+/// deleted thread. Without this test, a regression in the persist path
+/// (e.g. someone short-circuits writes when the store is "empty" but
+/// `delete_thread` doesn't run) wouldn't surface until a user reopened
+/// the file in production. Mirrors the persist-then-reload contract the
+/// `delete_thread` Tauri command (`src-tauri/src/main.rs`) implements.
+#[test]
+fn delete_then_persist_round_trip_drops_thread_from_disk() {
+    let tmp = TempDir::new().unwrap();
+    let md = tmp.path().join("doc.md");
+    std::fs::write(&md, "Hello world").unwrap();
+
+    let mut store = CommentsStore::new();
+    let keep = store.create_thread(NewThread {
+        anchor: anchor(),
+        first_comment: NewComment {
+            author: "Alice".into(),
+            color: "#f80".into(),
+            body: "keep me".into(),
+        },
+    });
+    let drop = store.create_thread(NewThread {
+        anchor: Anchor {
+            start: 6,
+            end: 11,
+            exact: "world".into(),
+            prefix: "Hello ".into(),
+            suffix: "".into(),
+        },
+        first_comment: NewComment {
+            author: "Bob".into(),
+            color: "#08f".into(),
+            body: "drop me".into(),
+        },
+    });
+
+    let pattern = "{name}.md.comments.json";
+    let path = sidecar_path(&md, pattern);
+    save_sidecar(&path, &store).unwrap();
+
+    // The Tauri command runs `store.delete_thread(id)?; persist_sidecar(...)`
+    // — we exercise that exact pair here.
+    store.delete_thread(&drop.id).expect("delete by id");
+    save_sidecar(&path, &store).unwrap();
+
+    let reloaded = load_sidecar(&path).unwrap();
+    let ids: Vec<&str> = reloaded
+        .list_threads()
+        .iter()
+        .map(|t| t.id.as_str())
+        .collect();
+    assert_eq!(ids, vec![keep.id.as_str()]);
+    // Deletion must survive a second save (regression guard against an
+    // orphaned bytes-cache: an earlier draft of save_sidecar's automerge
+    // path could silently re-emit pre-deletion threads if the change log
+    // wasn't replayed).
+    save_sidecar(&path, &store).unwrap();
+    let reloaded_again = load_sidecar(&path).unwrap();
+    assert_eq!(reloaded_again.list_threads().len(), 1);
+}
+
 #[test]
 fn writes_v2_with_automerge_payload() {
     let tmp = TempDir::new().unwrap();

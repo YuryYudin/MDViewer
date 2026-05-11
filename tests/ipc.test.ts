@@ -169,6 +169,14 @@ describe('tauriIpc', () => {
     });
   });
 
+  it('deleteThread invokes delete_thread with { tabId, threadId }', async () => {
+    await tauriIpc.deleteThread('tab-1', 'thr-9');
+    expect(invoke).toHaveBeenCalledWith('delete_thread', {
+      tabId: 'tab-1',
+      threadId: 'thr-9',
+    });
+  });
+
   it('renderMarkdown invokes render_markdown with { source }', async () => {
     await tauriIpc.renderMarkdown('# hi');
     expect(invoke).toHaveBeenCalledWith('render_markdown', { source: '# hi' });
@@ -284,6 +292,7 @@ describe('tauriIpc', () => {
       'createThread',
       'postReply',
       'resolveThread',
+      'deleteThread',
       'renderMarkdown',
       'resolveAnchor',
       'saveDocument',
@@ -300,6 +309,6 @@ describe('tauriIpc', () => {
     for (const m of required) {
       expect(typeof tauriIpc[m]).toBe('function');
     }
-    expect(required.length).toBe(24);
+    expect(required.length).toBe(25);
   });
 });

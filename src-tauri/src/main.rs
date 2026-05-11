@@ -256,6 +256,26 @@ fn resolve_thread(
     persist_sidecar(&ws, &watcher, &tab_id)
 }
 
+/// Drop a thread from the sidecar. Mirrors `resolve_thread`'s shape but
+/// calls `delete_thread` on the store; the persisted sidecar is rewritten
+/// so the deletion survives a restart and is visible to other tabs that
+/// re-read the file. Wired to the orphan-list "Delete" button on the
+/// frontend (`mdviewer:delete-thread` flow, wireframe 09).
+#[tauri::command]
+fn delete_thread(
+    state: State<'_, Ws>,
+    watcher: State<'_, Mutex<Watcher>>,
+    tab_id: String,
+    thread_id: String,
+) -> Result<(), String> {
+    let mut ws = state.lock().map_err(|e| e.to_string())?;
+    let store = ws.comments_for_mut(&tab_id).map_err(|e| e.to_string())?;
+    store
+        .delete_thread(&thread_id)
+        .map_err(|e| e.to_string())?;
+    persist_sidecar(&ws, &watcher, &tab_id)
+}
+
 /// After every comments-mutation IPC the in-memory CommentsStore is
 /// authoritative — but to satisfy success-criterion 5 ("exchange via files
 /// alone") the on-disk sidecar must follow. Compute the sidecar path from
@@ -1293,6 +1313,7 @@ fn main() {
             create_thread,
             post_reply,
             resolve_thread,
+            delete_thread,
             render_markdown,
             resolve_anchor,
             save_document,
