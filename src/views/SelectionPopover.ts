@@ -16,7 +16,13 @@ export function attachSelectionPopover(
   documentRoot: HTMLElement,
   ipc: Ipc,
   getTabId: () => string,
-  getOffsets: () => { start: number; end: number; exact: string } | null,
+  getOffsets: () => {
+    start: number;
+    end: number;
+    exact: string;
+    prefix?: string;
+    suffix?: string;
+  } | null,
 ): void {
   let popover: HTMLElement | null = null;
   // The composer (stage 2: textarea + Post + Cancel) intentionally
@@ -96,9 +102,20 @@ export function attachSelectionPopover(
       post.setAttribute('data-action', 'post-comment');
       post.textContent = 'Post';
       post.addEventListener('click', async () => {
+        // Use the prefix/suffix captured from the source by Document's
+        // offsetsFromSelection — these carry up-to-32 chars of context that
+        // the Rust-side resolver uses to disambiguate when `exact` appears
+        // more than once in the document. Falls back to empty strings for
+        // the legacy test path that doesn't supply them.
         const thread = await ipc.createThread(
           getTabId(),
-          { ...offsets, prefix: '', suffix: '' },
+          {
+            start: offsets.start,
+            end: offsets.end,
+            exact: offsets.exact,
+            prefix: offsets.prefix ?? '',
+            suffix: offsets.suffix ?? '',
+          },
           ta.value,
         );
         documentRoot.dispatchEvent(

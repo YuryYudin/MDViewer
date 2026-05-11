@@ -91,6 +91,10 @@ export interface Ipc {
   createThread(tabId: string, anchor: Anchor, body: string): Promise<Thread>;
   postReply(tabId: string, threadId: string, body: string): Promise<void>;
   resolveThread(tabId: string, threadId: string): Promise<void>;
+  /** Drop a thread (and its comments) from the sidecar. Used by the
+   *  orphan-list "Delete" affordance; the on-disk sidecar is rewritten
+   *  before the promise resolves. */
+  deleteThread(tabId: string, threadId: string): Promise<void>;
   renderMarkdown(source: string): Promise<RenderResult>;
   resolveAnchor(tabId: string, anchor: Anchor): Promise<ResolveOutcome>;
   /**
@@ -209,6 +213,7 @@ export const tauriIpc: Ipc = {
   // here — keep it.
   postReply: (tabId, threadId, body) => invoke('post_reply', { tabId, threadId, body }),
   resolveThread: (tabId, threadId) => invoke('resolve_thread', { tabId, threadId }),
+  deleteThread: (tabId, threadId) => invoke('delete_thread', { tabId, threadId }),
   renderMarkdown: (source) => invoke('render_markdown', { source }),
   resolveAnchor: (tabId, anchor) => invoke('resolve_anchor', { tabId, anchor }),
   saveDocument: (tabId, contents) =>

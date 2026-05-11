@@ -338,7 +338,9 @@ export async function mountDocument(
     else void enterView();
   });
 
-  function offsetsFromSelection(): { start: number; end: number; exact: string } | null {
+  function offsetsFromSelection():
+    | { start: number; end: number; exact: string; prefix?: string; suffix?: string }
+    | null {
     const sel = window.getSelection();
     if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return null;
     const range = sel.getRangeAt(0);
@@ -364,6 +366,29 @@ export async function mountDocument(
 
     const start = baseStart + startCharOffset;
     const end = Math.min(baseEnd, baseStart + endCharOffset);
+
+    // Anchor `exact` must be source-markdown bytes, NOT the rendered text:
+    // `sel.toString()` strips markdown syntax (`**bold**` → `bold`, list
+    // markers, heading markers, link syntax, etc.). Phase-1 resolve does a
+    // verbatim substring search against the saved source, so rendered text
+    // misses on any selection crossing inline formatting. Slicing the
+    // source at the offsets we just computed keeps the anchor round-trip-
+    // exact when the document hasn't been edited.
+    //
+    // Prefix/suffix carry up to ~32 chars of source context for the
+    // resolver's disambiguation pass when `exact` appears multiple times.
+    // Falls back to `sel.toString()` when no source is wired in (the
+    // read-only / unit-test mount path that doesn't pass `args.source`).
+    const CONTEXT_LEN = 32;
+    if (currentSource && start >= 0 && end <= currentSource.length && start <= end) {
+      return {
+        start,
+        end,
+        exact: currentSource.slice(start, end),
+        prefix: currentSource.slice(Math.max(0, start - CONTEXT_LEN), start),
+        suffix: currentSource.slice(end, Math.min(currentSource.length, end + CONTEXT_LEN)),
+      };
+    }
     return { start, end, exact: sel.toString() };
   }
 

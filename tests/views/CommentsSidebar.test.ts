@@ -32,9 +32,43 @@ describe('CommentsSidebar', () => {
   it('mounts an empty-state when there are no threads', () => {
     const root = document.createElement('div');
     mountCommentsSidebar(root, ipcStub(), [], { showResolved: false });
-    expect(root.getAttribute('data-view')).toBe('sidebar-comments');
+    // `data-view='sidebar-comments'` now lives on an inner scroll host so the
+    // outer `[data-region='sidebar']` rule's `overflow: hidden` doesn't beat
+    // the inner `overflow: auto` on specificity (see CommentsSidebar.ts).
+    expect(root.querySelector('[data-view="sidebar-comments"]')).toBeTruthy();
     expect(root.querySelector('[data-empty="true"]')).toBeTruthy();
     expect(root.textContent).toContain('No comments');
+  });
+
+  // Regression guard for the "no scrollbar" bug: when `[data-view=
+  // sidebar-comments]` was on the same element as `[data-region=sidebar]`,
+  // the outer selector's `overflow: hidden` beat the inner `overflow: auto`
+  // on specificity and the sidebar silently clipped overflowing content.
+  // The fix mounts a dedicated scroll host as a child; ALL sidebar content
+  // (header, counts, orphans, threads) must live inside it so it actually
+  // becomes the scroll container.
+  it('mounts header, counts, and threads inside the scroll-host child of root', () => {
+    const root = document.createElement('div');
+    mountCommentsSidebar(
+      root,
+      ipcStub(),
+      [thread({ id: 't-a' }), thread({ id: 't-b' })],
+      { showResolved: false, orphans: [thread({ id: 't-orph' })] },
+    );
+    const scrollHost = root.querySelector('[data-view="sidebar-comments"]');
+    expect(scrollHost).toBeTruthy();
+    // The scroll host must be a direct child of root (not root itself) so
+    // the outer-element CSS rule and the inner-content CSS rule apply to
+    // separate nodes.
+    expect(scrollHost!.parentElement).toBe(root);
+    expect(root.children.length).toBe(1);
+    expect(root.firstElementChild).toBe(scrollHost);
+    // Everything the user sees in the sidebar must be inside the scroll
+    // host so that scroll host's `overflow: auto` actually scrolls it.
+    expect(scrollHost!.querySelector('[data-region="sidebar-header"]')).toBeTruthy();
+    expect(scrollHost!.querySelector('[data-region="thread-counts"]')).toBeTruthy();
+    expect(scrollHost!.querySelector('[data-region="orphans"]')).toBeTruthy();
+    expect(scrollHost!.querySelectorAll('[data-test="thread"]').length).toBe(2);
   });
 
   it('renders one entry per visible thread with the first comment body', () => {
@@ -180,9 +214,13 @@ describe('CommentsSidebar', () => {
       expect(orphans).toBeTruthy();
       expect(orphans!.querySelector('[data-orphan-id="t-orph"]')).toBeTruthy();
       // Orphan region must precede the regular thread items in DOM order.
-      const orphanIdx = Array.from(root.children).indexOf(orphans as Element);
+      // Everything is mounted inside the `[data-view='sidebar-comments']`
+      // scroll host (so the parent's `overflow: hidden` doesn't suppress
+      // scrolling), so traverse one level down.
+      const scrollHost = root.querySelector('[data-view="sidebar-comments"]') as Element;
+      const orphanIdx = Array.from(scrollHost.children).indexOf(orphans as Element);
       const firstThread = root.querySelector('[data-test="thread"]') as Element;
-      const threadIdx = Array.from(root.children).indexOf(firstThread);
+      const threadIdx = Array.from(scrollHost.children).indexOf(firstThread);
       expect(orphanIdx).toBeLessThan(threadIdx);
     });
 

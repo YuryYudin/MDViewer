@@ -51,6 +51,7 @@ function makeIpc(openIds: string[] = []): Ipc {
     createThread: vi.fn(),
     postReply: vi.fn(),
     resolveThread: vi.fn(),
+    deleteThread: vi.fn().mockResolvedValue(undefined),
     appInfo: vi.fn().mockResolvedValue({ version: '0.0.0', commit_hash: 'unit' }),
     renderMarkdown: vi.fn(),
     resolveAnchor: vi.fn().mockResolvedValue({ kind: 'orphan' }),
@@ -172,6 +173,84 @@ describe('Workspace', () => {
     expect(ipc.openDocument).toHaveBeenCalledWith('/docs/t-b.md');
     expect(root.querySelector('[data-test="doc-marker"]')!.textContent).toBe('t-b content');
 
+    document.body.removeChild(root);
+  });
+
+  // Regression guard for the orphan-delete wiring. Previously
+  // `OrphanComments` dispatched a bubbling `mdviewer:delete-thread` event
+  // and called `onDeleteOrphan?.(id)`, but `Workspace` never supplied
+  // `onDeleteOrphan` and nothing listened for the bubbling event, so the
+  // Delete button confirmed and then silently did nothing. This test
+  // drives the full wire end-to-end: mount workspace → seed an orphaned
+  // thread → click Delete → assert `ipc.deleteThread` was called with
+  // the right (tabId, threadId) and that the sidebar refreshed.
+  it('clicking Delete on an orphan calls ipc.deleteThread and refreshes the sidebar', async () => {
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+
+    const orphanedThread = {
+      id: 'thr-orph',
+      anchor: { start: 0, end: 5, exact: 'Hello', prefix: '', suffix: '' },
+      comments: [
+        {
+          id: 'c-1',
+          author: 'U',
+          color: '#000',
+          body: 'note',
+          created_at: '2026-04-28T00:00:00Z',
+        },
+      ],
+      resolved: false,
+      resolved_at: null,
+      resolved_by: null,
+    };
+
+    const ipc = makeIpc(['t1']);
+    // Seed the post-refresh thread list — after delete, the sidebar's
+    // `refreshThreads` will call listThreads again. We toggle the return
+    // value after deleteThread fires so the second call returns [].
+    let threadsAfterDelete: typeof orphanedThread[] = [orphanedThread];
+    (ipc.listThreads as any).mockImplementation(async () => threadsAfterDelete);
+    (ipc.deleteThread as any).mockImplementation(async () => {
+      threadsAfterDelete = [];
+    });
+    // `resolveAnchor` already returns `{ kind: 'orphan' }` in the fixture,
+    // so the thread automatically lands in the orphan bucket.
+
+    // OrphanComments uses window.confirm() — auto-accept so the click
+    // proceeds to onDeleteOrphan.
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    const handle = await mountWorkspace(root, ipc);
+    handle.setActive({
+      kind: 'document',
+      tab_id: 't1',
+      path: '/docs/x.md',
+      html: '<p><span data-src-offset="0" data-src-end="5">Hello</span></p>',
+      threads: [orphanedThread],
+    });
+    await handle.refresh();
+    // mountDocument awaits resolveAnchor for each thread, then calls
+    // onOrphansChanged which re-mounts the sidebar with the orphan card.
+    // Give the microtask queue a couple of ticks to settle.
+    await new Promise((r) => setTimeout(r, 30));
+
+    const orphanCard = root.querySelector('[data-orphan-id="thr-orph"]');
+    expect(orphanCard).toBeTruthy();
+    const deleteBtn = orphanCard!.querySelector(
+      '[data-action="delete"]',
+    ) as HTMLButtonElement;
+    deleteBtn.click();
+    // Wait for confirm → ipc.deleteThread → refreshThreads chain.
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(ipc.deleteThread).toHaveBeenCalledWith('t1', 'thr-orph');
+    // Refresh fired — the second listThreads call landed (the first was
+    // the initial mount, the second is post-delete).
+    expect((ipc.listThreads as any).mock.calls.length).toBeGreaterThanOrEqual(2);
+
+    confirmSpy.mockRestore();
     document.body.removeChild(root);
   });
 

@@ -88,6 +88,95 @@ describe('Document', () => {
     expect(offsets).toEqual({ start: 0, end: 5, exact: 'Hello' });
   });
 
+  // Regression guard for the orphan-on-long-selection bug. The anchor's
+  // `exact` must be derived from the source markdown bytes between `start`
+  // and `end` — not from `sel.toString()`, which returns rendered text
+  // with markdown syntax stripped (`**bold**` → `bold`, list bullets gone,
+  // heading markers gone, etc.). For any selection crossing a formatted
+  // span, `sel.toString()` ≠ source bytes, so the resolver's Phase-1
+  // verbatim substring search misses and the thread lands as orphan.
+  //
+  // We also verify `prefix` / `suffix` are populated from the source
+  // around the selection — those were previously hard-coded to '' in
+  // SelectionPopover, defeating the resolver's disambiguation pass when
+  // the same `exact` appears multiple times in the document.
+  it('captures exact/prefix/suffix from source bytes, not rendered text', async () => {
+    // The renderer emits a data-src-offset span pointing into the source
+    // markdown's "Hello world" region (offsets 2..13), which sits between
+    // the surrounding `**` bold markers. The rendered text inside the
+    // span happens to equal the source slice ("Hello world"), but the
+    // prefix/suffix only show the difference: source has the markers,
+    // rendered DOM does not.
+    const source = '**Hello world**';
+    const formattedHtml =
+      '<p><strong><span data-src-offset="2" data-src-end="13">Hello world</span></strong></p>';
+    const root = makeRoot();
+    const view = await mountDocument(root, ipc(), {
+      tabId: 't',
+      html: formattedHtml,
+      threads: [],
+      source,
+      path: '/x.md',
+      settings: settings(),
+    });
+    const span = root.querySelector('[data-src-offset="2"]')!;
+    const textNode = span.firstChild as Text;
+    const range = document.createRange();
+    range.setStart(textNode, 0);
+    range.setEnd(textNode, textNode.data.length);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    const offsets = view.currentSelectionOffsets()!;
+    expect(offsets.start).toBe(2);
+    expect(offsets.end).toBe(13);
+    expect(offsets.exact).toBe('Hello world');
+    // `prefix` / `suffix` come from the source — they carry the markdown
+    // markers the renderer stripped, which is exactly the context the
+    // resolver needs to disambiguate repeated quotes.
+    expect(offsets.prefix).toBe('**');
+    expect(offsets.suffix).toBe('**');
+  });
+
+  // Round-trip regression: an anchor built from `currentSelectionOffsets`
+  // against a source containing markdown formatting MUST be resolvable
+  // by the verbatim-substring code path on the Rust side. If we ever
+  // reintroduce `sel.toString()` as the source of `exact`, this test
+  // fails because the rendered text isn't a substring of the source.
+  it('anchor captured from formatted source is found verbatim in source', async () => {
+    const source = '**Hello world**';
+    const formattedHtml =
+      '<p><strong><span data-src-offset="2" data-src-end="13">Hello world</span></strong></p>';
+    const root = makeRoot();
+    const view = await mountDocument(root, ipc(), {
+      tabId: 't',
+      html: formattedHtml,
+      threads: [],
+      source,
+      path: '/x.md',
+      settings: settings(),
+    });
+    const span = root.querySelector('[data-src-offset="2"]')!;
+    const textNode = span.firstChild as Text;
+    const range = document.createRange();
+    range.setStart(textNode, 0);
+    range.setEnd(textNode, textNode.data.length);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    const offsets = view.currentSelectionOffsets()!;
+    // Mimic what the Rust verbatim resolver does: locate `exact` in the
+    // source. Before the fix this would have been `Hello world` from
+    // rendered text — still inside this source, but in a real doc with
+    // any markdown inside the selection the rendered text wouldn't
+    // appear verbatim.
+    expect(source.includes(offsets.exact)).toBe(true);
+    // Stronger guarantee: `exact` lives at exactly [start, end].
+    expect(source.slice(offsets.start, offsets.end)).toBe(offsets.exact);
+  });
+
   it('paints highlights for threads loaded from the sidecar', async () => {
     // Phase-1 success criterion 5 verification at the view layer. The inline
     // <span> is what carries data-src-offset/data-src-end (block <p> does not).

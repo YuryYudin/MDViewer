@@ -87,6 +87,10 @@ pub enum ChangeEvent {
     ThreadCreated,
     ReplyPosted,
     ThreadResolved,
+    /// Emitted when `delete_thread` removes a thread. Subscribers should
+    /// drop the matching id from their views; the orphan-list path uses
+    /// this to remove a card after the user confirms deletion.
+    ThreadDeleted,
     /// Emitted on bulk replacement (e.g. when sidecar.rs accepts a newer
     /// incoming sidecar via auto-merge `Always`). Subscribers redraw.
     Bulk,
@@ -239,6 +243,26 @@ impl CommentsStore {
         t.resolved_at = None;
         t.resolved_by = None;
         self.emit(ChangeEvent::ThreadResolved);
+        Ok(())
+    }
+
+    /// Remove a thread by id. Used by the orphan-list "Delete" affordance
+    /// (wireframe 09): when the resolver can't reattach an anchor after a
+    /// document edit, the user can either Relocate, Keep, or Delete the
+    /// orphaned thread. Delete is the only path that actually drops the
+    /// stored entry — Keep is a session-only UI hint and Relocate
+    /// rewrites the anchor without removing the thread.
+    ///
+    /// Returns `Err("thread not found")` rather than silently succeeding
+    /// so the IPC layer can surface a stale-id race (e.g. another tab
+    /// deleted the same thread between sidecar reloads).
+    pub fn delete_thread(&mut self, thread_id: &str) -> Result<(), &'static str> {
+        let before = self.threads.len();
+        self.threads.retain(|t| t.id != thread_id);
+        if self.threads.len() == before {
+            return Err("thread not found");
+        }
+        self.emit(ChangeEvent::ThreadDeleted);
         Ok(())
     }
 
