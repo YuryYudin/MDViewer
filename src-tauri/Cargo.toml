@@ -54,7 +54,7 @@ anyhow = "1"
 thiserror = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-ts-rs = "8"
+ts-rs = "12"
 toml = "0.8"
 notify = "6"
 # base64 + similar are still used directly by drive/keyring.rs and

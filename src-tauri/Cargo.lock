@@ -3161,26 +3161,23 @@ checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
 
 [[package]]
 name = "mdviewer"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
- "automerge",
  "base64 0.22.1",
  "criterion",
- "diff-match-patch-rs",
  "getrandom 0.2.17",
  "keyring",
+ "mdviewer-core",
  "notify",
  "oauth2",
  "pretty_assertions",
- "pulldown-cmark",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
  "serial_test",
  "sha2",
  "similar",
- "syntect",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
@@ -3196,10 +3193,27 @@ dependencies = [
  "toml 0.8.2",
  "tracing",
  "tracing-subscriber",
- "ts-rs",
+ "ts-rs 12.0.1",
  "url",
  "urlencoding",
  "walkdir",
+]
+
+[[package]]
+name = "mdviewer-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "automerge",
+ "base64 0.22.1",
+ "diff-match-patch-rs",
+ "pulldown-cmark",
+ "serde",
+ "serde_json",
+ "similar",
+ "syntect",
+ "thiserror 1.0.69",
+ "ts-rs 8.1.0",
 ]
 
 [[package]]
@@ -6531,7 +6545,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09d3fa4606cdab1e9b668cc65ce2545941d01f52bc27536a195c66c55b91cb84"
 dependencies = [
  "thiserror 1.0.69",
- "ts-rs-macros",
+ "ts-rs-macros 8.1.0",
+]
+
+[[package]]
+name = "ts-rs"
+version = "12.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "756050066659291d47a554a9f558125db17428b073c5ffce1daf5dcb0f7231d8"
+dependencies = [
+ "thiserror 2.0.18",
+ "ts-rs-macros 12.0.1",
 ]
 
 [[package]]
@@ -6541,6 +6565,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f86ae36cbb2d58b86677ad413054feeb0712e382e822131cf9a4a1e580c419b5"
 dependencies = [
  "Inflector",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+ "termcolor",
+]
+
+[[package]]
+name = "ts-rs-macros"
+version = "12.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38d90eea51bc7988ef9e674bf80a85ba6804739e535e9cab48e4bb34a8b652aa"
+dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
