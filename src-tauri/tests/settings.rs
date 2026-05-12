@@ -15,7 +15,11 @@ fn defaults_match_design() {
     let s = store.get();
     assert_eq!(s.appearance.theme, Theme::FollowSystem);
     assert_eq!(s.appearance.font_size_px, 14);
-    assert_eq!(s.editor.default_open_mode, "view");
+    // A.3 (WYSIWYG editing, Phase 1): fresh installs default to "render"
+    // (the new editable render surface). Legacy "view" / "edit" values are
+    // migrated reader-side — covered by tests/settings_migration.rs.
+    assert_eq!(s.editor.default_open_mode, "render");
+    assert!(!s.editor.render_readonly);
     assert!(s.editor.auto_save);
     assert_eq!(s.editor.auto_save_debounce_ms, 750);
     assert_eq!(s.editor.external_change_behavior, ExternalChangeBehavior::Ask);

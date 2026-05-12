@@ -149,10 +149,22 @@ pub struct AppearanceSettings {
     pub dark_variant: DarkVariant,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
+/// A.3 (WYSIWYG editing, Phase 1): `default_open_mode` now lives in the
+/// `{ "render" | "raw" }` space; the legacy `{ "view" | "edit" }` values
+/// are accepted on read via the custom `Deserialize` impl below (which
+/// silently rewrites them in-memory, behaviour-preservingly). The writer
+/// (derived `Serialize`) ALWAYS emits the new values — the next
+/// user-initiated `setSettings` flushes the migrated value to disk.
+///
+/// `render_readonly` (Phase 1) opt-out: defaults to `false` for fresh
+/// installs; the deserializer flips it to `true` when it encounters a
+/// legacy `"view"` value (the user's effective surface was non-editable
+/// pre-WYSIWYG and the migration must preserve that until the user
+/// explicitly turns the toggle off).
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, ts_rs::TS)]
 #[ts(export)]
 pub struct EditorSettings {
-    pub default_open_mode: String, // "view" | "edit"
+    pub default_open_mode: String, // "render" | "raw" (legacy "view" / "edit" silently mapped on read)
     pub auto_save: bool,
     pub auto_save_debounce_ms: u32,
     pub external_change_behavior: ExternalChangeBehavior,
@@ -160,6 +172,103 @@ pub struct EditorSettings {
     pub mermaid_enabled: bool,
     pub show_whitespace: bool,
     pub word_wrap: bool,
+    /// Phase 1 opt-out: when `true`, the render surface is non-editable.
+    /// Fresh installs get `false` (editable render is the new default).
+    /// The reader-side migration flips this to `true` for users whose
+    /// pre-WYSIWYG `default_open_mode` was `"view"`.
+    #[serde(default)]
+    pub render_readonly: bool,
+}
+
+impl Default for EditorSettings {
+    /// Fresh-install defaults. Emits `"render"` and `render_readonly = false`
+    /// DIRECTLY — fresh installs MUST NOT pass through the legacy-value
+    /// migration code path in `Deserialize`.
+    fn default() -> Self {
+        EditorSettings {
+            default_open_mode: "render".into(),
+            auto_save: true,
+            auto_save_debounce_ms: 750,
+            external_change_behavior: ExternalChangeBehavior::Ask,
+            syntax_highlighting: true,
+            mermaid_enabled: true,
+            show_whitespace: false,
+            word_wrap: true,
+            render_readonly: false,
+        }
+    }
+}
+
+/// Reader-side migration for `editor.default_open_mode`.
+///
+/// We deserialize through a private mirror struct that lets us inspect both
+/// `default_open_mode` and `render_readonly` together, then apply the
+/// behaviour-preserving rewrites from Key Decision 7 of the WYSIWYG design:
+///
+///   - `"view"` → `("render", render_readonly=true)` — the pre-WYSIWYG
+///     "view" surface was non-editable, so migrating to plain "render"
+///     would silently make the document editable. Flipping
+///     `render_readonly = true` preserves the effective behaviour until
+///     the user explicitly opts in to editing (via the Settings toggle).
+///   - `"edit"` → `"raw"` — both are editable; no companion-field flip
+///     needed. We preserve whatever `render_readonly` the user supplied.
+///   - `"render"` / `"raw"` → pass through unchanged (steady state).
+///   - Any other value → pass through unchanged (forward-compat for
+///     unknown future values + typo tolerance; the frontend's TS union
+///     narrows acceptable values for the UI).
+///
+/// The migration is reader-only: we never rewrite settings.toml from
+/// `SettingsStore::open()`. The new values land on disk only when the
+/// user issues their next IPC-driven `setSettings` (which flows through
+/// `update()` and re-serializes the in-memory snapshot — whose
+/// `default_open_mode` will already carry the migrated value).
+impl<'de> Deserialize<'de> for EditorSettings {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawEditorSettings {
+            default_open_mode: String,
+            auto_save: bool,
+            auto_save_debounce_ms: u32,
+            external_change_behavior: ExternalChangeBehavior,
+            syntax_highlighting: bool,
+            mermaid_enabled: bool,
+            show_whitespace: bool,
+            word_wrap: bool,
+            #[serde(default)]
+            render_readonly: bool,
+        }
+
+        let raw = RawEditorSettings::deserialize(deserializer)?;
+        let (default_open_mode, render_readonly) = match raw.default_open_mode.as_str() {
+            // Behaviour-preserving migration: "view" was the read-only
+            // surface, so we set render_readonly = true as we map to
+            // "render". This is the SOLE place where the deserializer
+            // flips render_readonly from its serde default — the user's
+            // explicit `render_readonly = true` on a non-"view" mode
+            // passes through untouched (see the `"edit"` branch).
+            "view" => ("render".to_string(), true),
+            // "edit" was editable; "raw" is editable. No companion flip;
+            // the user's render_readonly choice (if any) is preserved.
+            "edit" => ("raw".to_string(), raw.render_readonly),
+            // Steady-state values and unknown future values pass through.
+            other => (other.to_string(), raw.render_readonly),
+        };
+
+        Ok(EditorSettings {
+            default_open_mode,
+            auto_save: raw.auto_save,
+            auto_save_debounce_ms: raw.auto_save_debounce_ms,
+            external_change_behavior: raw.external_change_behavior,
+            syntax_highlighting: raw.syntax_highlighting,
+            mermaid_enabled: raw.mermaid_enabled,
+            show_whitespace: raw.show_whitespace,
+            word_wrap: raw.word_wrap,
+            render_readonly,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
@@ -326,16 +435,12 @@ impl Default for Settings {
                 startup_mode: StartupMode::default(),
                 dark_variant: DarkVariant::default(),
             },
-            editor: EditorSettings {
-                default_open_mode: "view".into(),
-                auto_save: true,
-                auto_save_debounce_ms: 750,
-                external_change_behavior: ExternalChangeBehavior::Ask,
-                syntax_highlighting: true,
-                mermaid_enabled: true,
-                show_whitespace: false,
-                word_wrap: true,
-            },
+            // A.3: delegate to `EditorSettings::default()` so the
+            // "render"/render_readonly=false fresh-install pair lives in
+            // exactly one place. Crucially, this path does NOT pass
+            // through the legacy-value reader migration — `Default::default`
+            // is a direct struct literal, not a serde deserialize.
+            editor: EditorSettings::default(),
             comments: CommentsSettings {
                 auto_merge: AutoMergeMode::Always,
                 reattachment_confidence: 75,
