@@ -310,6 +310,274 @@ describe('LiveEditor', () => {
     });
   });
 
+  describe('onSaved callback', () => {
+    it('fires exactly once per save after the per-thread onAnchorsResolved pump', async () => {
+      vi.useFakeTimers();
+      const root = makeRoot();
+      const ipc = makeIpc();
+      const callOrder: string[] = [];
+      const threads = [
+        makeThread('th-1', 0, 4, 'hell'),
+        makeThread('th-2', 4, 5, 'o'),
+      ];
+      const onAnchorsResolved = vi.fn((threadId: string) => {
+        callOrder.push(`anchors:${threadId}`);
+      });
+      const onSaved = vi.fn((path: string) => {
+        callOrder.push(`saved:${path}`);
+      });
+      const view = mountLiveEditor(root, ipc as never, {
+        tabId: 't',
+        path: '/tmp/a.md',
+        source: 'hello',
+        settings: makeSettings({ auto_save_debounce_ms: 50 }),
+        threads,
+        onAnchorsResolved,
+        onSaved,
+      });
+      typeInto(view, '!');
+      vi.advanceTimersByTime(50);
+      // Drain the await chain: saveDocument -> resolveAnchor (per thread) -> onSaved.
+      for (let i = 0; i < 12; i++) await Promise.resolve();
+      // onAnchorsResolved fires N times (one per thread).
+      expect(onAnchorsResolved).toHaveBeenCalledTimes(2);
+      // onSaved fires exactly once, with the document path.
+      expect(onSaved).toHaveBeenCalledTimes(1);
+      expect(onSaved).toHaveBeenCalledWith('/tmp/a.md');
+      // Ordering: every onAnchorsResolved call lands BEFORE onSaved.
+      expect(callOrder).toEqual(['anchors:th-1', 'anchors:th-2', 'saved:/tmp/a.md']);
+      view.destroy();
+    });
+
+    it('fires onSaved once per save even when there are zero threads (after empty anchor pump)', async () => {
+      vi.useFakeTimers();
+      const root = makeRoot();
+      const ipc = makeIpc();
+      const onSaved = vi.fn();
+      const view = mountLiveEditor(root, ipc as never, {
+        tabId: 't',
+        path: '/tmp/empty.md',
+        source: 'x',
+        settings: makeSettings({ auto_save_debounce_ms: 25 }),
+        threads: [],
+        onSaved,
+      });
+      typeInto(view, 'y');
+      vi.advanceTimersByTime(25);
+      for (let i = 0; i < 8; i++) await Promise.resolve();
+      expect(onSaved).toHaveBeenCalledTimes(1);
+      expect(onSaved).toHaveBeenCalledWith('/tmp/empty.md');
+      view.destroy();
+    });
+
+    it('fires onSaved on every successful save (twice for two save cycles)', async () => {
+      vi.useFakeTimers();
+      const root = makeRoot();
+      const ipc = makeIpc();
+      const onSaved = vi.fn();
+      const view = mountLiveEditor(root, ipc as never, {
+        tabId: 't',
+        path: '/tmp/multi.md',
+        source: '',
+        settings: makeSettings({ auto_save_debounce_ms: 20 }),
+        threads: [],
+        onSaved,
+      });
+      typeInto(view, 'a');
+      vi.advanceTimersByTime(20);
+      for (let i = 0; i < 8; i++) await Promise.resolve();
+      typeInto(view, 'b');
+      vi.advanceTimersByTime(20);
+      for (let i = 0; i < 8; i++) await Promise.resolve();
+      expect(onSaved).toHaveBeenCalledTimes(2);
+      view.destroy();
+    });
+
+    it('does NOT fire onSaved when the view is destroyed mid-save', async () => {
+      vi.useFakeTimers();
+      const root = makeRoot();
+      let resolveSave: ((v: unknown) => void) | undefined;
+      const ipc = makeIpc({
+        saveDocument: vi.fn().mockImplementation(
+          () =>
+            new Promise((resolve) => {
+              resolveSave = resolve;
+            }),
+        ),
+      });
+      const onSaved = vi.fn();
+      const view = mountLiveEditor(root, ipc as never, {
+        tabId: 't',
+        path: '/tmp/a.md',
+        source: 'hello',
+        settings: makeSettings({ auto_save_debounce_ms: 30 }),
+        threads: [],
+        onSaved,
+      });
+      typeInto(view, '!');
+      vi.advanceTimersByTime(30);
+      view.destroy();
+      resolveSave!({ kind: 'ok', etag: null });
+      for (let i = 0; i < 8; i++) await Promise.resolve();
+      // destroy short-circuits the post-save path; onSaved must not fire.
+      expect(onSaved).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('subscribeMode', () => {
+    it('fires synchronously with the current mode on subscription', () => {
+      const root = makeRoot();
+      const ipc = makeIpc();
+      const view = mountLiveEditor(root, ipc as never, {
+        tabId: 't',
+        path: '/tmp/a.md',
+        source: '',
+        settings: makeSettings(),
+        threads: [],
+      });
+      const calls: Array<'render' | 'raw'> = [];
+      // The push must happen INSIDE the call to subscribeMode — i.e.
+      // before subscribeMode returns. We assert that by reading calls
+      // immediately after the synchronous expression.
+      view.subscribeMode((m) => calls.push(m));
+      expect(calls).toEqual(['render']);
+      view.destroy();
+    });
+
+    it('fires synchronously with the current mode when mounted with initialMode="raw"', () => {
+      const root = makeRoot();
+      const ipc = makeIpc();
+      const view = mountLiveEditor(root, ipc as never, {
+        tabId: 't',
+        path: '/tmp/a.md',
+        source: '',
+        settings: makeSettings(),
+        threads: [],
+        initialMode: 'raw',
+      });
+      const calls: Array<'render' | 'raw'> = [];
+      view.subscribeMode((m) => calls.push(m));
+      expect(calls).toEqual(['raw']);
+      view.destroy();
+    });
+
+    it('notifies on every mode change via setMode', () => {
+      const root = makeRoot();
+      const ipc = makeIpc();
+      const view = mountLiveEditor(root, ipc as never, {
+        tabId: 't',
+        path: '/tmp/a.md',
+        source: '',
+        settings: makeSettings(),
+        threads: [],
+      });
+      const calls: Array<'render' | 'raw'> = [];
+      view.subscribeMode((m) => calls.push(m));
+      expect(calls).toEqual(['render']);
+      view.setMode('raw');
+      expect(calls).toEqual(['render', 'raw']);
+      view.setMode('render');
+      expect(calls).toEqual(['render', 'raw', 'render']);
+      view.destroy();
+    });
+
+    it('returns an unsubscribe function that stops further notifications', () => {
+      const root = makeRoot();
+      const ipc = makeIpc();
+      const view = mountLiveEditor(root, ipc as never, {
+        tabId: 't',
+        path: '/tmp/a.md',
+        source: '',
+        settings: makeSettings(),
+        threads: [],
+      });
+      const calls: Array<'render' | 'raw'> = [];
+      const unsub = view.subscribeMode((m) => calls.push(m));
+      view.setMode('raw');
+      expect(calls).toEqual(['render', 'raw']);
+      unsub();
+      view.setMode('render');
+      view.setMode('raw');
+      expect(calls).toEqual(['render', 'raw']);
+      view.destroy();
+    });
+
+    it('isolates a throwing subscriber from later subscribers AND from the dispatch path', () => {
+      const root = makeRoot();
+      const ipc = makeIpc();
+      const view = mountLiveEditor(root, ipc as never, {
+        tabId: 't',
+        path: '/tmp/a.md',
+        source: '',
+        settings: makeSettings(),
+        threads: [],
+      });
+      const good: Array<'render' | 'raw'> = [];
+      // First subscriber throws on every invocation, including the
+      // synchronous initial fire. Second subscriber must still see
+      // the full sequence.
+      view.subscribeMode(() => {
+        throw new Error('boom');
+      });
+      view.subscribeMode((m) => good.push(m));
+      expect(good).toEqual(['render']);
+      // setMode dispatches must not be aborted by the throwing
+      // subscriber — the good subscriber receives the change.
+      expect(() => view.setMode('raw')).not.toThrow();
+      expect(good).toEqual(['render', 'raw']);
+      view.destroy();
+    });
+
+    it('swallows a throwing onSaved callback without breaking the save promise', async () => {
+      vi.useFakeTimers();
+      const root = makeRoot();
+      const ipc = makeIpc();
+      const onSaved = vi.fn(() => {
+        throw new Error('onSaved boom');
+      });
+      const view = mountLiveEditor(root, ipc as never, {
+        tabId: 't',
+        path: '/tmp/a.md',
+        source: '',
+        settings: makeSettings({ auto_save_debounce_ms: 20 }),
+        threads: [],
+        onSaved,
+      });
+      typeInto(view, 'x');
+      vi.advanceTimersByTime(20);
+      // Drain the save chain. The throw inside onSaved must not
+      // surface as an unhandled rejection.
+      for (let i = 0; i < 8; i++) await Promise.resolve();
+      expect(onSaved).toHaveBeenCalledTimes(1);
+      // Save still completed normally.
+      expect(ipc.saveDocument).toHaveBeenCalledTimes(1);
+      view.destroy();
+    });
+
+    it('supports multiple subscribers — each gets the full sequence independently', () => {
+      const root = makeRoot();
+      const ipc = makeIpc();
+      const view = mountLiveEditor(root, ipc as never, {
+        tabId: 't',
+        path: '/tmp/a.md',
+        source: '',
+        settings: makeSettings(),
+        threads: [],
+      });
+      const a: Array<'render' | 'raw'> = [];
+      const b: Array<'render' | 'raw'> = [];
+      view.subscribeMode((m) => a.push(m));
+      view.subscribeMode((m) => b.push(m));
+      // Both received the initial synchronous fire.
+      expect(a).toEqual(['render']);
+      expect(b).toEqual(['render']);
+      view.setMode('raw');
+      expect(a).toEqual(['render', 'raw']);
+      expect(b).toEqual(['render', 'raw']);
+      view.destroy();
+    });
+  });
+
   describe('post-save re-anchor', () => {
     it('calls ipc.resolveAnchor once per thread after a successful save and invokes onAnchorsResolved', async () => {
       vi.useFakeTimers();
@@ -633,6 +901,71 @@ describe('LiveEditor', () => {
       view.destroy();
     });
 
+    it('setLiveEditorSelection dispatches a bubbling mouseup on contentDOM AFTER applying the selection transaction', async () => {
+      (window as unknown as Record<string, unknown>).__WEBDRIVER__ = true;
+      const root = makeRoot();
+      const ipc = makeIpc();
+      const view = mountLiveEditor(root, ipc as never, {
+        tabId: 't',
+        path: '/tmp/a.md',
+        source: 'hello world',
+        settings: makeSettings(),
+        threads: [],
+      });
+      const observed: Array<{ kind: 'mouseup'; bubbles: boolean; from: number; to: number }> = [];
+      view.editorView.contentDOM.addEventListener('mouseup', (e) => {
+        const sel = view.editorView.state.selection.main;
+        observed.push({
+          kind: 'mouseup',
+          bubbles: e.bubbles,
+          from: sel.from,
+          to: sel.to,
+        });
+      });
+      const setSel = (window as unknown as {
+        __mdviewerE2E: { setLiveEditorSelection: (s: number, e: number) => Promise<void> };
+      }).__mdviewerE2E.setLiveEditorSelection;
+      await setSel(2, 5);
+      // mouseup fired exactly once, bubbles=true, and at the moment of
+      // the listener the selection transaction had already applied.
+      expect(observed).toHaveLength(1);
+      expect(observed[0]).toEqual({
+        kind: 'mouseup',
+        bubbles: true,
+        from: 2,
+        to: 5,
+      });
+      view.destroy();
+    });
+
+    it('setLiveEditorSelection mouseup target is the editor view contentDOM (the .cm-content element)', async () => {
+      (window as unknown as Record<string, unknown>).__WEBDRIVER__ = true;
+      const root = makeRoot();
+      const ipc = makeIpc();
+      const view = mountLiveEditor(root, ipc as never, {
+        tabId: 't',
+        path: '/tmp/a.md',
+        source: 'abcdef',
+        settings: makeSettings(),
+        threads: [],
+      });
+      const targets: EventTarget[] = [];
+      view.editorView.contentDOM.addEventListener('mouseup', (e) => {
+        targets.push(e.target as EventTarget);
+      });
+      const setSel = (window as unknown as {
+        __mdviewerE2E: { setLiveEditorSelection: (s: number, e: number) => Promise<void> };
+      }).__mdviewerE2E.setLiveEditorSelection;
+      await setSel(1, 1);
+      expect(targets).toHaveLength(1);
+      // The event was dispatched ON the contentDOM (so target === contentDOM
+      // because no inner element was synthesised). The contentDOM carries
+      // the cm-content class.
+      expect(view.editorView.contentDOM.classList.contains('cm-content')).toBe(true);
+      expect(targets[0]).toBe(view.editorView.contentDOM);
+      view.destroy();
+    });
+
     it('setLiveEditorSelection and typeIntoLiveEditor are no-ops after destroy()', async () => {
       (window as unknown as Record<string, unknown>).__WEBDRIVER__ = true;
       const root = makeRoot();
@@ -657,6 +990,89 @@ describe('LiveEditor', () => {
       await expect(setSel(0, 2)).resolves.toBeUndefined();
       await expect(typeIn('Q')).resolves.toBeUndefined();
       expect(ipc.saveDocument).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('WEBDRIVER getLiveEditorSource hook', () => {
+    it('attaches window.__mdviewerE2E.getLiveEditorSource when __WEBDRIVER__ is truthy and returns the initial doc', () => {
+      (window as unknown as Record<string, unknown>).__WEBDRIVER__ = true;
+      const root = makeRoot();
+      const ipc = makeIpc();
+      const view = mountLiveEditor(root, ipc as never, {
+        tabId: 't',
+        path: '/tmp/a.md',
+        source: '# title\n\nbody',
+        settings: makeSettings(),
+        threads: [],
+      });
+      const getSrc = (window as unknown as {
+        __mdviewerE2E: { getLiveEditorSource: () => string };
+      }).__mdviewerE2E.getLiveEditorSource;
+      expect(typeof getSrc).toBe('function');
+      expect(getSrc()).toBe('# title\n\nbody');
+      view.destroy();
+    });
+
+    it('getLiveEditorSource reflects edits made after mount', () => {
+      (window as unknown as Record<string, unknown>).__WEBDRIVER__ = true;
+      const root = makeRoot();
+      const ipc = makeIpc();
+      const view = mountLiveEditor(root, ipc as never, {
+        tabId: 't',
+        path: '/tmp/a.md',
+        source: 'abc',
+        settings: makeSettings(),
+        threads: [],
+      });
+      const getSrc = (window as unknown as {
+        __mdviewerE2E: { getLiveEditorSource: () => string };
+      }).__mdviewerE2E.getLiveEditorSource;
+      expect(getSrc()).toBe('abc');
+      // Insert at the start.
+      view.editorView.dispatch({
+        changes: { from: 0, insert: 'XX-' },
+      });
+      expect(getSrc()).toBe('XX-abc');
+      view.destroy();
+    });
+
+    it('does NOT attach getLiveEditorSource when __WEBDRIVER__ is falsy', () => {
+      const root = makeRoot();
+      const ipc = makeIpc();
+      const view = mountLiveEditor(root, ipc as never, {
+        tabId: 't',
+        path: '/tmp/a.md',
+        source: '',
+        settings: makeSettings(),
+        threads: [],
+      });
+      const e2e = (window as unknown as {
+        __mdviewerE2E?: { getLiveEditorSource?: () => string };
+      }).__mdviewerE2E;
+      expect(e2e?.getLiveEditorSource).toBeUndefined();
+      view.destroy();
+    });
+
+    it('destroy() removes the getLiveEditorSource slot', () => {
+      (window as unknown as Record<string, unknown>).__WEBDRIVER__ = true;
+      const root = makeRoot();
+      const ipc = makeIpc();
+      const view = mountLiveEditor(root, ipc as never, {
+        tabId: 't',
+        path: '/tmp/a.md',
+        source: 'abc',
+        settings: makeSettings(),
+        threads: [],
+      });
+      expect(
+        (window as unknown as { __mdviewerE2E: { getLiveEditorSource: () => string } })
+          .__mdviewerE2E.getLiveEditorSource,
+      ).toBeInstanceOf(Function);
+      view.destroy();
+      const after = (window as unknown as {
+        __mdviewerE2E?: { getLiveEditorSource?: () => string };
+      }).__mdviewerE2E;
+      expect(after?.getLiveEditorSource).toBeUndefined();
     });
   });
 
