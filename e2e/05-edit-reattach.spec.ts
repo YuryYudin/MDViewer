@@ -22,20 +22,75 @@ describe('Edit the document and reattach anchors', () => {
       async () => browser.$('[data-test="editor"]').isExisting(),
       { timeout: 5_000, timeoutMsg: 'editor did not mount' },
     );
-    // Read the editor contents and set the new value via direct DOM
-    // assignment — wdio's setValue/addValue routes go through the plugin's
-    // send-keys path which doesn't reliably populate textareas under
-    // WKWebView. Dispatching `input` ensures Edit.ts's autosave debounce
-    // fires (although autoSave is off by default, the path being taken
-    // matches the manual-save flow that toggleEdit force-flushes).
-    const inserted = await browser.execute((expectedFind: string, replace: string) => {
-      const ta = document.querySelector<HTMLTextAreaElement>('[data-test="editor"]');
-      if (!ta) throw new Error('editor missing');
-      ta.value = ta.value.replace(expectedFind, replace);
-      ta.dispatchEvent(new Event('input', { bubbles: true }));
-      return ta.value;
-    }, 'Selectable phrase one', 'edited Selectable phrase one');
-    expect(inserted).toContain('edited Selectable phrase one');
+
+    // Read the editor contents via the LiveEditor source hook (A.1).
+    // Phase A's editor is a CodeMirror EditorView whose authoritative text
+    // lives in `view.state.doc`, not a textarea. The previous `value = ...`
+    // write path resolved `[data-test="editor"]` to the editor host DIV
+    // under A.2's alias triple, so the assignment was a silent no-op. We
+    // round-trip the source through the E2E hook on both read and write.
+    const source = await browser.execute(() => {
+      const api = (window as unknown as {
+        __mdviewerE2E?: { getLiveEditorSource?: () => string };
+      }).__mdviewerE2E;
+      if (!api || typeof api.getLiveEditorSource !== 'function') {
+        throw new Error('getLiveEditorSource hook not present');
+      }
+      return api.getLiveEditorSource();
+    });
+
+    // Locate the target phrase's byte offset (zero-width caret position
+    // BEFORE the 'S' of "Selectable"). The pre-Phase-A code used
+    // `value.replace('Selectable phrase one', 'edited Selectable phrase one')`
+    // which inserts the 7-char delta at the offset of "Selectable" — NOT at
+    // offset 0. We preserve that anchor-reattach-byte-faithful semantic by
+    // locating the phrase with `indexOf` and positioning the caret there.
+    const phrase = 'Selectable phrase one';
+    const offset = source.indexOf(phrase);
+    if (offset < 0) {
+      throw new Error(`spec 05: phrase '${phrase}' not found in source`);
+    }
+
+    // Position the caret immediately before "Selectable" via
+    // setLiveEditorSelection(offset, offset) (zero-width selection = caret
+    // only), insert "edited " via typeIntoLiveEditor, then forceSave so the
+    // sidecar reattachment pass downstream sees the updated source. The
+    // forceSave call is load-bearing: the spec's reattachment assertion
+    // reads the file after the save lands, and without it the assertion
+    // races the autosave debounce.
+    await browser.execute((off: number) => {
+      const api = (window as unknown as {
+        __mdviewerE2E?: {
+          setLiveEditorSelection?: (s: number, e: number) => unknown;
+          typeIntoLiveEditor?: (text: string) => unknown;
+          forceSave?: () => unknown;
+        };
+      }).__mdviewerE2E;
+      if (
+        !api ||
+        typeof api.setLiveEditorSelection !== 'function' ||
+        typeof api.typeIntoLiveEditor !== 'function' ||
+        typeof api.forceSave !== 'function'
+      ) {
+        throw new Error('spec 05: required __mdviewerE2E hooks missing');
+      }
+      api.setLiveEditorSelection(off, off);
+      api.typeIntoLiveEditor('edited ');
+      api.forceSave();
+    }, offset);
+
+    // Re-read the source through the hook to confirm the insertion landed
+    // in the CodeMirror StateField (i.e. forceSave saw the updated doc).
+    const updatedSource = await browser.execute(() => {
+      const api = (window as unknown as {
+        __mdviewerE2E?: { getLiveEditorSource?: () => string };
+      }).__mdviewerE2E;
+      if (!api || typeof api.getLiveEditorSource !== 'function') {
+        throw new Error('getLiveEditorSource hook not present');
+      }
+      return api.getLiveEditorSource();
+    });
+    expect(updatedSource).toContain('edited Selectable phrase one');
 
     // Toggle back to view; the reattachment pass runs.
     await browser.$('[data-action="toggle-edit"]').click();
