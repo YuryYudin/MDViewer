@@ -124,7 +124,7 @@ describe('Workspace', () => {
     expect(root.querySelector('[data-view="start"]')).toBeTruthy();
   });
 
-  it('clicking another tab calls openDocument(path) and swaps the rendered HTML', async () => {
+  it('clicking another tab calls openDocument(path) and swaps the rendered editor source', async () => {
     // Regression: TabBar's click handler used to call ipc.activateTab(id)
     // and trigger a workspace refresh. activateTab updates Rust's active
     // id but does NOT refresh the host's cached payload, so refresh()
@@ -132,6 +132,10 @@ describe('Workspace', () => {
     // appeared to do nothing. Fix: TabBar now exposes onActivate(tab),
     // and Workspace wires it to openDocument(tab.path) → setActive →
     // refresh — same path the recents-click flow takes.
+    //
+    // A.9: the doc view no longer emits server-rendered HTML, so the
+    // assertion targets `.cm-content` (the LiveEditor's contenteditable
+    // host) which mirrors the editor's source-text buffer in jsdom.
     const root = document.createElement('div');
     document.body.appendChild(root);
     const ids = ['t-a', 't-b'];
@@ -139,15 +143,16 @@ describe('Workspace', () => {
     (ipc.listOpenDocuments as any).mockImplementation(() =>
       Promise.resolve(ids.map((id) => ({ id, path: `/docs/${id}.md` }))),
     );
-    // openDocument returns each tab's distinct html so we can assert the
-    // swap is visible in the DOM.
+    // openDocument returns each tab's distinct source so we can assert the
+    // swap is visible in the editor's .cm-content.
     (ipc.openDocument as any).mockImplementation(async (path: string) => {
       const tabId = path.endsWith('t-a.md') ? 't-a' : 't-b';
       return {
         kind: 'document',
         tab_id: tabId,
         path,
-        html: `<p data-test="doc-marker">${tabId} content</p>`,
+        html: '',
+        source: `${tabId} content`,
         threads: [],
       };
     });
@@ -158,11 +163,12 @@ describe('Workspace', () => {
       kind: 'document',
       tab_id: 't-a',
       path: '/docs/t-a.md',
-      html: '<p data-test="doc-marker">t-a content</p>',
+      html: '',
+      source: 't-a content',
       threads: [],
     });
     await handle.refresh();
-    expect(root.querySelector('[data-test="doc-marker"]')!.textContent).toBe('t-a content');
+    expect(root.querySelector('.cm-content')!.textContent).toBe('t-a content');
 
     // User clicks the second tab.
     const tabs = root.querySelectorAll<HTMLElement>('[data-test="tab"]');
@@ -171,7 +177,7 @@ describe('Workspace', () => {
     await new Promise((r) => setTimeout(r, 10));
 
     expect(ipc.openDocument).toHaveBeenCalledWith('/docs/t-b.md');
-    expect(root.querySelector('[data-test="doc-marker"]')!.textContent).toBe('t-b content');
+    expect(root.querySelector('.cm-content')!.textContent).toBe('t-b content');
 
     document.body.removeChild(root);
   });

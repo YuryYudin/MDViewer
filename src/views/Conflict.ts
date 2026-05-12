@@ -43,6 +43,14 @@ export interface ConflictHandle {
   unresolvedCount(): number;
 }
 
+/** A.9: document-level events LiveEditor (A.4) listens for to pause its
+ * autosave/dirty pipeline while a conflict dialog is on screen. The
+ * existing `conflict-resolved` event on the view element STAYS — it is
+ * the Workspace listener's contract and still drives sidebar/tab
+ * refreshes. The two document-level events live alongside it. */
+const CONFLICT_OPEN_EVENT = 'mdviewer:conflict-open';
+const CONFLICT_CLOSED_EVENT = 'mdviewer:conflict-closed';
+
 export async function mountConflict(
   root: HTMLElement,
   ipc: Ipc,
@@ -52,6 +60,12 @@ export async function mountConflict(
   const view = document.createElement('section');
   view.setAttribute('data-view', 'conflict');
   view.className = 'conflict';
+
+  // Tell LiveEditor (and any other listener that wants to suspend
+  // background activity) that a conflict dialog has mounted. Fired on
+  // `document` so the dispatch survives the conflict view being mounted
+  // into a detached root in tests.
+  document.dispatchEvent(new CustomEvent(CONFLICT_OPEN_EVENT, { bubbles: true }));
 
   // B5: wireframe-07 Drive-context banner. Hidden by default (Local-backend
   // conflicts) so the same view serves both audiences. The two Drive code
@@ -174,6 +188,10 @@ export async function mountConflict(
         detail: { path: args.path, tabId: args.tabId },
       }),
     );
+    // A.9: signal LiveEditor that the conflict dialog is going away so
+    // it can resume autosave / dirty propagation. Fired on `document`
+    // for the same reason `conflict-open` is — listeners attach there.
+    document.dispatchEvent(new CustomEvent(CONFLICT_CLOSED_EVENT, { bubbles: true }));
   });
   view.appendChild(finish);
 

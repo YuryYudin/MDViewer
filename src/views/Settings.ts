@@ -372,6 +372,22 @@ function buildEditor(ipc: Ipc, settings: Settings): HTMLElement {
     void ipc.setSettings(settings);
   });
 
+  // A.9: Phase-1 render-readonly toggle. Bound to
+  // `settings.editor.render_readonly`. The row description below is
+  // copied VERBATIM from the Phase-1 release-notes line — do not
+  // paraphrase. Tests assert the exact string so a copy edit here will
+  // trip them.
+  const renderReadonly = labeledCheckbox(
+    'Render documents read-only. Toggle off to enable in-place editing.',
+    settings.editor.render_readonly,
+    { 'data-test': 'render-readonly' },
+  );
+  s.appendChild(renderReadonly.row);
+  renderReadonly.input.addEventListener('change', () => {
+    settings.editor.render_readonly = renderReadonly.input.checked;
+    void ipc.setSettings(settings);
+  });
+
   return s;
 }
 
