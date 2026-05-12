@@ -72,11 +72,26 @@ writeFileSync(
   ].join('\n'),
 );
 
-// On macOS the upstream `tauri-driver` is unsupported. We use
-// `tauri-webdriver-automation` (CLI: `tauri-wd`) instead, which is a
-// W3C-compliant WebDriver server that talks to the
-// `tauri-plugin-webdriver-automation` plugin loaded into our debug build.
-const driverBinary = 'tauri-wd';
+// WebDriver server is `tauri-webdriver-automation` (CLI: `tauri-wd`), a
+// macOS-tuned W3C-compliant server that talks to the
+// `tauri-plugin-webdriver-automation` plugin baked into the
+// `--features e2e` build via NSWindow handles. The upstream
+// `tauri-driver` v2.x is the cross-platform alternative but a
+// non-trivial port (different capabilities + proxy chain to
+// `WebKitWebDriver`); a 2026-05-12 investigation got partway (curl POST
+// /session succeeds against a non-plugin binary; WDIO POST fails on
+// capability matching, and the plugin-loaded binary chokes the proxy
+// HTTP body framing). Tracked as a follow-up infrastructure feature.
+// For now the suite runs on macOS only (CI is configured accordingly).
+//
+// Resolve the driver binary by absolute path: Node's `spawn` does not
+// inherit `~/.cargo/bin` from a non-shell PATH (failure mode: ENOENT on
+// the bare binary name from inside the wdio worker subprocess).
+function resolveCargoBin(name: string): string {
+  const home = process.env.HOME ?? '';
+  return path.join(home, '.cargo', 'bin', name);
+}
+const driverBinary = resolveCargoBin('tauri-wd');
 
 // Expose the seeded dataDir to specs via process.env so they can find
 // settings.toml (e.g. spec 02 needs to blank display_name and reload).
@@ -143,11 +158,20 @@ export const config: Options.Testrunner = {
 
   onPrepare: async () => {
     // Belt-and-suspenders: nuke any stragglers from prior runs before we
-    // start. tauri-wd's per-session cleanup is best-effort (a panicked
-    // worker can leave the spawned mdviewer alive) and accumulating
-    // WebView windows confuse the user.
+    // start. tauri-wd / tauri-driver per-session cleanup is best-effort
+    // (a panicked worker can leave the spawned mdviewer alive) and
+    // accumulating WebView windows confuse the user. Also kill orphan
+    // `vite` processes — a previous failed run can leave `npm run dev`
+    // pinned to port 1420, breaking this run's `waitForHttp`.
     try { spawn('pkill', ['-9', '-f', 'mdviewer$']).on('error', () => {}); } catch {}
     try { spawn('pkill', ['-9', '-f', 'tauri-wd']).on('error', () => {}); } catch {}
+    try { spawn('pkill', ['-9', '-f', 'tauri-driver']).on('error', () => {}); } catch {}
+    try { spawn('pkill', ['-9', '-f', 'WebKitWebDriver']).on('error', () => {}); } catch {}
+    // pkill 'vite' matches the worker process; the launcher is a node
+    // wrapper named `vite` after the bin shim.
+    try { spawn('pkill', ['-9', '-f', 'node .*vite']).on('error', () => {}); } catch {}
+    // Give the OS a moment to release the bound ports.
+    await new Promise((r) => setTimeout(r, 500));
 
     // Tauri's debug build always tries to load `devUrl` (localhost:1420)
     // before falling back to the embedded frontend bundle. On macOS the
@@ -171,9 +195,10 @@ export const config: Options.Testrunner = {
       env: {
         ...process.env,
         RUST_LOG: process.env.RUST_LOG ?? 'warn',
-        // tauri-wd uses tokio::process::Command which inherits env. The
-        // child mdviewer binary reads MDVIEWER_DATA_DIR to override the
-        // OS default config directory (see main.rs setup hook).
+        // tauri-wd / tauri-driver use tokio::process::Command which
+        // inherits env. The child mdviewer binary reads MDVIEWER_DATA_DIR
+        // to override the OS default config directory (see main.rs setup
+        // hook).
         MDVIEWER_DATA_DIR: dataDir,
       },
     });
@@ -229,6 +254,9 @@ export const config: Options.Testrunner = {
     // Final sweep — any straggler from the last spec gets killed here.
     try { spawn('pkill', ['-9', '-f', 'mdviewer$']).on('error', () => {}); } catch {}
     try { spawn('pkill', ['-9', '-f', 'tauri-wd']).on('error', () => {}); } catch {}
+    try { spawn('pkill', ['-9', '-f', 'tauri-driver']).on('error', () => {}); } catch {}
+    try { spawn('pkill', ['-9', '-f', 'WebKitWebDriver']).on('error', () => {}); } catch {}
+    try { spawn('pkill', ['-9', '-f', 'node .*vite']).on('error', () => {}); } catch {}
     try { rmSync(dataDir, { recursive: true, force: true }); } catch {}
   },
 
