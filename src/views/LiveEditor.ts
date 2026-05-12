@@ -257,11 +257,25 @@ export function mountLiveEditor(
     return editorView.state.field(modeField);
   }
 
-  // WEBDRIVER-gated forceSave handle. Only attached when the bridge
-  // is present (production builds without WebDriver never see it).
-  // The slot lives at `window.__mdviewerE2E.forceSave`; we initialise
-  // the parent object if absent but preserve any other slots already
-  // on it (`nextPick` from main.ts, etc.).
+  // WEBDRIVER-gated test hooks. Only attached when the bridge is
+  // present (production builds without WebDriver never see them).
+  // The slots live on `window.__mdviewerE2E`; we initialise the parent
+  // object if absent but preserve any other slots already on it
+  // (`nextPick`, `open`, `emitMenuAction`, etc. from main.ts).
+  //
+  // Hooks added here:
+  //   - forceSave(): cancel debounce and flush immediately.
+  //   - setLiveEditorSelection(start, end): place caret/selection at
+  //       the given source offsets. The wysiwyg specs use this to
+  //       position the caret deterministically before typing —
+  //       driving CodeMirror's contenteditable through the W3C
+  //       WebDriver text-input path is unreliable across widget
+  //       decorations.
+  //   - typeIntoLiveEditor(text): dispatch a userEvent='input.type'
+  //       transaction that inserts `text` at the current selection.
+  //       The userEvent tag is what the autosave update listener
+  //       watches for, so this path exercises the same code as a
+  //       real key press.
   const w = window as unknown as {
     __WEBDRIVER__?: unknown;
     __mdviewerE2E?: Record<string, unknown>;
@@ -270,6 +284,27 @@ export function mountLiveEditor(
   if (webdriverActive) {
     if (!w.__mdviewerE2E) w.__mdviewerE2E = {};
     w.__mdviewerE2E.forceSave = (): Promise<void> => flushSave();
+    w.__mdviewerE2E.setLiveEditorSelection = (start: number, end: number): Promise<void> => {
+      if (destroyed) return Promise.resolve();
+      const docLen = editorView.state.doc.length;
+      const lo = Math.max(0, Math.min(start, docLen));
+      const hi = Math.max(lo, Math.min(end, docLen));
+      editorView.dispatch({ selection: { anchor: lo, head: hi } });
+      return Promise.resolve();
+    };
+    w.__mdviewerE2E.typeIntoLiveEditor = (text: string): Promise<void> => {
+      if (destroyed) return Promise.resolve();
+      const sel = editorView.state.selection.main;
+      // userEvent='input.type' mirrors a real key press: the autosave
+      // update listener's user-event check accepts it, dirty fires,
+      // and the debounce schedules a save.
+      editorView.dispatch({
+        changes: { from: sel.from, to: sel.to, insert: text },
+        selection: { anchor: sel.from + text.length },
+        userEvent: 'input.type',
+      });
+      return Promise.resolve();
+    };
   }
 
   function destroy(): void {
@@ -277,8 +312,10 @@ export function mountLiveEditor(
     clearTimer();
     document.removeEventListener(CONFLICT_OPEN_EVENT, onConflictOpen);
     document.removeEventListener(CONFLICT_CLOSED_EVENT, onConflictClosed);
-    if (webdriverActive && w.__mdviewerE2E && 'forceSave' in w.__mdviewerE2E) {
+    if (webdriverActive && w.__mdviewerE2E) {
       delete w.__mdviewerE2E.forceSave;
+      delete w.__mdviewerE2E.setLiveEditorSelection;
+      delete w.__mdviewerE2E.typeIntoLiveEditor;
     }
     editorView.destroy();
   }
