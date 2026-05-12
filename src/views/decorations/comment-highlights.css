@@ -1,0 +1,19 @@
+/*
+ * Comment-highlight decoration styles (A.7).
+ *
+ * Owns the .is-drifting between-save drift-handling rule only. Other
+ * decoration styles (inline marks, block widgets) live in
+ * `decorations.css` owned by A.5/A.6. We keep this file separate to
+ * avoid an A.5/A.7 merge conflict — both tasks were forked from the
+ * post-A.4 HEAD and neither has the other's changes. Document.ts
+ * (A.9) imports both files.
+ *
+ * The base `mark.cm-comment-anchor` styling (background colour,
+ * highlight shape) is the renderer-target paint defined in
+ * `crates/mdviewer-core/assets/document.css`, mirrored to the desktop
+ * frontend by Vite. Only the drift-hide rule is decoration-specific.
+ */
+
+mark.cm-comment-anchor.is-drifting {
+  display: none;
+}
