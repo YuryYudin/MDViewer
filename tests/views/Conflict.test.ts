@@ -137,6 +137,102 @@ describe('Conflict', () => {
     document.body.removeChild(root);
   });
 
+  // A.9: dispatch `mdviewer:conflict-open` on `document` when the
+  // conflict dialog mounts so LiveEditor's autosave/dirty pipeline can
+  // pause until the user resolves the conflict.
+  it('dispatches mdviewer:conflict-open on document when the dialog mounts', async () => {
+    const root = document.createElement('div');
+    const ipc = ipcStub([
+      {
+        kind: 'conflicting',
+        local_text: 'left',
+        incoming_text: 'right',
+        local_range: [0, 1],
+        incoming_range: [0, 1],
+      },
+    ]);
+    const listener = vi.fn();
+    document.addEventListener('mdviewer:conflict-open', listener);
+    try {
+      await mountConflict(root, ipc, {
+        tabId: 't',
+        path: '/tmp/a.md',
+        local: 'left',
+        incoming: 'right',
+      });
+      expect(listener).toHaveBeenCalledTimes(1);
+      // Bubbles is true so listeners on window/document both receive it.
+      const ev = listener.mock.calls[0]![0] as Event;
+      expect(ev.bubbles).toBe(true);
+    } finally {
+      document.removeEventListener('mdviewer:conflict-open', listener);
+    }
+  });
+
+  it('dispatches mdviewer:conflict-closed on document when Finish merge resolves', async () => {
+    const root = document.createElement('div');
+    const ipc = ipcStub([
+      {
+        kind: 'conflicting',
+        local_text: 'left',
+        incoming_text: 'right',
+        local_range: [0, 1],
+        incoming_range: [0, 1],
+      },
+    ]);
+    const closed = vi.fn();
+    document.addEventListener('mdviewer:conflict-closed', closed);
+    try {
+      await mountConflict(root, ipc, {
+        tabId: 't',
+        path: '/tmp/a.md',
+        local: 'left',
+        incoming: 'right',
+      });
+      // Mount alone should not have fired conflict-closed yet.
+      expect(closed).not.toHaveBeenCalled();
+      (root.querySelector('[data-action="finish-merge"]') as HTMLButtonElement).click();
+      // Two microtask drains: one for the awaited saveDocument, one for
+      // the post-save dispatch path.
+      await Promise.resolve();
+      await Promise.resolve();
+      await new Promise((r) => setTimeout(r, 0));
+      expect(closed).toHaveBeenCalledTimes(1);
+      const ev = closed.mock.calls[0]![0] as Event;
+      expect(ev.bubbles).toBe(true);
+    } finally {
+      document.removeEventListener('mdviewer:conflict-closed', closed);
+    }
+  });
+
+  // Preserves the existing surface — the conflict-resolved event on
+  // the view element is still consumed by Workspace.ts so it must stay.
+  it('still dispatches conflict-resolved on the view element after Finish merge', async () => {
+    const root = document.createElement('div');
+    const ipc = ipcStub([
+      {
+        kind: 'conflicting',
+        local_text: 'left',
+        incoming_text: 'right',
+        local_range: [0, 1],
+        incoming_range: [0, 1],
+      },
+    ]);
+    document.body.appendChild(root);
+    const onView = vi.fn();
+    root.addEventListener('conflict-resolved', onView);
+    await mountConflict(root, ipc, {
+      tabId: 't',
+      path: '/tmp/a.md',
+      local: 'left',
+      incoming: 'right',
+    });
+    (root.querySelector('[data-action="finish-merge"]') as HTMLButtonElement).click();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(onView).toHaveBeenCalledTimes(1);
+    document.body.removeChild(root);
+  });
+
   it('status bar tracks the unresolved hunk count', async () => {
     const root = document.createElement('div');
     const ipc = ipcStub([

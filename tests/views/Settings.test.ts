@@ -17,7 +17,7 @@ function defaultSettings(): Settings {
     profile: { user_id: 'u1', display_name: 'Carol', color: '#00aa88' },
     appearance: { theme: 'light', font_size_px: 14, line_height: 150, density: 'comfortable', startup_mode: 'clean', dark_variant: 'pure' },
     editor: {
-      default_open_mode: 'view',
+      default_open_mode: 'render',
       auto_save: true,
       auto_save_debounce_ms: 750,
       external_change_behavior: 'ask',
@@ -25,6 +25,9 @@ function defaultSettings(): Settings {
       mermaid_enabled: true,
       show_whitespace: false,
       word_wrap: true,
+      // A.9: Phase-1 read-only toggle on the render surface. Fresh
+      // installs see `false` (editable render is the new default).
+      render_readonly: false,
     },
     comments: {
       auto_merge: 'always',
@@ -281,6 +284,49 @@ describe('Settings', () => {
     deb.dispatchEvent(new Event('change'));
     await flush();
     expect(ipc.setSettings.mock.calls.at(-1)![0].editor.auto_save_debounce_ms).toBe(1500);
+  });
+
+  // A.9: render_readonly toggle ships in the Editor & Viewer card
+  // bound to settings.editor.render_readonly. Description copy is
+  // Phase-1 release-notes text — must match verbatim.
+  it('editor: render_readonly toggle round-trips and shows the verbatim description', async () => {
+    const root = document.createElement('div');
+    const ipc = makeIpc();
+    await mountSettings(root, ipc as any);
+    const toggle = root.querySelector<HTMLInputElement>('[data-test="render-readonly"]')!;
+    expect(toggle).toBeTruthy();
+    expect(toggle.checked).toBe(false);
+
+    // The row description string is part of the user-visible Phase-1
+    // release-notes contract. Asserted verbatim so a paraphrase trips
+    // the test.
+    const row = toggle.closest('.row') as HTMLElement;
+    expect(row).toBeTruthy();
+    expect(row.textContent).toContain(
+      'Render documents read-only. Toggle off to enable in-place editing.',
+    );
+
+    // Toggle on, persists with render_readonly = true.
+    toggle.checked = true;
+    toggle.dispatchEvent(new Event('change'));
+    await flush();
+    expect(ipc.setSettings.mock.calls.at(-1)![0].editor.render_readonly).toBe(true);
+
+    // Toggle off, persists with render_readonly = false.
+    toggle.checked = false;
+    toggle.dispatchEvent(new Event('change'));
+    await flush();
+    expect(ipc.setSettings.mock.calls.at(-1)![0].editor.render_readonly).toBe(false);
+  });
+
+  it('editor: render_readonly toggle reflects initial setting value', async () => {
+    const root = document.createElement('div');
+    const settings = defaultSettings();
+    settings.editor.render_readonly = true;
+    const ipc = makeIpc({ getSettings: vi.fn().mockResolvedValue(settings) });
+    await mountSettings(root, ipc as any);
+    const toggle = root.querySelector<HTMLInputElement>('[data-test="render-readonly"]')!;
+    expect(toggle.checked).toBe(true);
   });
 
   it('editor: syntax_highlighting / mermaid_enabled / show_whitespace toggles', async () => {
