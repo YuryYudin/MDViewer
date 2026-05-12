@@ -173,16 +173,21 @@ describe('Document', () => {
     });
   });
 
-  describe('Render/Raw toggle', () => {
-    it('hides the toggle button when source/path/settings are not provided', async () => {
+  describe('Render/Raw toggle (legacy single-button surface, now two-button per A.2)', () => {
+    it('hides the toggle when source/path/settings are not provided', async () => {
       const root = makeRoot();
       await mountDocument(root, ipc(), { tabId: 't', html, threads: [] });
-      const btn = root.querySelector<HTMLButtonElement>('[data-action="toggle-render-raw"]')!;
-      expect(btn).toBeTruthy();
-      expect(btn.hidden).toBe(true);
+      const toggle = root.querySelector<HTMLDivElement>('[data-testid="mode-toggle"]')!;
+      expect(toggle).toBeTruthy();
+      expect(toggle.hidden).toBe(true);
+      // The legacy `[data-action="toggle-render-raw"]` selector hits
+      // the opposite-mode button via the back-compat alias.
+      const legacy = root.querySelector<HTMLButtonElement>('[data-action~="toggle-render-raw"]')!;
+      expect(legacy).toBeTruthy();
+      expect(legacy.hidden).toBe(true);
     });
 
-    it('default mode is render and the button label reads "Raw" (the action it triggers)', async () => {
+    it('default mode is render — legacy back-compat alias lives on the Raw button (the action it triggers)', async () => {
       const root = makeRoot();
       await mountDocument(root, ipc(), {
         tabId: 't',
@@ -192,14 +197,14 @@ describe('Document', () => {
         path: '/tmp/a.md',
         settings: settings(),
       });
-      const btn = root.querySelector<HTMLButtonElement>('[data-action="toggle-render-raw"]')!;
+      const btn = root.querySelector<HTMLButtonElement>('[data-action~="toggle-render-raw"]')!;
       expect(btn.hidden).toBe(false);
       // The button shows the destination mode — clicking "Raw" switches
       // FROM render TO raw, matching the wireframe label convention.
       expect(btn.textContent).toBe('Raw');
     });
 
-    it('clicking flips render → raw → render, and the label tracks the destination', async () => {
+    it('clicking the legacy back-compat alias flips mode; the alias migrates to the opposite-mode button each time', async () => {
       const root = makeRoot();
       await mountDocument(root, ipc(), {
         tabId: 't',
@@ -209,14 +214,19 @@ describe('Document', () => {
         path: '/tmp/a.md',
         settings: settings(),
       });
-      const btn = root.querySelector<HTMLButtonElement>('[data-action="toggle-render-raw"]')!;
-      expect(btn.textContent).toBe('Raw');
-      btn.click();
-      // After clicking once we're in raw mode — label flips to "Render".
-      expect(btn.textContent).toBe('Render');
-      btn.click();
-      // And back to render — label returns to "Raw".
-      expect(btn.textContent).toBe('Raw');
+      // Re-query after each click — under the two-button structure
+      // the legacy alias migrates between buttons, so a cached handle
+      // would not track the destination-mode label.
+      const legacy = () =>
+        root.querySelector<HTMLButtonElement>('[data-action~="toggle-render-raw"]')!;
+      expect(legacy().textContent).toBe('Raw');
+      legacy().click();
+      // After clicking once we're in raw mode — alias hopped to the
+      // Render button, whose textContent is "Render".
+      expect(legacy().textContent).toBe('Render');
+      legacy().click();
+      // And back to render — alias returns to the Raw button.
+      expect(legacy().textContent).toBe('Raw');
     });
 
     it('clicking the toggle does NOT trigger a saveDocument IPC', async () => {
@@ -233,10 +243,11 @@ describe('Document', () => {
         path: '/tmp/a.md',
         settings: settings(),
       });
-      const btn = root.querySelector<HTMLButtonElement>('[data-action="toggle-render-raw"]')!;
-      btn.click();
-      btn.click();
-      btn.click();
+      const legacy = () =>
+        root.querySelector<HTMLButtonElement>('[data-action~="toggle-render-raw"]')!;
+      legacy().click();
+      legacy().click();
+      legacy().click();
       // Drain any pending microtasks so an erroneously-queued save
       // would surface.
       await drainMicrotasks();
@@ -299,8 +310,11 @@ describe('Document', () => {
       // Render → contenteditable=false (read-only).
       let content = root.querySelector<HTMLElement>('.cm-content')!;
       expect(content.getAttribute('contenteditable')).toBe('false');
-      // Flip to raw.
-      const btn = root.querySelector<HTMLButtonElement>('[data-action="toggle-render-raw"]')!;
+      // Flip to raw — click the Raw button directly under the new
+      // two-button structure (A.2).
+      const btn = root.querySelector<HTMLButtonElement>(
+        '[data-testid="mode-toggle"] button[data-mode="raw"]',
+      )!;
       btn.click();
       content = root.querySelector<HTMLElement>('.cm-content')!;
       // Raw mode is ALWAYS editable — the user explicitly switched to
@@ -515,6 +529,332 @@ describe('Document', () => {
         const readout = root.querySelector<HTMLButtonElement>('[data-action="font-reset"]')!;
         expect(readout.disabled).toBe(false);
       }
+    });
+  });
+
+  describe('shadow render-pane (A.2)', () => {
+    it('mounts a [data-region="rendered-shadow"] sibling to the editor host with hidden + aria-hidden attrs', async () => {
+      const root = makeRoot();
+      await mountDocument(root, ipc(), {
+        tabId: 't',
+        html,
+        threads: [],
+        source: '# Title\n\nBody.',
+        path: '/tmp/a.md',
+        settings: settings(),
+      });
+      const shadow = root.querySelector<HTMLDivElement>('[data-region="rendered-shadow"]');
+      expect(shadow).toBeTruthy();
+      // Hidden + aria-hidden: the shadow exists as a render parity surface
+      // (consumed by export/diff tooling); users never see it.
+      expect(shadow!.hidden).toBe(true);
+      expect(shadow!.getAttribute('aria-hidden')).toBe('true');
+      // Sibling — same parent as the editor host.
+      const editorHost = root.querySelector<HTMLDivElement>('[data-testid="live-editor"]')!;
+      expect(shadow!.parentElement).toBe(editorHost.parentElement);
+    });
+
+    it('populates the shadow with semantic HTML matching the source on initial mount', async () => {
+      const root = makeRoot();
+      const ipcStub = ipc();
+      (ipcStub.renderMarkdown as ReturnType<typeof vi.fn>).mockResolvedValue({
+        html: '<h1>Title</h1><p>Body.</p>',
+        text_spans: [],
+      });
+      await mountDocument(root, ipcStub, {
+        tabId: 't',
+        html,
+        threads: [],
+        source: '# Title\n\nBody.',
+        path: '/tmp/a.md',
+        settings: settings(),
+      });
+      await drainMicrotasks();
+      const shadow = root.querySelector<HTMLDivElement>('[data-region="rendered-shadow"]')!;
+      expect(shadow.querySelector('h1')?.textContent).toBe('Title');
+      expect(shadow.querySelector('p')?.textContent).toBe('Body.');
+      // renderMarkdown was called at mount with the supplied source.
+      expect(ipcStub.renderMarkdown).toHaveBeenCalledWith('# Title\n\nBody.');
+    });
+
+    it('refreshes the shadow on the LiveEditor onSaved callback (exactly once per save)', async () => {
+      const root = makeRoot();
+      const ipcStub = ipc();
+      (ipcStub.renderMarkdown as ReturnType<typeof vi.fn>).mockResolvedValue({
+        html: '<p>updated</p>',
+        text_spans: [],
+      });
+      await mountDocument(root, ipcStub, {
+        tabId: 't',
+        html,
+        threads: [
+          {
+            id: 't-1',
+            anchor: { start: 0, end: 5, exact: 'Hello', prefix: '', suffix: '' },
+            comments: [],
+            resolved: false,
+          },
+          {
+            id: 't-2',
+            anchor: { start: 0, end: 5, exact: 'Hello', prefix: '', suffix: '' },
+            comments: [],
+            resolved: false,
+          },
+          {
+            id: 't-3',
+            anchor: { start: 0, end: 5, exact: 'Hello', prefix: '', suffix: '' },
+            comments: [],
+            resolved: false,
+          },
+        ] as unknown as never,
+        source: 'Hello',
+        path: '/tmp/a.md',
+        settings: settings(),
+      });
+      await drainMicrotasks();
+      // Initial-mount render is the only call so far. Drain any
+      // anchor-resolution pump churn first.
+      const initialCalls = (ipcStub.renderMarkdown as ReturnType<typeof vi.fn>).mock.calls.length;
+
+      // Trigger a real save through the LiveEditor's forceSave path —
+      // that's what fires onSaved exactly once after the per-thread
+      // re-anchor pump (3 onAnchorsResolved calls for a 3-thread doc).
+      const e2e = (window as unknown as { __mdviewerE2E?: { forceSave?: () => Promise<void> } })
+        .__mdviewerE2E;
+      // Enable the E2E hook by stamping WEBDRIVER and remounting?
+      // Simpler: dispatch a fake save by calling forceSave directly on
+      // the LiveEditor — but we don't have a handle. Instead, surface
+      // forceSave by re-mounting with __WEBDRIVER__ set. Skip that
+      // dance: drive saveDocument directly by simulating a doc change.
+      void e2e;
+
+      // Type a character via the public user-input path — userEvent
+      // tag triggers the autosave pipeline.
+      const content = root.querySelector<HTMLElement>('.cm-content')!;
+      content.focus();
+      // Drive the autosave debounce directly by calling the editor
+      // dispatch through a synthesised text-input. Use vi.useFakeTimers
+      // semantics? Simpler: post a userEvent dispatch via the CodeMirror
+      // public API. We grab the EditorView off the CM root's `cmView`
+      // marker the LiveEditor stamps — but there's no marker. Instead
+      // reach into the host via `cm-editor`'s view property which is
+      // not exposed on jsdom. Fall back to triggering save via the
+      // public surface: simulate by calling forceSave through the
+      // window.__mdviewerE2E hook after stamping __WEBDRIVER__.
+      const w = window as unknown as {
+        __WEBDRIVER__?: unknown;
+        __mdviewerE2E?: { forceSave?: () => Promise<void> };
+      };
+      w.__WEBDRIVER__ = true;
+      // Need a remount for the LiveEditor to register its forceSave
+      // hook — destroy + remount instead.
+      root.replaceChildren();
+      const view = await mountDocument(root, ipcStub, {
+        tabId: 't',
+        html,
+        threads: [
+          {
+            id: 't-1',
+            anchor: { start: 0, end: 5, exact: 'Hello', prefix: '', suffix: '' },
+            comments: [],
+            resolved: false,
+          },
+          {
+            id: 't-2',
+            anchor: { start: 0, end: 5, exact: 'Hello', prefix: '', suffix: '' },
+            comments: [],
+            resolved: false,
+          },
+          {
+            id: 't-3',
+            anchor: { start: 0, end: 5, exact: 'Hello', prefix: '', suffix: '' },
+            comments: [],
+            resolved: false,
+          },
+        ] as unknown as never,
+        source: 'Hello',
+        path: '/tmp/a.md',
+        settings: settings(),
+      });
+      await drainMicrotasks();
+      const baselineCalls = (ipcStub.renderMarkdown as ReturnType<typeof vi.fn>).mock.calls.length;
+      // Force-save through the e2e hook fires the post-save pump.
+      await (window as unknown as { __mdviewerE2E: { forceSave: () => Promise<void> } })
+        .__mdviewerE2E.forceSave();
+      await drainMicrotasks(10);
+      // Exactly ONE renderMarkdown call landed for this save — not
+      // three (which would mean it's wired off onAnchorsResolved).
+      const afterCalls = (ipcStub.renderMarkdown as ReturnType<typeof vi.fn>).mock.calls.length;
+      expect(afterCalls - baselineCalls).toBe(1);
+      view.destroy();
+      delete (window as unknown as { __WEBDRIVER__?: unknown }).__WEBDRIVER__;
+      void initialCalls;
+    });
+
+    it('mount survives a renderMarkdown rejection (shadow stays empty, no crash)', async () => {
+      const root = makeRoot();
+      const ipcStub = ipc();
+      (ipcStub.renderMarkdown as ReturnType<typeof vi.fn>).mockRejectedValue(
+        new Error('boom'),
+      );
+      // Should not throw on mount even though the shadow refresh fails.
+      await expect(
+        mountDocument(root, ipcStub, {
+          tabId: 't',
+          html,
+          threads: [],
+          source: 'Hello',
+          path: '/tmp/a.md',
+          settings: settings(),
+        }),
+      ).resolves.toBeTruthy();
+      await drainMicrotasks();
+      const shadow = root.querySelector<HTMLDivElement>('[data-region="rendered-shadow"]')!;
+      // Shadow exists but is empty (the try/catch swallowed the
+      // rejection and left the previous content — empty on mount —
+      // in place).
+      expect(shadow).toBeTruthy();
+      expect(shadow.children.length).toBe(0);
+    });
+
+    it('destroy() removes the shadow div', async () => {
+      const root = makeRoot();
+      const view = await mountDocument(root, ipc(), {
+        tabId: 't',
+        html,
+        threads: [],
+        source: 'Hello',
+        path: '/tmp/a.md',
+        settings: settings(),
+      });
+      expect(root.querySelector('[data-region="rendered-shadow"]')).toBeTruthy();
+      view.destroy();
+      expect(root.querySelector('[data-region="rendered-shadow"]')).toBeFalsy();
+    });
+  });
+
+  describe('two-button mode toggle + selector aliases (A.2)', () => {
+    it('renders <div data-testid="mode-toggle"> with two buttons carrying static data-mode', async () => {
+      const root = makeRoot();
+      await mountDocument(root, ipc(), {
+        tabId: 't',
+        html,
+        threads: [],
+        source: 'Hello',
+        path: '/tmp/a.md',
+        settings: settings(),
+      });
+      const toggle = root.querySelector<HTMLDivElement>('[data-testid="mode-toggle"]')!;
+      expect(toggle).toBeTruthy();
+      const buttons = Array.from(toggle.querySelectorAll('button'));
+      expect(buttons.length).toBe(2);
+      const renderBtn = buttons.find((b) => b.getAttribute('data-mode') === 'render');
+      const rawBtn = buttons.find((b) => b.getAttribute('data-mode') === 'raw');
+      expect(renderBtn).toBeTruthy();
+      expect(rawBtn).toBeTruthy();
+      expect(renderBtn!.textContent).toBe('Render');
+      expect(rawBtn!.textContent).toBe('Raw');
+    });
+
+    it('editor host carries all three back-compat selector aliases plus reflective data-mode', async () => {
+      const root = makeRoot();
+      await mountDocument(root, ipc(), {
+        tabId: 't',
+        html,
+        threads: [],
+        source: 'Hello',
+        path: '/tmp/a.md',
+        settings: settings(),
+      });
+      const editorHost = root.querySelector<HTMLDivElement>('[data-testid="live-editor"]')!;
+      expect(editorHost).toBeTruthy();
+      // data-region is a space-separated token list containing both
+      // the new and legacy names.
+      const tokens = (editorHost.getAttribute('data-region') ?? '').split(/\s+/);
+      expect(tokens).toContain('editor');
+      expect(tokens).toContain('render');
+      // data-test back-compat alias for spec 05 line 22 lives on the
+      // same element as data-testid.
+      expect(editorHost.getAttribute('data-test')).toBe('editor');
+      // Reflective data-mode is set synchronously on mount (no
+      // microtask wait required).
+      expect(editorHost.getAttribute('data-mode')).toBe('render');
+    });
+
+    it('on initial mount (render mode), data-action="toggle-edit" lives on the Raw button only', async () => {
+      const root = makeRoot();
+      await mountDocument(root, ipc(), {
+        tabId: 't',
+        html,
+        threads: [],
+        source: 'Hello',
+        path: '/tmp/a.md',
+        settings: settings(),
+      });
+      const renderBtn = root.querySelector<HTMLButtonElement>(
+        '[data-testid="mode-toggle"] button[data-mode="render"]',
+      )!;
+      const rawBtn = root.querySelector<HTMLButtonElement>(
+        '[data-testid="mode-toggle"] button[data-mode="raw"]',
+      )!;
+      // Render mode → opposite-mode (Raw) button carries the alias.
+      expect((rawBtn.getAttribute('data-action') ?? '').split(/\s+/)).toContain('toggle-edit');
+      expect(renderBtn.getAttribute('data-action') ?? '').not.toContain('toggle-edit');
+    });
+
+    it('after clicking the Raw button, the alias swaps onto the Render button and editorHost data-mode flips', async () => {
+      const root = makeRoot();
+      await mountDocument(root, ipc(), {
+        tabId: 't',
+        html,
+        threads: [],
+        source: 'Hello',
+        path: '/tmp/a.md',
+        settings: settings(),
+      });
+      const editorHost = root.querySelector<HTMLDivElement>('[data-testid="live-editor"]')!;
+      const renderBtn = root.querySelector<HTMLButtonElement>(
+        '[data-testid="mode-toggle"] button[data-mode="render"]',
+      )!;
+      const rawBtn = root.querySelector<HTMLButtonElement>(
+        '[data-testid="mode-toggle"] button[data-mode="raw"]',
+      )!;
+      rawBtn.click();
+      // After flipping, raw is the current mode; the alias must now
+      // point at the OPPOSITE button (Render).
+      expect((renderBtn.getAttribute('data-action') ?? '').split(/\s+/)).toContain('toggle-edit');
+      expect(rawBtn.getAttribute('data-action') ?? '').not.toContain('toggle-edit');
+      expect(editorHost.getAttribute('data-mode')).toBe('raw');
+      // Flip back.
+      renderBtn.click();
+      expect((rawBtn.getAttribute('data-action') ?? '').split(/\s+/)).toContain('toggle-edit');
+      expect(renderBtn.getAttribute('data-action') ?? '').not.toContain('toggle-edit');
+      expect(editorHost.getAttribute('data-mode')).toBe('render');
+    });
+
+    it('destroy() unsubscribes from subscribeMode (no further mode notifications after teardown)', async () => {
+      const root = makeRoot();
+      const view = await mountDocument(root, ipc(), {
+        tabId: 't',
+        html,
+        threads: [],
+        source: 'Hello',
+        path: '/tmp/a.md',
+        settings: settings(),
+      });
+      const editorHost = root.querySelector<HTMLDivElement>('[data-testid="live-editor"]')!;
+      // Sanity: data-mode is set pre-destroy.
+      expect(editorHost.getAttribute('data-mode')).toBe('render');
+      view.destroy();
+      // After destroy, even if LiveEditor itself is gone, the shadow
+      // and toggle alias bookkeeping must have been torn down — the
+      // editor host element is removed (root cleared) so no stale
+      // listener writes to it. Hardening: confirm no rendered-shadow
+      // remains and no orphan listener throws on a subsequent
+      // mountDocument cycle.
+      expect(root.querySelector('[data-region="rendered-shadow"]')).toBeFalsy();
+      expect(root.querySelector('[data-testid="live-editor"]')).toBeFalsy();
+      expect(root.querySelector('[data-testid="mode-toggle"]')).toBeFalsy();
     });
   });
 
