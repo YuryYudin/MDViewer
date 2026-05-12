@@ -35,28 +35,55 @@ export async function prepareFixture(opts?: { fixtureDir?: string; resetProfile?
 }
 
 /**
- * Select all text inside the matched element and trigger SelectionPopover's
- * mouseup listener. We can't use a real triple-click via WebDriver actions
- * because the tauri-webdriver-automation plugin synthesizes pointer events
- * via dispatchEvent — the native browser doesn't update window.getSelection
- * from dispatched events. So we drive the Range/Selection API directly and
- * then fire the mouseup the popover listens for.
+ * Place the editor selection over the first source-annotated inline carrier
+ * and trigger SelectionPopover's mouseup listener via the LiveEditor's
+ * `__mdviewerE2E.setLiveEditorSelection(start, end)` hook (A.1).
+ *
+ * Contract: the passed `selector` is IGNORED. By design the helper picks the
+ * first `[data-src-offset]` span inside the `[data-region="rendered-shadow"]`
+ * div (A.2). Specs 03 / 18 both pass
+ * `'[data-view="document"] [data-src-offset]:first-of-type'` for legibility;
+ * the effective behaviour ("first inline carrier in the document") is
+ * unchanged from the pre-Phase-A helper. We no longer drive the Range /
+ * Selection API directly because the live editor's source-of-truth is
+ * CodeMirror's StateField — the visible DOM is a decoration tree, not the
+ * authoritative text.
+ *
+ * Source byte offsets come from the explicit `data-src-offset` /
+ * `data-src-end` attributes on the shadow span. We do NOT compute the end
+ * from `textContent.length`: `render_markdown` HTML-escapes content (`<`
+ * becomes `&lt;`), so the rendered span's textContent length and the source
+ * byte range diverge.
+ *
+ * The mouseup synthesis happens INSIDE `setLiveEditorSelection` (it fires on
+ * `view.contentDOM`, where SelectionPopover's listener is attached). The
+ * helper therefore does NOT re-dispatch mouseup — doing so would produce two
+ * mouseup events and race the popover open/close.
  */
-export async function tripleClick(selector: string): Promise<void> {
-  await browser.execute(function (sel: string): void {
-    const el = document.querySelector(sel);
-    if (!el) throw new Error('element not found: ' + sel);
-    const range = document.createRange();
-    range.selectNodeContents(el);
-    const selection = window.getSelection();
-    if (!selection) throw new Error('no selection api');
-    selection.removeAllRanges();
-    selection.addRange(range);
-    // Fire mouseup on the element so SelectionPopover.attachSelectionPopover's
-    // listener picks up the new selection. mouseup bubbles so listening on
-    // the document root catches it.
-    el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
-  }, selector);
+export async function tripleClick(_selector: string): Promise<void> {
+  await browser.execute(function (): void {
+    const span = document.querySelector(
+      '[data-region="rendered-shadow"] [data-src-offset]',
+    ) as HTMLElement | null;
+    if (!span) {
+      throw new Error('tripleClick: no [data-src-offset] span in rendered-shadow');
+    }
+    const start = Number(span.getAttribute('data-src-offset'));
+    const end = Number(span.getAttribute('data-src-end'));
+    if (!Number.isFinite(start) || !Number.isFinite(end)) {
+      throw new Error(
+        'tripleClick: invalid offsets start=' + start + ' end=' + end,
+      );
+    }
+    const api = (window as unknown as {
+      __mdviewerE2E?: { setLiveEditorSelection?: (s: number, e: number) => unknown };
+    }).__mdviewerE2E;
+    if (!api || typeof api.setLiveEditorSelection !== 'function') {
+      throw new Error('tripleClick: __mdviewerE2E.setLiveEditorSelection not present');
+    }
+    api.setLiveEditorSelection(start, end);
+    // NOTE: mouseup synth happens inside the hook (A.1); helper does NOT re-dispatch.
+  });
 }
 
 /**
