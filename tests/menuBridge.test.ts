@@ -70,16 +70,25 @@ describe('menuBridge', () => {
     expect(handler).not.toHaveBeenCalled();
   });
 
-  it('every File / Settings action dispatches a unique CustomEvent', async () => {
+  it('every File / Settings action dispatches its mapped CustomEvent', async () => {
     // Clicking Open… → File dialog opens (mdviewer:open-file).
     // Clicking Settings… → Settings overlay mounts (mdviewer:open-settings).
-    // Each action must dispatch a DISTINCT event; collisions would route
-    // multiple menu items into the same handler.
-    const seen = new Set<string>();
+    // Each action must dispatch its mapped event. Most actions map 1:1,
+    // but a few are aliases (e.g. 'settings' and 'open-settings' both
+    // dispatch mdviewer:open-settings — the wysiwyg e2e spec uses the
+    // short form).
+    const KNOWN_ALIASES: Record<string, string> = {
+      'settings': 'open-settings',
+    };
+    const seen = new Map<string, string>();
     for (const action of Object.keys(MENU_ACTION_TO_EVENT)) {
       const event = MENU_ACTION_TO_EVENT[action];
-      expect(seen.has(event)).toBe(false);
-      seen.add(event);
+      const prior = seen.get(event);
+      if (prior) {
+        expect(KNOWN_ALIASES[action]).toBe(prior);
+      } else {
+        seen.set(event, action);
+      }
       const handler = vi.fn();
       document.addEventListener(event, handler, { once: true });
       const dispatched = dispatchMenuAction(action);

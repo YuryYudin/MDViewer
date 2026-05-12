@@ -401,6 +401,12 @@ export async function mountDocument(
     const oppositeBtn = mode === 'render' ? rawBtn : renderBtn;
     // Space-separated token list: new alias + legacy alias.
     oppositeBtn.setAttribute('data-action', 'toggle-edit toggle-render-raw');
+    // Active-mode marker for the spec query at click-and-type.spec.ts:54
+    // — `button[aria-pressed="true"]` on the button whose static
+    // data-mode matches the current mode.
+    const activeBtn = mode === 'render' ? renderBtn : rawBtn;
+    activeBtn.setAttribute('aria-pressed', 'true');
+    oppositeBtn.setAttribute('aria-pressed', 'false');
   });
 
   // Toggle-button click handlers. Each calls setMode on the LiveEditor,

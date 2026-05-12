@@ -832,6 +832,32 @@ describe('Document', () => {
       expect(editorHost.getAttribute('data-mode')).toBe('render');
     });
 
+    it('aria-pressed marks the active-mode button (initial render mode)', async () => {
+      const root = makeRoot();
+      await mountDocument(root, ipc(), {
+        tabId: 't',
+        html,
+        threads: [],
+        source: 'Hello',
+        path: '/tmp/a.md',
+        settings: settings(),
+      });
+      const toggle = root.querySelector<HTMLElement>('[data-testid="mode-toggle"]')!;
+      const renderBtn = toggle.querySelector<HTMLButtonElement>('button[data-mode="render"]')!;
+      const rawBtn = toggle.querySelector<HTMLButtonElement>('button[data-mode="raw"]')!;
+      // Initial mode is render → render button is pressed, raw is not.
+      expect(renderBtn.getAttribute('aria-pressed')).toBe('true');
+      expect(rawBtn.getAttribute('aria-pressed')).toBe('false');
+      // Flip to raw via click.
+      rawBtn.click();
+      expect(renderBtn.getAttribute('aria-pressed')).toBe('false');
+      expect(rawBtn.getAttribute('aria-pressed')).toBe('true');
+      // Flip back.
+      renderBtn.click();
+      expect(renderBtn.getAttribute('aria-pressed')).toBe('true');
+      expect(rawBtn.getAttribute('aria-pressed')).toBe('false');
+    });
+
     it('destroy() unsubscribes from subscribeMode (no further mode notifications after teardown)', async () => {
       const root = makeRoot();
       const view = await mountDocument(root, ipc(), {

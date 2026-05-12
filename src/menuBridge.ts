@@ -25,6 +25,10 @@ export const MENU_ACTION_TO_EVENT: Readonly<Record<string, string>> = Object.fre
   'new-document': 'mdviewer:new-document',
   'close-tab': 'mdviewer:close-tab',
   'open-settings': 'mdviewer:open-settings',
+  // Short alias used by the wysiwyg e2e spec (render-raw-toggle.spec.ts:153
+  // calls `emitMenuAction('settings')`). The Rust menu emits the long
+  // form; both reach the same DOM event.
+  'settings': 'mdviewer:open-settings',
   // The keymap dispatches `mdviewer:save-active` (not save-file) — keep
   // the menu in line with that single source of truth so save handlers
   // don't have to listen on two channels.
