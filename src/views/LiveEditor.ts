@@ -61,6 +61,16 @@ export interface LiveEditorMountArgs {
    * resolve_anchor outcomes back out.
    */
   onAnchorsResolved?: (threadId: string, outcome: ResolveOutcome) => void;
+  /**
+   * Fired EXACTLY ONCE per successful save_document, AFTER the
+   * per-thread `onAnchorsResolved` pump has completed. Document.ts
+   * uses this as the canonical once-per-save signal to refresh the
+   * hidden render-shadow div via a single `ipc.renderMarkdown` call
+   * rather than triggering one render per resolved thread. The
+   * callback is invoked with the document path the editor is bound
+   * to. Skipped when the view is destroyed mid-save.
+   */
+  onSaved?: (path: string) => void;
 }
 
 export interface LiveEditorView {
@@ -74,6 +84,18 @@ export interface LiveEditorView {
   setMode(mode: LiveEditorMode): void;
   /** Current value of the mode StateField. */
   mode(): LiveEditorMode;
+  /**
+   * Subscribe to mode changes. The provided listener is invoked
+   * SYNCHRONOUSLY with the current mode before `subscribeMode`
+   * returns (this synchronous initial fire is load-bearing —
+   * Document.ts subscribes during mount and reads `data-mode` from
+   * the editor host on the next microtask; a deferred initial fire
+   * would race that DOM query). Subsequent invocations land after
+   * each `setMode` transaction. Multiple subscribers are supported;
+   * each receives the full sequence independently. Returns an
+   * unsubscribe function that removes the listener.
+   */
+  subscribeMode(listener: (mode: LiveEditorMode) => void): () => void;
   /**
    * Internal handle exposed for tests so they can dispatch
    * transactions with `userEvent` annotations without re-implementing
@@ -178,6 +200,19 @@ export function mountLiveEditor(
         // must not abort the loop or surface as an unhandled rejection.
       }
     }
+    // Canonical once-per-save signal. Fires AFTER the per-thread
+    // onAnchorsResolved pump so Document.ts can refresh its hidden
+    // render-shadow div exactly once per save (rather than N times,
+    // one per thread). Skipped when the view was destroyed mid-save
+    // — the destroyed-check above the loop would have already
+    // returned, but we double-check here for the zero-threads path.
+    if (destroyed) return;
+    try {
+      args.onSaved?.(args.path);
+    } catch {
+      // The onSaved callback is best-effort; a caller throwing must
+      // not surface as an unhandled rejection on the save promise.
+    }
   }
 
   function scheduleSave(): void {
@@ -240,6 +275,26 @@ export function mountLiveEditor(
   });
   const editorView = new EditorView({ state: startState, parent: root });
 
+  // Mode-change subscribers. Document.ts (A.2) subscribes during
+  // mount to keep `data-mode` reflective on the editor host element
+  // and to swap the dynamic `data-action="toggle-edit"` alias onto
+  // whichever button switches to the opposite mode. The Set is
+  // iterated AFTER the dispatch returns so listeners read a
+  // consistent state via `view.mode()` if they want to.
+  const modeSubscribers = new Set<(mode: LiveEditorMode) => void>();
+
+  function notifyModeSubscribers(next: LiveEditorMode): void {
+    // Snapshot to a fresh array so an `unsub()` call from inside a
+    // listener doesn't mutate the iteration target.
+    for (const fn of [...modeSubscribers]) {
+      try {
+        fn(next);
+      } catch {
+        // Subscriber failures must not break the dispatch path.
+      }
+    }
+  }
+
   function setMode(next: LiveEditorMode): void {
     if (destroyed) return;
     // Two pieces flip together: the mode StateField (effect-driven)
@@ -251,10 +306,28 @@ export function mountLiveEditor(
         editableCompartment.reconfigure(editableValueFor(next, renderReadonly)),
       ],
     });
+    notifyModeSubscribers(next);
   }
 
   function getMode(): LiveEditorMode {
     return editorView.state.field(modeField);
+  }
+
+  function subscribeMode(listener: (mode: LiveEditorMode) => void): () => void {
+    // Synchronous initial fire — the listener observes the current
+    // mode BEFORE this call returns. Document.ts depends on this
+    // to set `data-mode` on the editor host before the first DOM
+    // query happens on the next microtask.
+    try {
+      listener(getMode());
+    } catch {
+      // A throwing listener still gets subscribed; its later calls
+      // are wrapped the same way.
+    }
+    modeSubscribers.add(listener);
+    return () => {
+      modeSubscribers.delete(listener);
+    };
   }
 
   // WEBDRIVER-gated test hooks. Only attached when the bridge is
@@ -289,8 +362,26 @@ export function mountLiveEditor(
       const docLen = editorView.state.doc.length;
       const lo = Math.max(0, Math.min(start, docLen));
       const hi = Math.max(lo, Math.min(end, docLen));
+      // Order is load-bearing: (1) dispatch the selection transaction
+      // so CodeMirror updates the DOM selection synchronously; (2)
+      // synthesise a bubbling `mouseup` on contentDOM. SelectionPopover
+      // listens on the contentDOM and reads `window.getSelection()`
+      // inside its mouseup handler — dispatching BEFORE the selection
+      // transaction would surface the previous (or empty) selection.
+      // Target is `contentDOM` (the `.cm-content` element), NOT
+      // `view.dom`, because that is where SelectionPopover's listener
+      // is attached.
       editorView.dispatch({ selection: { anchor: lo, head: hi } });
+      editorView.contentDOM.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
       return Promise.resolve();
+    };
+    w.__mdviewerE2E.getLiveEditorSource = (): string => {
+      // Delegates to the StateField-backed doc; tests and the
+      // spec-05 textarea-write helper read the current source via
+      // this hook (rather than reaching into the DOM). When the
+      // view is destroyed this hook is removed in the cleanup
+      // block below, so callers never see a stale closure.
+      return editorView.state.doc.toString();
     };
     w.__mdviewerE2E.typeIntoLiveEditor = (text: string): Promise<void> => {
       if (destroyed) return Promise.resolve();
@@ -316,6 +407,7 @@ export function mountLiveEditor(
       delete w.__mdviewerE2E.forceSave;
       delete w.__mdviewerE2E.setLiveEditorSelection;
       delete w.__mdviewerE2E.typeIntoLiveEditor;
+      delete w.__mdviewerE2E.getLiveEditorSource;
     }
     editorView.destroy();
   }
@@ -326,6 +418,7 @@ export function mountLiveEditor(
     destroy,
     setMode,
     mode: getMode,
+    subscribeMode,
     editorView,
   };
 }
