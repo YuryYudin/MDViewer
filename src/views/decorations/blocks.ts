@@ -41,12 +41,19 @@ type WidgetKind = 'mermaid' | 'code' | 'html' | 'image' | 'table';
  * Identifies one block of source we want to replace with an atomic widget.
  * `kind` drives the rendered tag; `source` is the slice of state.doc that
  * gets sent through `renderMarkdown` to produce the widget body.
+ *
+ * `infoString` carries the raw FencedCode info-string (e.g. "python",
+ * "mermaid", "python {.hl}") when `kind` is "code" or "mermaid". Other
+ * kinds default to "" — the widget root carries `data-lang=""` for
+ * non-fenced widgets which is harmless (the wysiwyg specs only select
+ * `[data-lang="python"]` / `[data-lang="mermaid"]`).
  */
 interface BlockSpec {
   kind: WidgetKind;
   from: number;
   to: number;
   source: string;
+  infoString: string;
 }
 
 /**
@@ -90,15 +97,18 @@ function findBlocks(state: EditorState): BlockSpec[] {
           return;
         case 'FencedCode': {
           const source = state.doc.sliceString(node.from, node.to);
-          const kind: WidgetKind = looksLikeMermaid(state, node) ? 'mermaid' : 'code';
-          out.push({ kind, from: node.from, to: node.to, source });
+          const infoString = readCodeInfo(state, node);
+          const kind: WidgetKind = infoString.toLowerCase().startsWith('mermaid')
+            ? 'mermaid'
+            : 'code';
+          out.push({ kind, from: node.from, to: node.to, source, infoString });
           // Don't descend — CodeMark / CodeInfo / CodeText are
           // internal-only and we've already classified the block.
           return false;
         }
         case 'HTMLBlock': {
           const source = state.doc.sliceString(node.from, node.to);
-          out.push({ kind: 'html', from: node.from, to: node.to, source });
+          out.push({ kind: 'html', from: node.from, to: node.to, source, infoString: '' });
           return false;
         }
         case 'Image': {
@@ -112,14 +122,14 @@ function findBlocks(state: EditorState): BlockSpec[] {
             currentParagraph.to === node.to
           ) {
             const source = state.doc.sliceString(node.from, node.to);
-            out.push({ kind: 'image', from: node.from, to: node.to, source });
+            out.push({ kind: 'image', from: node.from, to: node.to, source, infoString: '' });
             return false;
           }
           return;
         }
         case 'Table': {
           const source = state.doc.sliceString(node.from, node.to);
-          out.push({ kind: 'table', from: node.from, to: node.to, source });
+          out.push({ kind: 'table', from: node.from, to: node.to, source, infoString: '' });
           // Don't descend — TableHeader / TableRow / TableCell are
           // collapsed under the atomic widget in Phase 1. (Phase 2's
           // tables extension will reach into these for per-cell editing.)
@@ -138,23 +148,31 @@ function findBlocks(state: EditorState): BlockSpec[] {
 }
 
 /**
- * Inspect the FencedCode node's direct children for a CodeInfo whose text
- * starts with "mermaid". Matches case-insensitively because the server
- * renderer is liberal with the info-string format (it accepts "mermaid",
- * "Mermaid", "mermaid foo" — the Document.ts contract just looks for the
- * prefix).
+ * Inspect the FencedCode node's direct children for a CodeInfo and return
+ * the raw info-string text (trimmed). Returns "" when no CodeInfo is
+ * present (info-string-less fence like ```` ``` ````). Callers downstream
+ * lowercase + first-token-split for `data-lang`, and `.startsWith("mermaid")`
+ * for mermaid detection (case-insensitively).
  */
-function looksLikeMermaid(state: EditorState, fence: SyntaxNodeRef): boolean {
+function readCodeInfo(state: EditorState, fence: SyntaxNodeRef): string {
   const node = fence.node;
   let child = node.firstChild;
   while (child) {
     if (child.name === 'CodeInfo') {
-      const info = state.doc.sliceString(child.from, child.to).trim().toLowerCase();
-      return info.startsWith('mermaid');
+      return state.doc.sliceString(child.from, child.to).trim();
     }
     child = child.nextSibling;
   }
-  return false;
+  return '';
+}
+
+/**
+ * Normalize a CodeInfo string into the value emitted on `data-lang`:
+ * first whitespace-separated token, lowercased. "JavaScript" → "javascript";
+ * "python {.hl}" → "python"; "" → "".
+ */
+function normalizeLang(infoString: string): string {
+  return infoString.trim().split(/\s+/)[0]?.toLowerCase() ?? '';
 }
 
 /**
@@ -226,6 +244,7 @@ class BlockWidget extends WidgetType {
   constructor(
     readonly kind: WidgetKind,
     readonly source: string,
+    readonly infoString: string,
     private readonly ctx: WidgetCtx,
   ) {
     super();
@@ -235,7 +254,10 @@ class BlockWidget extends WidgetType {
    * Two widget instances are equal when they represent the same block kind
    * and the same source slice. CodeMirror uses `eq` to decide whether to
    * reuse the existing DOM — without this, every transaction would rebuild
-   * the widget DOM (and re-issue the mermaid.run call).
+   * the widget DOM (and re-issue the mermaid.run call). The `infoString`
+   * intentionally does NOT participate in equality: it's derived purely
+   * from `source` (same fence text → same info string) so structural eq
+   * already covers it.
    */
   eq(other: WidgetType): boolean {
     return (
@@ -246,6 +268,19 @@ class BlockWidget extends WidgetType {
   toDOM(): HTMLElement {
     const root = document.createElement('div');
     root.setAttribute('data-block-widget', this.kind);
+    // `data-lang` mirrors the fence info-string (first whitespace token,
+    // lowercased) so the wysiwyg `[data-testid="code-widget"][data-lang="…"]`
+    // compound selector resolves. Non-fenced widgets carry data-lang=""
+    // which is harmless — no spec selects them by language.
+    root.setAttribute('data-lang', normalizeLang(this.infoString));
+    // `data-testid` is the wysiwyg spec contract: `code-widget` for code
+    // fences, `mermaid-widget` for mermaid fences. Other kinds don't
+    // need a testid alias yet (no spec selects them this way).
+    if (this.kind === 'code') {
+      root.setAttribute('data-testid', 'code-widget');
+    } else if (this.kind === 'mermaid') {
+      root.setAttribute('data-testid', 'mermaid-widget');
+    }
     // Atomic block widgets are non-editable surfaces. CM 6 needs the
     // `contenteditable=false` hint so caret motion via arrow keys skips
     // over the widget instead of landing inside its DOM.
@@ -294,25 +329,66 @@ class BlockWidget extends WidgetType {
 /**
  * Paste the IPC HTML into the widget root. We parse via DOMParser instead
  * of assigning `innerHTML` to keep the no-innerHTML house style consistent
- * with `Document.ts`'s `paintRenderFromHtml`. For mermaid widgets we kick
- * off the lazy-loaded `mermaid.run({ nodes: [root] })` after the body
- * lands so the SVG gets generated in place.
+ * with `Document.ts`'s `paintRenderFromHtml`.
+ *
+ * For non-mermaid widgets the paint is synchronous: parse, replace
+ * children, return.
+ *
+ * For mermaid widgets the paint is two-phased and **awaits**
+ * `mermaid.run` before exposing the rendered body to the DOM. The wysiwyg
+ * code-block.spec.ts polls for the `<svg>` inside `[data-testid="mermaid-widget"]`
+ * and expects it to land within the spec's timeout; a fire-and-forget
+ * `mermaid.run` lets the spec race against the mermaid module's async
+ * import and rendering pipeline, so we await deterministically.
+ *
+ * The fresh inner `<div>` strategy: parse the IPC HTML into an off-DOM
+ * `<div>`, hand THAT node to `mermaid.run` (so mermaid's in-place
+ * rewriting doesn't double-render if the StateField re-emits the same
+ * widget on the next transaction), then attach the rewritten content to
+ * the widget root after the await resolves. Failures fall through to
+ * attaching the IPC HTML as-is (so the user at least sees the source).
  */
 function paintBody(root: HTMLElement, kind: WidgetKind, html: string): void {
+  if (kind === 'mermaid') {
+    void paintMermaidBody(root, html);
+    return;
+  }
   root.replaceChildren();
   const parsed = new DOMParser().parseFromString(html, 'text/html');
   for (const node of Array.from(parsed.body.childNodes)) {
     root.appendChild(node);
   }
-  if (kind === 'mermaid') {
-    // Mermaid renders into the existing DOM node. Failures here are
-    // logged-but-not-thrown so a bad diagram doesn't crash the editor.
-    void loadMermaid()
-      .then((m) => m.run({ nodes: [root] }))
-      .catch((err) => {
-        // eslint-disable-next-line no-console
-        console.warn('mermaid.run failed:', err);
-      });
+}
+
+/**
+ * Awaited mermaid render path. The fresh inner `<div>` is created off-DOM,
+ * IPC HTML is parsed into it, `mermaid.run({ nodes: [inner] })` is awaited
+ * (logging-not-throwing on failure), and then the inner div's children
+ * are attached to the widget root. The widget root remains empty until
+ * mermaid.run completes — that's the contract the wysiwyg spec polls on.
+ */
+async function paintMermaidBody(root: HTMLElement, html: string): Promise<void> {
+  const inner = document.createElement('div');
+  const parsed = new DOMParser().parseFromString(html, 'text/html');
+  for (const node of Array.from(parsed.body.childNodes)) {
+    inner.appendChild(node);
+  }
+  try {
+    const m = await loadMermaid();
+    await m.run({ nodes: [inner] });
+  } catch (err) {
+    // Mermaid failures are logged-but-not-thrown so a bad diagram doesn't
+    // crash the editor; we still attach the (un-rewritten) IPC HTML so
+    // the user sees the source rather than an empty widget.
+    // eslint-disable-next-line no-console
+    console.warn('mermaid.run failed:', err);
+  }
+  // Move inner's children into the widget root only AFTER mermaid.run
+  // settled. Use a while-shift loop instead of children iteration so we
+  // don't observe the live HTMLCollection mutating under us.
+  root.replaceChildren();
+  while (inner.firstChild) {
+    root.appendChild(inner.firstChild);
   }
 }
 
@@ -326,7 +402,7 @@ function buildDecorations(state: EditorState, ctx: WidgetCtx): DecorationSet {
   const ranges: Range<Decoration>[] = [];
   for (const b of blocks) {
     if (selectionIntersects(state, b.from, b.to)) continue;
-    const widget = new BlockWidget(b.kind, b.source, ctx);
+    const widget = new BlockWidget(b.kind, b.source, b.infoString, ctx);
     ranges.push(
       Decoration.replace({
         widget,

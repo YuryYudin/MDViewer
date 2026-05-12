@@ -305,7 +305,7 @@ describe('blockWidgets', () => {
   });
 
   describe('mermaid lazy-load + run', () => {
-    it('imports mermaid and calls mermaid.run({ nodes: [widgetRoot] }) once per mermaid widget', async () => {
+    it('imports mermaid and calls mermaid.run({ nodes: [innerDiv] }) once per mermaid widget', async () => {
       const initialize = vi.fn();
       const run = vi.fn().mockResolvedValue(undefined);
       vi.doMock('mermaid', () => ({ default: { initialize, run } }));
@@ -321,7 +321,7 @@ describe('blockWidgets', () => {
         await resolveAll();
         // Mermaid widget body painted from IPC.
         expect(widgetKinds(view)).toContain('mermaid');
-        // run was invoked with { nodes: [widgetRoot] }.
+        // run was invoked with { nodes: [inner] } exactly once.
         expect(run).toHaveBeenCalledTimes(1);
         const call = run.mock.calls[0];
         expect(call).toBeTruthy();
@@ -329,10 +329,15 @@ describe('blockWidgets', () => {
         expect(arg?.nodes).toBeDefined();
         expect(Array.isArray(arg?.nodes)).toBe(true);
         expect(arg?.nodes?.length).toBe(1);
-        // The widget root the mermaid library got handed must be the same
-        // node that lives in the DOM.
+        // A.4 contract: a FRESH inner `<div>` (off-DOM) is fed to mermaid
+        // so the in-place rewriting doesn't double-render across StateField
+        // re-emits. The widget root therefore is NOT the same node as
+        // arg.nodes[0]; the rewritten content is attached after await.
         const widgetRoot = view.dom.querySelector('[data-block-widget="mermaid"]');
-        expect(widgetRoot).toBe(arg?.nodes?.[0]);
+        expect(widgetRoot).not.toBeNull();
+        expect(widgetRoot).not.toBe(arg?.nodes?.[0]);
+        // The off-DOM div that was fed to mermaid is an HTMLElement.
+        expect(arg?.nodes?.[0]).toBeInstanceOf(HTMLElement);
         view.destroy();
       } finally {
         vi.doUnmock('mermaid');
@@ -372,6 +377,147 @@ describe('blockWidgets', () => {
       // covers the contract better than a structural assertion.
       const state = EditorState.create({ doc: '', extensions: [ext] });
       expect(state.doc.length).toBe(0);
+    });
+  });
+
+  describe('A.4: data-lang attribute on code/mermaid widget roots', () => {
+    it('puts data-lang="python" on the code widget root for a ```python fence', async () => {
+      const { renderMarkdown, resolveAll } = makeRenderMarkdownStub();
+      const src = '```python\nprint(1)\n```\n';
+      const view = makeView(src, renderMarkdown);
+      await resolveAll();
+      const widget = view.dom.querySelector('[data-testid="code-widget"]');
+      expect(widget).not.toBeNull();
+      expect(widget!.getAttribute('data-lang')).toBe('python');
+      view.destroy();
+    });
+
+    it('puts data-lang="mermaid" on the mermaid widget root for a ```mermaid fence', async () => {
+      // Override the top-level mermaid mock with a deterministic no-op
+      // run() — sibling tests in this file vi.doUnmock('mermaid'), which
+      // leaves the dynamic import resolving to the real library; the
+      // real library logs a warning when handed our markdown-source IPC
+      // fixture. Pin a fresh no-op for this test.
+      vi.doMock('mermaid', () => ({
+        default: { initialize: vi.fn(), run: vi.fn().mockResolvedValue(undefined) },
+      }));
+      __resetMermaidCacheForTests();
+      try {
+        const { renderMarkdown, resolveAll } = makeRenderMarkdownStub();
+        const src = '```mermaid\ngraph TD;A-->B;\n```\n';
+        const view = makeView(src, renderMarkdown);
+        await resolveAll();
+        const widget = view.dom.querySelector('[data-testid="mermaid-widget"]');
+        expect(widget).not.toBeNull();
+        expect(widget!.getAttribute('data-lang')).toBe('mermaid');
+        view.destroy();
+      } finally {
+        vi.doUnmock('mermaid');
+      }
+    });
+
+    it('lowercases the info string ("JavaScript" -> "javascript")', async () => {
+      const { renderMarkdown, resolveAll } = makeRenderMarkdownStub();
+      const src = '```JavaScript\nconsole.log(1);\n```\n';
+      const view = makeView(src, renderMarkdown);
+      await resolveAll();
+      const widget = view.dom.querySelector('[data-testid="code-widget"]');
+      expect(widget).not.toBeNull();
+      expect(widget!.getAttribute('data-lang')).toBe('javascript');
+      view.destroy();
+    });
+
+    it('takes only the first whitespace-separated token of the info string', async () => {
+      const { renderMarkdown, resolveAll } = makeRenderMarkdownStub();
+      const src = '```python {.hl}\nprint(1)\n```\n';
+      const view = makeView(src, renderMarkdown);
+      await resolveAll();
+      const widget = view.dom.querySelector('[data-testid="code-widget"]');
+      expect(widget).not.toBeNull();
+      expect(widget!.getAttribute('data-lang')).toBe('python');
+      view.destroy();
+    });
+
+    it('sets data-lang="" on a fenced-code widget with no info string', async () => {
+      const { renderMarkdown, resolveAll } = makeRenderMarkdownStub();
+      const src = '```\nplain text\n```\n';
+      const view = makeView(src, renderMarkdown);
+      await resolveAll();
+      const widget = view.dom.querySelector('[data-testid="code-widget"]');
+      expect(widget).not.toBeNull();
+      expect(widget!.getAttribute('data-lang')).toBe('');
+      view.destroy();
+    });
+
+    it('the code-widget root carries BOTH data-testid="code-widget" and data-lang', async () => {
+      // The wysiwyg code-block.spec.ts selector is
+      //   [data-testid="code-widget"][data-lang="python"]
+      // — both must live on the same element. This case asserts the
+      // compound selector resolves (i.e., not split across two
+      // ancestors).
+      const { renderMarkdown, resolveAll } = makeRenderMarkdownStub();
+      const src = '```python\nprint(1)\n```\n';
+      const view = makeView(src, renderMarkdown);
+      await resolveAll();
+      const compound = view.dom.querySelector('[data-testid="code-widget"][data-lang="python"]');
+      expect(compound).not.toBeNull();
+      view.destroy();
+    });
+  });
+
+  describe('A.4: mermaid.run is awaited before the svg is exposed', () => {
+    it('does not expose the svg until mermaid.run() resolves', async () => {
+      // Build a deferred mermaid.run promise. The widget builder must
+      // await it; consequently the IPC-supplied <svg> body should not be
+      // present in the widget DOM until we resolve mermaidRunPromise.
+      let mermaidRunResolve!: () => void;
+      const mermaidRunPromise = new Promise<void>((r) => {
+        mermaidRunResolve = r;
+      });
+      const initialize = vi.fn();
+      const run = vi.fn().mockImplementation(() => mermaidRunPromise);
+      vi.doMock('mermaid', () => ({ default: { initialize, run } }));
+      __resetMermaidCacheForTests();
+
+      try {
+        // IPC returns an <svg> immediately so we can observe the
+        // "before mermaid.run resolves, the svg is NOT in the DOM"
+        // contract distinctly from the "after, it is" branch.
+        const renderMarkdown = vi.fn(
+          async (): Promise<RenderResult> =>
+            ({
+              html: '<svg data-mermaid-svg="1"></svg>',
+              spans: [],
+            }) as unknown as RenderResult,
+        );
+        const src = '```mermaid\ngraph LR;A-->B;\n```\n';
+        const view = makeView(src, renderMarkdown);
+        // Let renderMarkdown resolve so paintBody starts.
+        await Promise.resolve();
+        await Promise.resolve();
+        await new Promise((r) => setTimeout(r, 0));
+        await new Promise((r) => setTimeout(r, 0));
+
+        const widget = view.dom.querySelector('[data-testid="mermaid-widget"]');
+        expect(widget).not.toBeNull();
+        // mermaid.run was invoked but is still pending. Because the
+        // widget body builder awaits mermaid.run, the inner svg has
+        // not been appended yet.
+        expect(run).toHaveBeenCalledTimes(1);
+        expect(widget!.querySelector('svg')).toBeNull();
+
+        // Resolve mermaid.run; flush microtasks; the awaited builder
+        // resumes and appends the svg.
+        mermaidRunResolve();
+        await Promise.resolve();
+        await Promise.resolve();
+        await new Promise((r) => setTimeout(r, 0));
+        await new Promise((r) => setTimeout(r, 0));
+        expect(widget!.querySelector('svg')).not.toBeNull();
+        view.destroy();
+      } finally {
+        vi.doUnmock('mermaid');
+      }
     });
   });
 
