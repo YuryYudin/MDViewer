@@ -120,6 +120,12 @@ export function attachSelectionPopover(
     removePopover();
     popover = document.createElement('div');
     popover.setAttribute('data-view', 'selection-popover');
+    // Additive alias for the wysiwyg comment-from-selection e2e spec
+    // (`browser.$('[data-testid="selection-popover"]')`). The existing
+    // `data-view` attribute is still consumed by specs 03-add-comment
+    // and 18-sidebar-toggle, so both attributes MUST coexist on the
+    // same root element.
+    popover.setAttribute('data-testid', 'selection-popover');
     popover.style.position = 'fixed';
     popover.style.top = `${rect.top - 36}px`;
     popover.style.left = `${rect.left}px`;

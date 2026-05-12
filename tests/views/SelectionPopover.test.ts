@@ -360,4 +360,28 @@ describe('SelectionPopover (CodeMirror selection source)', () => {
     fireMouseUp(view);
     expect(document.querySelector('[data-view="selection-popover"]')).toBeNull();
   });
+
+  it('popover root carries BOTH data-view and data-testid="selection-popover"', () => {
+    // The existing data-view attribute is consumed by specs 03-add-comment
+    // and 18-sidebar-toggle; the new data-testid is consumed by the wysiwyg
+    // comment-from-selection spec. Both must coexist on the same root.
+    const view = mount('Hello world');
+    attachSelectionPopover(view, ipcStub(), () => 'tab-1');
+    selectRange(view, 0, 5);
+    fireMouseUp(view);
+    const pop = document.querySelector('[data-view="selection-popover"]');
+    expect(pop).not.toBeNull();
+    expect(pop!.getAttribute('data-testid')).toBe('selection-popover');
+  });
+
+  it('querying by data-testid="selection-popover" returns the SAME element as data-view', () => {
+    const view = mount('Hello world');
+    attachSelectionPopover(view, ipcStub(), () => 'tab-1');
+    selectRange(view, 0, 5);
+    fireMouseUp(view);
+    const byView = document.querySelector('[data-view="selection-popover"]');
+    const byTestid = document.querySelector('[data-testid="selection-popover"]');
+    expect(byView).not.toBeNull();
+    expect(byTestid).toBe(byView);
+  });
 });
