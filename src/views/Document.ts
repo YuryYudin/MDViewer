@@ -165,8 +165,16 @@ export async function mountDocument(
   view.appendChild(toolbar);
 
   // --- Editor host ----------------------------------------------------
+  // Three selector aliases on the same element, each load-bearing:
+  //   * data-region="editor"  — new Phase-A surface name
+  //   * data-region="render"  — back-compat for existing root-level e2e
+  //     specs (e2e/0x-*.spec.ts) that query the rendered-HTML pane the
+  //     LiveEditor replaces (space-separated token list).
+  //   * data-testid="live-editor" — wireframe contract used by the
+  //     Phase-1 wysiwyg WDIO specs (per wireframes/01-render-default.html).
   const editorHost = document.createElement('div');
-  editorHost.setAttribute('data-region', 'editor');
+  editorHost.setAttribute('data-region', 'editor render');
+  editorHost.setAttribute('data-testid', 'live-editor');
   view.appendChild(editorHost);
   root.appendChild(view);
 
