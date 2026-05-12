@@ -1,0 +1,135 @@
+/*
+ * decorations.css — visual styles for the inlineMarks (A.5) and
+ * blocks (A.6) decoration extensions. A.9 wires this import via
+ * Document.ts; A.5 only creates the file.
+ *
+ * Classes here pair 1-1 with the class names emitted by
+ * src/views/decorations/inlineMarks.ts. The .cm-md-* prefix matches
+ * the CodeMirror convention (cm-cursor, cm-line, cm-selectionMatch).
+ *
+ * NOTE — Non-Goal #7 of the design: do not touch
+ * crates/mdviewer-core/assets/document.css (canonical Android-shared
+ * sheet). This stylesheet is desktop-only.
+ */
+
+/* ---------- Headings ---------- */
+
+.cm-md-h1 {
+  font-size: 1.75em;
+  font-weight: 700;
+  line-height: 1.2;
+}
+.cm-md-h2 {
+  font-size: 1.5em;
+  font-weight: 700;
+  line-height: 1.25;
+}
+.cm-md-h3 {
+  font-size: 1.3em;
+  font-weight: 700;
+  line-height: 1.3;
+}
+.cm-md-h4 {
+  font-size: 1.15em;
+  font-weight: 700;
+  line-height: 1.35;
+}
+.cm-md-h5 {
+  font-size: 1.05em;
+  font-weight: 700;
+  line-height: 1.4;
+}
+.cm-md-h6 {
+  font-size: 1em;
+  font-weight: 700;
+  line-height: 1.4;
+  color: var(--text-muted, #6a6a6a);
+}
+
+/* ---------- Inline marks ---------- */
+
+.cm-md-bold {
+  font-weight: 700;
+}
+
+.cm-md-italic {
+  font-style: italic;
+}
+
+.cm-md-strike {
+  text-decoration: line-through;
+}
+
+.cm-md-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: var(--code-bg, rgba(135, 131, 120, 0.15));
+  padding: 0.1em 0.35em;
+  border-radius: 3px;
+  font-size: 0.92em;
+}
+
+/* ---------- Lists ---------- */
+
+/*
+ * The literal `- `/`*`/`+ `/`1. ` source bytes are sigil-hidden by
+ * a Decoration.replace. The ::before pseudo-element renders the
+ * user-visible marker. Padding-left makes room for the marker so
+ * the list-item content lines up with the original byte position.
+ */
+
+.cm-md-list-unordered,
+.cm-md-list-ordered {
+  position: relative;
+  padding-left: 1.6em;
+}
+
+.cm-md-list-unordered::before {
+  content: "•";
+  position: absolute;
+  left: 0.4em;
+  color: var(--text-muted, #6a6a6a);
+}
+
+.cm-md-list-ordered::before {
+  content: attr(data-list-number) ".";
+  position: absolute;
+  left: 0.2em;
+  color: var(--text-muted, #6a6a6a);
+}
+
+/* ---------- Blockquotes ---------- */
+
+.cm-md-blockquote {
+  border-left: 3px solid var(--blockquote-border, #d0d0d0);
+  padding-left: 0.75em;
+  color: var(--text-muted, #6a6a6a);
+}
+
+/* ---------- Links ---------- */
+
+.cm-md-link {
+  color: var(--accent, #2c6cb9);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* ---------- Sigils ---------- */
+
+/*
+ * Sigil hides are implemented via Decoration.replace (no DOM
+ * survives), so this class never lands on a real element. It exists
+ * for downstream extensions that may opt into a "dim the sigil"
+ * mode instead of fully replacing it — useful for raw mode.
+ */
+.cm-md-sigil {
+  color: var(--sigil, #ff8c1a);
+  opacity: 0.65;
+}
+
+/* ---------- Inline image widget ---------- */
+
+.cm-md-inline-image {
+  max-width: 100%;
+  height: auto;
+  vertical-align: middle;
+}
