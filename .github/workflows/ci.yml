@@ -1,8 +1,16 @@
 name: CI
 
-# Runs on every PR and on pushes to main. The fast jobs (gen-types, test-js)
-# gate the matrix builds so a codegen drift or unit-test failure short-
-# circuits the ~30 min of cross-OS bundle compilation.
+# Runs on every PR, on pushes to main, and on pushes to integration
+# branches (`integrate/*`). The fast jobs (gen-types, test-js) gate the
+# matrix builds so a codegen drift or unit-test failure short-circuits
+# the ~30 min of cross-OS bundle compilation.
+#
+# The `integrate/*` branch trigger gives multi-task feature work (driven
+# by /tcoder:orchestrate) macOS-CI verification of the E2E (macOS) job
+# without requiring an open PR — important on platforms where the E2E
+# suite cannot run locally (Linux developers can't exercise the
+# tauri-webdriver-automation plugin, which is macOS-only at the
+# window-tracking layer; see wdio.conf.ts for the investigation).
 #
 # All ${{ ... }} interpolations in this file pull from `github.workflow`,
 # `github.ref`, or `matrix.*` — workflow / ref names that the GitHub
@@ -12,7 +20,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, 'integrate/*']
 
 # Force-pushes to a PR cancel the in-flight run. Pushes to main never cancel
 # each other so every merge gets a fresh full run.
