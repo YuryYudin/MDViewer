@@ -456,6 +456,210 @@ describe('LiveEditor', () => {
     });
   });
 
+  describe('WEBDRIVER selection + type hooks', () => {
+    it('attaches setLiveEditorSelection and typeIntoLiveEditor when __WEBDRIVER__ is truthy and clears them on destroy', async () => {
+      (window as unknown as Record<string, unknown>).__WEBDRIVER__ = true;
+      const root = makeRoot();
+      const ipc = makeIpc();
+      const view = mountLiveEditor(root, ipc as never, {
+        tabId: 't',
+        path: '/tmp/a.md',
+        source: 'hello world',
+        settings: makeSettings(),
+        threads: [],
+      });
+      const e2e = (window as unknown as {
+        __mdviewerE2E?: {
+          setLiveEditorSelection?: (s: number, e: number) => Promise<void>;
+          typeIntoLiveEditor?: (t: string) => Promise<void>;
+        };
+      }).__mdviewerE2E;
+      expect(e2e).toBeDefined();
+      expect(typeof e2e!.setLiveEditorSelection).toBe('function');
+      expect(typeof e2e!.typeIntoLiveEditor).toBe('function');
+      view.destroy();
+      const after = (window as unknown as {
+        __mdviewerE2E?: {
+          setLiveEditorSelection?: (s: number, e: number) => Promise<void>;
+          typeIntoLiveEditor?: (t: string) => Promise<void>;
+        };
+      }).__mdviewerE2E;
+      // Both slots are cleared on destroy.
+      expect(after?.setLiveEditorSelection).toBeUndefined();
+      expect(after?.typeIntoLiveEditor).toBeUndefined();
+    });
+
+    it('does NOT attach selection/type hooks when __WEBDRIVER__ is falsy', () => {
+      const root = makeRoot();
+      const ipc = makeIpc();
+      const view = mountLiveEditor(root, ipc as never, {
+        tabId: 't',
+        path: '/tmp/a.md',
+        source: '',
+        settings: makeSettings(),
+        threads: [],
+      });
+      const e2e = (window as unknown as {
+        __mdviewerE2E?: {
+          setLiveEditorSelection?: (s: number, e: number) => Promise<void>;
+          typeIntoLiveEditor?: (t: string) => Promise<void>;
+        };
+      }).__mdviewerE2E;
+      // The hook object isn't even created in this branch.
+      expect(e2e?.setLiveEditorSelection).toBeUndefined();
+      expect(e2e?.typeIntoLiveEditor).toBeUndefined();
+      view.destroy();
+    });
+
+    it('setLiveEditorSelection moves the caret to the requested source offset', async () => {
+      (window as unknown as Record<string, unknown>).__WEBDRIVER__ = true;
+      const root = makeRoot();
+      const ipc = makeIpc();
+      const view = mountLiveEditor(root, ipc as never, {
+        tabId: 't',
+        path: '/tmp/a.md',
+        source: 'hello world',
+        settings: makeSettings(),
+        threads: [],
+      });
+      const setSel = (window as unknown as {
+        __mdviewerE2E: { setLiveEditorSelection: (s: number, e: number) => Promise<void> };
+      }).__mdviewerE2E.setLiveEditorSelection;
+      await setSel(6, 6);
+      const sel = view.editorView.state.selection.main;
+      expect(sel.from).toBe(6);
+      expect(sel.to).toBe(6);
+      view.destroy();
+    });
+
+    it('setLiveEditorSelection supports a non-empty range (start < end)', async () => {
+      (window as unknown as Record<string, unknown>).__WEBDRIVER__ = true;
+      const root = makeRoot();
+      const ipc = makeIpc();
+      const view = mountLiveEditor(root, ipc as never, {
+        tabId: 't',
+        path: '/tmp/a.md',
+        source: 'hello world',
+        settings: makeSettings(),
+        threads: [],
+      });
+      const setSel = (window as unknown as {
+        __mdviewerE2E: { setLiveEditorSelection: (s: number, e: number) => Promise<void> };
+      }).__mdviewerE2E.setLiveEditorSelection;
+      await setSel(0, 5);
+      const sel = view.editorView.state.selection.main;
+      expect(sel.from).toBe(0);
+      expect(sel.to).toBe(5);
+      view.destroy();
+    });
+
+    it('setLiveEditorSelection clamps offsets that fall outside the document length', async () => {
+      (window as unknown as Record<string, unknown>).__WEBDRIVER__ = true;
+      const root = makeRoot();
+      const ipc = makeIpc();
+      const view = mountLiveEditor(root, ipc as never, {
+        tabId: 't',
+        path: '/tmp/a.md',
+        source: 'abc',
+        settings: makeSettings(),
+        threads: [],
+      });
+      const setSel = (window as unknown as {
+        __mdviewerE2E: { setLiveEditorSelection: (s: number, e: number) => Promise<void> };
+      }).__mdviewerE2E.setLiveEditorSelection;
+      // Negative start and an end past EOF — both must clamp.
+      await setSel(-10, 9999);
+      const sel = view.editorView.state.selection.main;
+      expect(sel.from).toBe(0);
+      expect(sel.to).toBe(3); // doc length
+      view.destroy();
+    });
+
+    it('typeIntoLiveEditor inserts text at the current caret and flips dirty/autosave like a real keystroke', async () => {
+      vi.useFakeTimers();
+      (window as unknown as Record<string, unknown>).__WEBDRIVER__ = true;
+      const root = makeRoot();
+      const ipc = makeIpc();
+      const view = mountLiveEditor(root, ipc as never, {
+        tabId: 't',
+        path: '/tmp/a.md',
+        source: 'hello world',
+        settings: makeSettings({ auto_save_debounce_ms: 50 }),
+        threads: [],
+      });
+      const setSel = (window as unknown as {
+        __mdviewerE2E: { setLiveEditorSelection: (s: number, e: number) => Promise<void> };
+      }).__mdviewerE2E.setLiveEditorSelection;
+      const typeIn = (window as unknown as {
+        __mdviewerE2E: { typeIntoLiveEditor: (t: string) => Promise<void> };
+      }).__mdviewerE2E.typeIntoLiveEditor;
+
+      await setSel(5, 5); // between "hello" and " world"
+      await typeIn('Z');
+      expect(view.currentSource()).toBe('helloZ world');
+      // Dirty hint to the watcher fired.
+      expect(ipc.setDirty).toHaveBeenCalledWith('/tmp/a.md', true);
+      // Debounce fires after 50ms.
+      vi.advanceTimersByTime(50);
+      for (let i = 0; i < 5; i++) await Promise.resolve();
+      expect(ipc.saveDocument).toHaveBeenCalledWith('t', 'helloZ world');
+      view.destroy();
+    });
+
+    it('typeIntoLiveEditor replaces a non-empty selection with the inserted text', async () => {
+      (window as unknown as Record<string, unknown>).__WEBDRIVER__ = true;
+      const root = makeRoot();
+      const ipc = makeIpc();
+      const view = mountLiveEditor(root, ipc as never, {
+        tabId: 't',
+        path: '/tmp/a.md',
+        source: 'abc def',
+        settings: makeSettings(),
+        threads: [],
+      });
+      const setSel = (window as unknown as {
+        __mdviewerE2E: { setLiveEditorSelection: (s: number, e: number) => Promise<void> };
+      }).__mdviewerE2E.setLiveEditorSelection;
+      const typeIn = (window as unknown as {
+        __mdviewerE2E: { typeIntoLiveEditor: (t: string) => Promise<void> };
+      }).__mdviewerE2E.typeIntoLiveEditor;
+      await setSel(0, 3); // select "abc"
+      await typeIn('XYZ');
+      expect(view.currentSource()).toBe('XYZ def');
+      // Caret now sits at the end of the inserted text.
+      const sel = view.editorView.state.selection.main;
+      expect(sel.from).toBe(3);
+      expect(sel.to).toBe(3);
+      view.destroy();
+    });
+
+    it('setLiveEditorSelection and typeIntoLiveEditor are no-ops after destroy()', async () => {
+      (window as unknown as Record<string, unknown>).__WEBDRIVER__ = true;
+      const root = makeRoot();
+      const ipc = makeIpc();
+      const view = mountLiveEditor(root, ipc as never, {
+        tabId: 't',
+        path: '/tmp/a.md',
+        source: 'abc',
+        settings: makeSettings(),
+        threads: [],
+      });
+      // Capture references BEFORE destroy clears them off the global.
+      const setSel = (window as unknown as {
+        __mdviewerE2E: { setLiveEditorSelection: (s: number, e: number) => Promise<void> };
+      }).__mdviewerE2E.setLiveEditorSelection;
+      const typeIn = (window as unknown as {
+        __mdviewerE2E: { typeIntoLiveEditor: (t: string) => Promise<void> };
+      }).__mdviewerE2E.typeIntoLiveEditor;
+      view.destroy();
+      // Calling either after destroy must not throw and must not
+      // observably mutate the (already-destroyed) view.
+      await expect(setSel(0, 2)).resolves.toBeUndefined();
+      await expect(typeIn('Q')).resolves.toBeUndefined();
+      expect(ipc.saveDocument).not.toHaveBeenCalled();
+    });
+  });
+
   describe('error-path tolerance', () => {
     it('swallows a setDirty rejection on first input without breaking autosave', async () => {
       vi.useFakeTimers();
