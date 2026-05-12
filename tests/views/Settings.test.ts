@@ -267,11 +267,16 @@ describe('Settings', () => {
     const ipc = makeIpc();
     await mountSettings(root, ipc as any);
 
+    // A.3 (Phase-A correction): default_open_mode now lives in the
+    // `{ "render" | "raw" }` space (post-WYSIWYG vocabulary). The
+    // legacy `"view" / "edit"` values are accepted via the Rust-side
+    // deserializer and rewritten in-memory; the writer always emits
+    // the new values. The Vitest assertion mirrors the new space.
     const mode = root.querySelector<HTMLSelectElement>('[data-test="default-open-mode"]')!;
-    mode.value = 'edit';
+    mode.value = 'raw';
     mode.dispatchEvent(new Event('change'));
     await flush();
-    expect(ipc.setSettings.mock.calls.at(-1)![0].editor.default_open_mode).toBe('edit');
+    expect(ipc.setSettings.mock.calls.at(-1)![0].editor.default_open_mode).toBe('raw');
 
     const ext = root.querySelector<HTMLSelectElement>('[data-test="external-change"]')!;
     ext.value = 'reload';
@@ -284,6 +289,82 @@ describe('Settings', () => {
     deb.dispatchEvent(new Event('change'));
     await flush();
     expect(ipc.setSettings.mock.calls.at(-1)![0].editor.auto_save_debounce_ms).toBe(1500);
+  });
+
+  // A.3 (correction): the spec at e2e/specs/wysiwyg/render-raw-toggle.spec.ts
+  // queries `browser.$('#render-readonly').isSelected()`. WebDriver's
+  // `.isSelected()` resolves only against actual checkbox/radio/option
+  // semantics on an element matched by a real CSS id selector. Both the
+  // `id="render-readonly"` and the `type="checkbox"` are load-bearing.
+  it('editor: render-readonly toggle is <input type="checkbox" id="render-readonly">', async () => {
+    const root = document.createElement('div');
+    const ipc = makeIpc();
+    await mountSettings(root, ipc as any);
+    const cb = root.querySelector<HTMLInputElement>('#render-readonly');
+    expect(cb).not.toBeNull();
+    expect(cb!.tagName).toBe('INPUT');
+    expect(cb!.type).toBe('checkbox');
+    // Seed defaults render_readonly = false (fresh-install default).
+    expect(cb!.checked).toBe(false);
+  });
+
+  it('editor: render-readonly checkbox reflects render_readonly === true', async () => {
+    const root = document.createElement('div');
+    const settings = defaultSettings();
+    settings.editor.render_readonly = true;
+    const ipc = makeIpc({ getSettings: vi.fn().mockResolvedValue(settings) });
+    await mountSettings(root, ipc as any);
+    const cb = root.querySelector<HTMLInputElement>('#render-readonly');
+    expect(cb).not.toBeNull();
+    expect(cb!.checked).toBe(true);
+  });
+
+  // A.3 (correction): the spec at e2e/specs/wysiwyg/render-raw-toggle.spec.ts
+  // queries `browser.$('[data-testid="default-mode-select"]').getValue()`.
+  // WebDriver `.getValue()` only resolves to `.value` on <input>, <select>,
+  // <textarea>. The render must be a real <select> element, not a custom
+  // dropdown, with <option value="render"> and <option value="raw">.
+  it('editor: default-mode surface is <select data-testid="default-mode-select"> with render/raw options', async () => {
+    const root = document.createElement('div');
+    const ipc = makeIpc();
+    await mountSettings(root, ipc as any);
+    const sel = root.querySelector<HTMLSelectElement>('[data-testid="default-mode-select"]');
+    expect(sel).not.toBeNull();
+    expect(sel!.tagName).toBe('SELECT');
+    // Default seed = 'render'.
+    expect(sel!.value).toBe('render');
+    expect(Array.from(sel!.options).map((o) => o.value).sort()).toEqual(['raw', 'render']);
+  });
+
+  it('editor: default-mode select reflects render_readonly-migrated value (raw)', async () => {
+    const root = document.createElement('div');
+    const settings = defaultSettings();
+    settings.editor.default_open_mode = 'raw';
+    const ipc = makeIpc({ getSettings: vi.fn().mockResolvedValue(settings) });
+    await mountSettings(root, ipc as any);
+    const sel = root.querySelector<HTMLSelectElement>('[data-testid="default-mode-select"]');
+    expect(sel).not.toBeNull();
+    expect(sel!.value).toBe('raw');
+  });
+
+  // Migration coverage: the Rust deserializer rewrites a legacy
+  // `default_open_mode = "view"` value to `"render"` in-memory (see the
+  // doc comment on EditorSettings in types-generated.ts). By the time
+  // Settings.ts reads from `getSettings()` the value is already migrated.
+  // The <select>'s `.value` must therefore read 'render' (NOT 'view',
+  // which is no longer an <option>). This test pins that Settings.ts
+  // passes the migrated value straight through to the rendered DOM.
+  it('editor: default-mode select shows "render" for a legacy migrated value', async () => {
+    const root = document.createElement('div');
+    const settings = defaultSettings();
+    // Simulate the post-migration shape the IPC layer produces.
+    // (Pre-migration the Rust side would have observed "view" and
+    // rewritten it to "render" before the TS layer ever saw it.)
+    settings.editor.default_open_mode = 'render';
+    const ipc = makeIpc({ getSettings: vi.fn().mockResolvedValue(settings) });
+    await mountSettings(root, ipc as any);
+    const sel = root.querySelector<HTMLSelectElement>('[data-testid="default-mode-select"]');
+    expect(sel!.value).toBe('render');
   });
 
   // A.9: render_readonly toggle ships in the Editor & Viewer card

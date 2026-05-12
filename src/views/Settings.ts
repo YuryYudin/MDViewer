@@ -280,14 +280,27 @@ function buildAppearance(ipc: Ipc, settings: Settings): HTMLElement {
 function buildEditor(ipc: Ipc, settings: Settings): HTMLElement {
   const s = section('editor', 'Editor & viewer');
 
+  // A.3 (Phase-A correction): the default-open-mode surface ships as a
+  // real `<select data-testid="default-mode-select">` with the new
+  // `{ "render" | "raw" }` value space (the post-WYSIWYG vocabulary).
+  // The Rust-side deserializer rewrites legacy `"view" -> "render"` and
+  // `"edit" -> "raw"` in-memory on read (see EditorSettings doc-comment
+  // in types-generated.ts) so the value reaching us here is already in
+  // the new space; we just pass it straight through to the rendered
+  // <option selected>. The `data-testid` is load-bearing: the e2e spec
+  // at render-raw-toggle.spec.ts:170 queries
+  // `[data-testid="default-mode-select"]`.getValue(), and WebDriver
+  // `.getValue()` only resolves against a real <select>/<input>/<textarea>.
+  // The legacy `data-test="default-open-mode"` alias stays for additive
+  // backwards-compat with the existing Vitest suite.
   const mode = labeledSelect(
     'Default open mode ',
     [
-      ['view', 'View'],
-      ['edit', 'Edit'],
+      ['render', 'Render'],
+      ['raw', 'Raw'],
     ],
     settings.editor.default_open_mode,
-    { 'data-test': 'default-open-mode' },
+    { 'data-test': 'default-open-mode', 'data-testid': 'default-mode-select' },
   );
   s.appendChild(mode.row);
   mode.select.addEventListener('change', () => {
@@ -377,10 +390,19 @@ function buildEditor(ipc: Ipc, settings: Settings): HTMLElement {
   // copied VERBATIM from the Phase-1 release-notes line — do not
   // paraphrase. Tests assert the exact string so a copy edit here will
   // trip them.
+  //
+  // A.3 (Phase-A correction): the checkbox carries `id="render-readonly"`
+  // because the e2e spec at render-raw-toggle.spec.ts:158 queries
+  // `browser.$('#render-readonly').isSelected()`. WebDriver `.isSelected()`
+  // resolves only against actual checkbox / radio / option semantics on
+  // an element matched by a real CSS id selector — both the `id` AND
+  // the `type="checkbox"` are load-bearing. The existing
+  // `data-test="render-readonly"` alias on the row remains for the
+  // Vitest suite (additive, optional per the design).
   const renderReadonly = labeledCheckbox(
     'Render documents read-only. Toggle off to enable in-place editing.',
     settings.editor.render_readonly,
-    { 'data-test': 'render-readonly' },
+    { 'data-test': 'render-readonly', id: 'render-readonly' },
   );
   s.appendChild(renderReadonly.row);
   renderReadonly.input.addEventListener('change', () => {
