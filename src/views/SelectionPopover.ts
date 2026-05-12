@@ -1,35 +1,80 @@
+import type { EditorView } from '@codemirror/view';
 import type { Ipc } from '../ipc';
 
 /**
- * Attach the selection popover (wireframe 04) to the document root. The
- * `mouseup` listener is scoped to `documentRoot` rather than `document` so
- * selecting text in Settings or the sidebar never raises a comment popover.
+ * Length of the source-context window (prefix / suffix) carried in the
+ * anchor payload. Matches the Bitap-disambiguation contract used by
+ * `mdviewer-core::resolve_anchor` — change this here only in lock-step
+ * with the Rust side.
+ */
+const CONTEXT_LEN = 32;
+
+/**
+ * Anchor payload shape consumed by `ipc.createThread`. Identical to the
+ * old DOM-Range-derived shape; only the selection SOURCE changes.
+ */
+interface AnchorPayload {
+  start: number;
+  end: number;
+  exact: string;
+  prefix: string;
+  suffix: string;
+}
+
+/**
+ * Read the current CodeMirror selection and build the anchor payload.
+ * Returns null when the selection is collapsed (`from === to`) — the
+ * caller treats that as "no popover".
  *
- * Two-stage flow:
- *   stage 1: [Comment] [Copy] — clicking Comment swaps the popover into a
- *     body composer (textarea + Post + Cancel).
+ * `prefix` and `suffix` are up to 32 chars of source context pulled
+ * via `view.state.doc.sliceString` so the Rust-side resolver can
+ * disambiguate when `exact` appears multiple times in the doc.
+ */
+function offsetsFromCmSelection(view: EditorView): AnchorPayload | null {
+  const { from, to } = view.state.selection.main;
+  if (from === to) return null;
+  const doc = view.state.doc;
+  return {
+    start: from,
+    end: to,
+    exact: doc.sliceString(from, to),
+    prefix: doc.sliceString(Math.max(0, from - CONTEXT_LEN), from),
+    suffix: doc.sliceString(to, Math.min(doc.length, to + CONTEXT_LEN)),
+  };
+}
+
+/**
+ * Attach the selection popover (wireframe 04) to a CodeMirror
+ * `EditorView`. After A.4 the live editor IS CodeMirror, so the
+ * popover reads its selection from `view.state.selection.main`
+ * rather than walking DOM Range over data-src-offset carriers.
+ *
+ * Output shape is identical to the old API:
+ *   { start, end, exact, prefix, suffix }
+ * which preserves the Bitap-disambiguation contract on the Rust side.
+ *
+ * Two-stage flow (unchanged from the DOM-Range version):
+ *   stage 1: [Comment] [Copy] — clicking Comment swaps the popover
+ *     into a body composer (textarea + Post + Cancel).
  *   stage 2: typing into the textarea + clicking Post calls
  *     `ipc.createThread(tabId, anchor, body)` and dispatches a
- *     `thread-created` event so the parent can refresh sidebar / highlights.
+ *     `thread-created` CustomEvent on `view.dom` so the parent can
+ *     refresh sidebar / highlights.
+ *
+ * Returns a teardown function that removes the mouseup listener and
+ * any open popover; A.9 calls it when the editor is destroyed.
  */
 export function attachSelectionPopover(
-  documentRoot: HTMLElement,
+  view: EditorView,
   ipc: Ipc,
   getTabId: () => string,
-  getOffsets: () => {
-    start: number;
-    end: number;
-    exact: string;
-    prefix?: string;
-    suffix?: string;
-  } | null,
-): void {
+): () => void {
   let popover: HTMLElement | null = null;
   // The composer (stage 2: textarea + Post + Cancel) intentionally
   // outlives a collapsed selection — the user clicks Post / Cancel
-  // explicitly. Without this guard, focusing the textarea would clear
-  // the selection and immediately tear the composer down, making it
-  // impossible to type a comment.
+  // explicitly. Without this guard, focusing the textarea would
+  // collapse the CodeMirror selection (selectionchange fires) and
+  // immediately tear the composer down before the user can type.
   let composerOpen = false;
 
   const removePopover = (): void => {
@@ -38,40 +83,39 @@ export function attachSelectionPopover(
     composerOpen = false;
   };
 
-  // Close the popover as soon as the user clears the selection ANYWHERE
-  // — clicking in the sidebar, the toolbar, or even inside the document
-  // outside the highlighted range. Without this listener, the popover
-  // only updated on mouseup inside documentRoot, so a click in the
-  // sidebar left a stale floating button cluster behind.
-  document.addEventListener('selectionchange', () => {
+  // Close the popover as soon as the user clears the selection in the
+  // editor. The `selectionchange` event fires for both DOM-level and
+  // CodeMirror-level selection changes; we re-check the editor's own
+  // selection state so caret motion (collapsed selection) tears the
+  // popover down while leaving the composer alone if it's open.
+  const onSelectionChange = (): void => {
     if (composerOpen) return; // user is mid-comment; don't yank the textarea
     if (!popover) return;
-    const sel = window.getSelection();
-    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) {
-      removePopover();
-    }
-  });
+    const { from, to } = view.state.selection.main;
+    if (from === to) removePopover();
+  };
+  document.addEventListener('selectionchange', onSelectionChange);
 
-  documentRoot.addEventListener('mouseup', () => {
-    const sel = window.getSelection();
-    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) {
+  const onMouseUp = (): void => {
+    const captured = offsetsFromCmSelection(view);
+    if (!captured) {
       removePopover();
       return;
     }
-    if (!documentRoot.contains(sel.anchorNode)) return;
-    // jsdom (used in unit tests) does not implement Range.getBoundingClientRect;
-    // fall back to a zeroed rect so the popover still anchors deterministically.
-    // The production WebView always returns a real rect.
-    const range = sel.getRangeAt(0);
-    const rect: { top: number; left: number } =
-      typeof range.getBoundingClientRect === 'function'
-        ? range.getBoundingClientRect()
-        : { top: 0, left: 0 };
 
-    // Capture offsets BEFORE the popover opens. Clicking the button
-    // (next mousedown) collapses the native selection, so getOffsets()
-    // would return null if we waited until the click handler ran.
-    const capturedOffsets = getOffsets();
+    // Anchor the popover at the selection's start coords. `coordsAtPos`
+    // can return null when the editor has no layout, and in jsdom (unit
+    // tests) it throws because `Range.getClientRects` is not implemented.
+    // Fall back to a zeroed rect on either branch so the popover still
+    // mounts deterministically rather than crashing — production WebView
+    // always returns a real rect.
+    let rect: { top: number; left: number } = { top: 0, left: 0 };
+    try {
+      const coords = view.coordsAtPos(captured.start);
+      if (coords) rect = { top: coords.top, left: coords.left };
+    } catch {
+      // jsdom-only path — leave the zeroed rect.
+    }
 
     removePopover();
     popover = document.createElement('div');
@@ -84,16 +128,14 @@ export function attachSelectionPopover(
     comment.setAttribute('data-action', 'comment');
     comment.textContent = 'Comment';
     comment.addEventListener('click', () => {
-      const offsets = capturedOffsets ?? getOffsets();
-      if (!offsets) return;
       // Stage 2: replace popover contents with a body composer. Use
       // replaceChildren() not innerHTML='' to keep the no-innerHTML rule.
       popover!.replaceChildren();
       popover!.classList.add('composer');
-      // Set BEFORE focus(): focusing the textarea collapses the selection
-      // synchronously, which fires selectionchange — without the flag set,
-      // the listener above would tear the composer down before the user
-      // can type a single character.
+      // Set BEFORE focus(): focusing the textarea collapses the
+      // selection synchronously, which fires selectionchange — without
+      // the flag set, the listener above would tear the composer down
+      // before the user can type a single character.
       composerOpen = true;
       const ta = document.createElement('textarea');
       ta.setAttribute('data-test', 'comment-body');
@@ -102,23 +144,18 @@ export function attachSelectionPopover(
       post.setAttribute('data-action', 'post-comment');
       post.textContent = 'Post';
       post.addEventListener('click', async () => {
-        // Use the prefix/suffix captured from the source by Document's
-        // offsetsFromSelection — these carry up-to-32 chars of context that
-        // the Rust-side resolver uses to disambiguate when `exact` appears
-        // more than once in the document. Falls back to empty strings for
-        // the legacy test path that doesn't supply them.
         const thread = await ipc.createThread(
           getTabId(),
           {
-            start: offsets.start,
-            end: offsets.end,
-            exact: offsets.exact,
-            prefix: offsets.prefix ?? '',
-            suffix: offsets.suffix ?? '',
+            start: captured.start,
+            end: captured.end,
+            exact: captured.exact,
+            prefix: captured.prefix,
+            suffix: captured.suffix,
           },
           ta.value,
         );
-        documentRoot.dispatchEvent(
+        view.dom.dispatchEvent(
           new CustomEvent('thread-created', { bubbles: true, detail: { thread } }),
         );
         removePopover();
@@ -135,10 +172,24 @@ export function attachSelectionPopover(
     copy.setAttribute('data-action', 'copy');
     copy.textContent = 'Copy';
     copy.addEventListener('click', () => {
-      void navigator.clipboard.writeText(sel.toString());
+      // Copy from the CodeMirror state, not `window.getSelection()` —
+      // the latter is unreliable under CodeMirror's contentDOM (which
+      // may be using its own selection draw layer).
+      void navigator.clipboard.writeText(captured.exact);
     });
 
     popover.append(comment, copy);
     document.body.appendChild(popover);
-  });
+  };
+
+  // Scope mouseup to the editor's content DOM (NOT `document`) so
+  // selecting text in Settings, the sidebar, or any other surface
+  // never raises a comment popover.
+  view.contentDOM.addEventListener('mouseup', onMouseUp);
+
+  return (): void => {
+    document.removeEventListener('selectionchange', onSelectionChange);
+    view.contentDOM.removeEventListener('mouseup', onMouseUp);
+    removePopover();
+  };
 }
