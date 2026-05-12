@@ -84,17 +84,40 @@ export async function mountDocument(
   const toolbar = document.createElement('div');
   toolbar.setAttribute('data-region', 'doc-toolbar');
 
-  // Render/Raw toggle. Hidden when the caller didn't supply
-  // source/path/settings (StartPage placeholder paths land here). The
-  // label shows the destination mode — clicking "Raw" switches to raw
-  // and the label flips to "Render", matching wireframe 07's pattern.
-  const toggleBtn = document.createElement('button');
-  toggleBtn.setAttribute('data-action', 'toggle-render-raw');
-  toggleBtn.textContent = 'Raw';
+  // Render/Raw toggle (A.2 two-button structure). Hidden when the
+  // caller didn't supply source/path/settings (StartPage placeholder
+  // paths land here). Each button carries STATIC `data-mode=<target>`
+  // — i.e. the mode the button switches TO. The reflective
+  // `data-mode=<current>` lives on the editor host (see below). The
+  // dynamic `data-action="toggle-edit"` alias is applied to the
+  // OPPOSITE-mode button by the subscribeMode handle later in this
+  // function; spec 05 needs the alias on whichever button takes the
+  // user out of the current mode.
+  //
+  // The legacy single-button surface (`button[data-action="toggle-
+  // render-raw"]`) is preserved on the opposite-mode button via a
+  // second space-separated token in the same `data-action` attribute,
+  // because pre-A.2 tests + e2e specs use that selector.
+  const toggleContainer = document.createElement('div');
+  toggleContainer.setAttribute('data-testid', 'mode-toggle');
+  const renderBtn = document.createElement('button');
+  renderBtn.type = 'button';
+  renderBtn.setAttribute('data-mode', 'render');
+  renderBtn.textContent = 'Render';
+  const rawBtn = document.createElement('button');
+  rawBtn.type = 'button';
+  rawBtn.setAttribute('data-mode', 'raw');
+  rawBtn.textContent = 'Raw';
+  toggleContainer.append(renderBtn, rawBtn);
   if (args.source === undefined || args.path === undefined || args.settings === undefined) {
-    toggleBtn.hidden = true;
+    toggleContainer.hidden = true;
+    // Back-compat for tests that query `button[data-action="toggle-
+    // render-raw"]` and assert .hidden — when the whole container is
+    // hidden, surface that on each button too.
+    renderBtn.hidden = true;
+    rawBtn.hidden = true;
   }
-  toolbar.appendChild(toggleBtn);
+  toolbar.appendChild(toggleContainer);
 
   // Share button — C3 wire-up; unchanged from the pre-A.9 surface.
   const shareBtn = document.createElement('button');
@@ -165,18 +188,62 @@ export async function mountDocument(
   view.appendChild(toolbar);
 
   // --- Editor host ----------------------------------------------------
-  // Three selector aliases on the same element, each load-bearing:
-  //   * data-region="editor"  — new Phase-A surface name
-  //   * data-region="render"  — back-compat for existing root-level e2e
-  //     specs (e2e/0x-*.spec.ts) that query the rendered-HTML pane the
-  //     LiveEditor replaces (space-separated token list).
-  //   * data-testid="live-editor" — wireframe contract used by the
-  //     Phase-1 wysiwyg WDIO specs (per wireframes/01-render-default.html).
+  // Selector aliases on the SAME element, each load-bearing:
+  //   * data-region="editor render" — space-separated token list:
+  //       "editor" is the new Phase-A surface name; "render" preserves
+  //       the legacy back-compat token used by root-level e2e specs
+  //       (e2e/0x-*.spec.ts) that query the rendered-HTML pane the
+  //       LiveEditor replaced.
+  //   * data-testid="live-editor" — wireframe contract for the
+  //       Phase-1 wysiwyg WDIO specs (per wireframes/01-render-default.html).
+  //   * data-test="editor" — back-compat alias for spec 05 line 22's
+  //       `browser.$('[data-test="editor"]').waitForExist()`.
+  //   * data-mode="<current-mode>" — reflective (which mode the editor
+  //       is in right now). Set synchronously below via subscribeMode's
+  //       initial-fire contract. Note: same attribute name as the
+  //       toggle buttons but OPPOSITE semantics — buttons carry the
+  //       TARGET mode (where this button switches to).
   const editorHost = document.createElement('div');
   editorHost.setAttribute('data-region', 'editor render');
   editorHost.setAttribute('data-testid', 'live-editor');
+  editorHost.setAttribute('data-test', 'editor');
   view.appendChild(editorHost);
+
+  // --- Hidden render-shadow div (A.2) ---------------------------------
+  // Sibling to the editor host. Holds the canonical render_markdown
+  // output for export / diff / parity tooling that needs semantic HTML
+  // without reaching through CodeMirror's decoration tree. Populated
+  // once on mount and once per save via the LiveEditor's `onSaved`
+  // callback — NOT per-thread `onAnchorsResolved`, which would issue
+  // one render per resolved thread and briefly hold stale content
+  // between resolutions. `hidden` + `aria-hidden` keep it out of the
+  // visible layout and the accessibility tree.
+  const shadow = document.createElement('div');
+  shadow.setAttribute('data-region', 'rendered-shadow');
+  shadow.setAttribute('aria-hidden', 'true');
+  shadow.hidden = true;
+  view.appendChild(shadow);
+
   root.appendChild(view);
+
+  // DOMParser-then-appendChild — explicitly NOT `innerHTML = html`.
+  // render_markdown output is already trusted upstream (the existing
+  // renderer path consumes it without sanitization), so a DOMPurify
+  // step would add bundle weight and a maintenance vector with no
+  // security gain for this input source. The DOMParser detour is
+  // hygiene against the direct `innerHTML` string-assignment pattern.
+  async function refreshShadow(source: string): Promise<void> {
+    try {
+      const result = await ipc.renderMarkdown(source);
+      const html = (result as { html?: string }).html ?? '';
+      const parsed = new DOMParser().parseFromString(html, 'text/html');
+      const fresh = Array.from(parsed.body.childNodes).map((n) => n.cloneNode(true));
+      shadow.replaceChildren(...fresh);
+    } catch {
+      // Best-effort — the shadow is a parity surface, not the user-
+      // visible editor. A render failure here must not break the mount.
+    }
+  }
 
   // --- Orphan / re-anchor bookkeeping ---------------------------------
   // `currentThreads` is the canonical list passed into LiveEditor.
@@ -290,6 +357,62 @@ export async function mountDocument(
     settings: liveSettings,
     threads: currentThreads,
     onAnchorsResolved: applyAnchorOutcome,
+    // Canonical once-per-save signal. Fires exactly once per
+    // successful save_document AFTER the per-thread re-anchor pump
+    // has completed (see LiveEditor's flushSave). Wiring this here
+    // — not onAnchorsResolved — means render_markdown runs ONCE per
+    // save rather than N times for an N-thread document. The shadow
+    // never holds stale content between resolutions because the
+    // refresh lands after the whole pump.
+    onSaved: () => {
+      if (!live) return;
+      void refreshShadow(live.currentSource());
+    },
+  });
+
+  // --- Initial shadow population --------------------------------------
+  // Fire-and-forget — tests drain microtasks before asserting. The
+  // shadow remains empty until the renderMarkdown promise resolves
+  // (acceptable; nothing visible to the user is held back by it).
+  void refreshShadow(source);
+
+  // --- Mode reflection + dynamic toggle-edit alias swap (A.2) ---------
+  // Two pieces ride the same subscribeMode handle:
+  //   1. The editor host's reflective `data-mode` attribute (the
+  //      "which mode am I in" surface). render-raw-toggle.spec.ts:101
+  //      / :138 read this attribute via `[data-mode="render"]` /
+  //      `[data-mode="raw"]` selectors.
+  //   2. The dynamic `data-action="toggle-edit"` alias on the
+  //      OPPOSITE-mode button. In render mode the alias lands on the
+  //      Raw button (clicking it switches to raw, i.e. "toggle to
+  //      edit/raw mode"); in raw mode it lands on Render. Spec 05's
+  //      click targets find the alias either way.
+  //
+  // The legacy `data-action="toggle-render-raw"` token sits alongside
+  // `toggle-edit` on the same opposite-mode button so older selectors
+  // keep working. subscribeMode's synchronous initial-fire contract
+  // (see LiveEditor.subscribeMode) guarantees both attributes land
+  // BEFORE this call returns, so the first DOM query after mount sees
+  // a fully-populated state.
+  const modeUnsub = live.subscribeMode((mode) => {
+    editorHost.setAttribute('data-mode', mode);
+    renderBtn.removeAttribute('data-action');
+    rawBtn.removeAttribute('data-action');
+    const oppositeBtn = mode === 'render' ? rawBtn : renderBtn;
+    // Space-separated token list: new alias + legacy alias.
+    oppositeBtn.setAttribute('data-action', 'toggle-edit toggle-render-raw');
+  });
+
+  // Toggle-button click handlers. Each calls setMode on the LiveEditor,
+  // which dispatches the mode StateEffect and notifies subscribers —
+  // the subscribeMode listener above does the DOM bookkeeping.
+  renderBtn.addEventListener('click', () => {
+    if (!live) return;
+    live.setMode('render');
+  });
+  rawBtn.addEventListener('click', () => {
+    if (!live) return;
+    live.setMode('raw');
   });
 
   // A.6 noted that Strikethrough needs `markdown({ base: markdownLanguage })`
@@ -334,15 +457,9 @@ export async function mountDocument(
     args.onOrphansChanged?.(orphans.slice());
   })();
 
-  // --- Render/Raw toggle handler --------------------------------------
-  toggleBtn.addEventListener('click', () => {
-    if (!live) return;
-    const next = live.mode() === 'render' ? 'raw' : 'render';
-    live.setMode(next);
-    // Label shows the destination of the NEXT click — when we're in
-    // render mode the label reads "Raw" (the action), and vice versa.
-    toggleBtn.textContent = next === 'render' ? 'Raw' : 'Render';
-  });
+  // (Render/Raw toggle click handlers are wired above, inside the
+  // subscribeMode block — they delegate to live.setMode and let the
+  // subscribeMode listener do the DOM bookkeeping.)
 
   return {
     refreshHighlights: async () => {
@@ -367,6 +484,15 @@ export async function mountDocument(
     },
     orphanThreads: () => orphans.slice(),
     destroy: () => {
+      // A.2 teardown: unsubscribe from the mode listener before tearing
+      // down the LiveEditor — calling unsub() after live.destroy() is
+      // safe (the underlying Set just removes a missing entry) but
+      // explicit ordering keeps the destroy contract auditable. The
+      // shadow div sits inside `view`, which `root.replaceChildren()`
+      // removes; we also call shadow.remove() defensively in case the
+      // root teardown ever changes shape.
+      modeUnsub();
+      shadow.remove();
       detachSelectionPopover();
       live?.destroy();
       live = null;
