@@ -111,6 +111,14 @@ function labeledSelect(
     if (val === current) opt.selected = true;
     sel.appendChild(opt);
   }
+  // WebKit (the Tauri WebView on macOS) doesn't always honor
+  // `option.selected = true` set BEFORE appendChild — `select.value`
+  // can return '' even when an option's `selected` property is true.
+  // Setting `sel.value` AFTER all options exist forces a deterministic
+  // selectedness pass. Vitest/jsdom doesn't have this quirk, so the
+  // existing unit tests would never catch the divergence; the e2e
+  // render-raw-toggle:170 assertion does.
+  sel.value = current;
   row.append(lbl, sel);
   return { row, select: sel };
 }

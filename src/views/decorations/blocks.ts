@@ -417,6 +417,20 @@ class BlockWidget extends WidgetType {
     }
     return true;
   }
+
+  /**
+   * Reuse the existing DOM on every recompute rather than letting
+   * CodeMirror call `toDOM()` again. `eq()` already gates on
+   * (kind, source), so a stable mermaid/code block keeps the same
+   * widget root + body + pencil DOM across selection-only transactions.
+   * Critical for the mermaid pencil spec: WDIO captures the pencil's
+   * element uuid via `isExisting()`, then issues a separate `.click()`.
+   * If the DOM is rebuilt between those two calls, the cached uuid
+   * dangles and click fails with "element not found".
+   */
+  override updateDOM(_dom: HTMLElement, _view: EditorView): boolean {
+    return true;
+  }
 }
 
 /**
