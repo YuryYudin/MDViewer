@@ -423,6 +423,44 @@ describe('CommentsSidebar', () => {
     });
   });
 
+  // A3 (phase-a-finish): each thread row carries the anchored quote text in a
+  // `<div class="quote">` child so the comment-from-selection e2e spec can
+  // assert that the new thread quotes the exact selected phrase. The element
+  // is suppressed when `anchor.exact` is the empty string so a thread with no
+  // anchored text (synthetic or post-relocate) doesn't paint an empty
+  // italic strip.
+  describe('anchor.exact quote element', () => {
+    it('renders <div class="quote"> with anchor.exact text when present', () => {
+      const root = document.createElement('div');
+      const t = thread({
+        id: 'Q1',
+        anchor: {
+          start: 0,
+          end: 19,
+          exact: 'the quick brown fox',
+          prefix: '',
+          suffix: '',
+        },
+      });
+      mountCommentsSidebar(root, ipcStub(), [t], { showResolved: false });
+      const row = root.querySelector<HTMLElement>('[data-test="thread"]');
+      const quote = row?.querySelector<HTMLElement>('.quote');
+      expect(quote).not.toBeNull();
+      expect(quote!.textContent).toBe('the quick brown fox');
+    });
+
+    it('omits .quote when anchor.exact is empty string', () => {
+      const root = document.createElement('div');
+      const t = thread({
+        id: 'Q2',
+        anchor: { start: 0, end: 0, exact: '', prefix: '', suffix: '' },
+      });
+      mountCommentsSidebar(root, ipcStub(), [t], { showResolved: false });
+      const row = root.querySelector<HTMLElement>('[data-test="thread"]');
+      expect(row?.querySelector('.quote')).toBeNull();
+    });
+  });
+
   // C1: thread-author avatars sourced from the active tab's collaborator list.
   // Drive Comments don't carry rich author metadata — the comment record only
   // has the email — so we look up the matching DriveCollaborator and render
