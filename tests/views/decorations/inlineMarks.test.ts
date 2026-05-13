@@ -47,36 +47,48 @@ describe('inlineMarks extension', () => {
   describe('inline-mark sigil hide/reveal', () => {
     it('hides bold ** sigils when caret is outside the mark', () => {
       const { view } = mountEditor('hello **bold** world', 0);
-      // Outside the bold range — sigils replaced (hidden).
-      const text = renderedText(view);
-      expect(text.includes('**bold**')).toBe(false);
+      // Outside the bold range — sigils stay in the source bytes but the
+      // wrapper class string is `sigil hidden` so CSS hides them.
+      const sigils = Array.from(view.contentDOM.querySelectorAll('.lp-bold .sigil'));
+      expect(sigils.length).toBe(2);
+      sigils.forEach((s) => expect(s.classList.contains('hidden')).toBe(true));
       // The bold text content survives in the DOM.
-      expect(text.includes('bold')).toBe(true);
+      expect(renderedText(view).includes('bold')).toBe(true);
     });
 
     it('reveals bold ** sigils when caret enters the mark', () => {
       const { view } = mountEditor('hello **bold** world', 0);
       // Move caret into the bold content (between the two stars).
       setSelection(view, 9); // inside "bold"
-      const text = renderedText(view);
-      expect(text.includes('**bold**')).toBe(true);
+      const sigils = Array.from(view.contentDOM.querySelectorAll('.lp-bold .sigil'));
+      expect(sigils.length).toBe(2);
+      sigils.forEach((s) => expect(s.classList.contains('hidden')).toBe(false));
     });
 
     it('hides italic _ sigils outside, reveals on caret intersect', () => {
       const { view } = mountEditor('a _emph_ b', 0);
-      expect(renderedText(view).includes('_emph_')).toBe(false);
+      let sigils = Array.from(view.contentDOM.querySelectorAll('.lp-italic .sigil'));
+      expect(sigils.length).toBe(2);
+      sigils.forEach((s) => expect(s.classList.contains('hidden')).toBe(true));
       setSelection(view, 4); // inside "emph"
-      expect(renderedText(view).includes('_emph_')).toBe(true);
+      sigils = Array.from(view.contentDOM.querySelectorAll('.lp-italic .sigil'));
+      expect(sigils.length).toBe(2);
+      sigils.forEach((s) => expect(s.classList.contains('hidden')).toBe(false));
     });
 
     it('hides strike ~~ sigils outside, reveals when caret intersects', () => {
       const { view } = mountEditor('a ~~gone~~ b', 0);
-      expect(renderedText(view).includes('~~gone~~')).toBe(false);
+      let sigils = Array.from(view.contentDOM.querySelectorAll('.lp-strike .sigil'));
+      expect(sigils.length).toBe(2);
+      sigils.forEach((s) => expect(s.classList.contains('hidden')).toBe(true));
       setSelection(view, 5); // inside "gone"
-      expect(renderedText(view).includes('~~gone~~')).toBe(true);
+      sigils = Array.from(view.contentDOM.querySelectorAll('.lp-strike .sigil'));
+      expect(sigils.length).toBe(2);
+      sigils.forEach((s) => expect(s.classList.contains('hidden')).toBe(false));
     });
 
     it('hides inline-code backticks outside, reveals when caret intersects', () => {
+      // InlineCode keeps Decoration.replace (no spec consumes lp-code).
       const { view } = mountEditor('a `x` b', 0);
       expect(renderedText(view).includes('`x`')).toBe(false);
       setSelection(view, 3); // inside "x"
@@ -87,37 +99,43 @@ describe('inlineMarks extension', () => {
       const { view } = mountEditor('a **bold** b', 0);
       // Selection from 0..3 intersects the leading "**" sigil at 2..4.
       setSelection(view, 0, 3);
-      expect(renderedText(view).includes('**bold**')).toBe(true);
+      const sigils = Array.from(view.contentDOM.querySelectorAll('.lp-bold .sigil'));
+      expect(sigils.length).toBe(2);
+      sigils.forEach((s) => expect(s.classList.contains('hidden')).toBe(false));
     });
 
     it('keeps neighbouring marks on the same line hidden when one has the caret', () => {
       // Two bold marks on one line; caret inside the first.
       const { view } = mountEditor('**one** plus **two**', 4);
-      const text = renderedText(view);
-      // First mark revealed.
-      expect(text.includes('**one**')).toBe(true);
-      // Second mark still hidden.
-      expect(text.includes('**two**')).toBe(false);
-      expect(text.includes('two')).toBe(true);
+      const wrappers = view.contentDOM.querySelectorAll('.lp-bold');
+      expect(wrappers.length).toBe(2);
+      // First wrapper's sigils revealed.
+      const firstSigils = Array.from(wrappers[0].querySelectorAll('.sigil'));
+      expect(firstSigils.length).toBe(2);
+      firstSigils.forEach((s) => expect(s.classList.contains('hidden')).toBe(false));
+      // Second wrapper's sigils still hidden.
+      const secondSigils = Array.from(wrappers[1].querySelectorAll('.sigil'));
+      expect(secondSigils.length).toBe(2);
+      secondSigils.forEach((s) => expect(s.classList.contains('hidden')).toBe(true));
     });
 
-    it('applies md-bold class on the StrongEmphasis content range', () => {
+    it('applies lp-bold class on the StrongEmphasis content range', () => {
       const { view } = mountEditor('hello **bold** world', 0);
-      const boldEl = view.contentDOM.querySelector('.cm-md-bold');
+      const boldEl = view.contentDOM.querySelector('.lp-bold');
       expect(boldEl).not.toBeNull();
       expect(boldEl?.textContent).toContain('bold');
     });
 
-    it('applies md-italic class on Emphasis content', () => {
+    it('applies lp-italic class on Emphasis content', () => {
       const { view } = mountEditor('a _emph_ b', 0);
-      const el = view.contentDOM.querySelector('.cm-md-italic');
+      const el = view.contentDOM.querySelector('.lp-italic');
       expect(el).not.toBeNull();
       expect(el?.textContent).toContain('emph');
     });
 
-    it('applies md-strike class on Strikethrough content', () => {
+    it('applies lp-strike class on Strikethrough content', () => {
       const { view } = mountEditor('a ~~gone~~ b', 0);
-      const el = view.contentDOM.querySelector('.cm-md-strike');
+      const el = view.contentDOM.querySelector('.lp-strike');
       expect(el).not.toBeNull();
       expect(el?.textContent).toContain('gone');
     });
@@ -127,6 +145,57 @@ describe('inlineMarks extension', () => {
       const el = view.contentDOM.querySelector('.cm-md-code');
       expect(el).not.toBeNull();
       expect(el?.textContent).toContain('x');
+    });
+  });
+
+  describe('sigil reveal via class mutation (A5)', () => {
+    it('caret outside bold mark — 2 sigil elements with .hidden, 0 without', () => {
+      const { view } = mountEditor('A **bold** word', 0);
+      const sigils = Array.from(view.contentDOM.querySelectorAll('.lp-bold .sigil'));
+      expect(sigils.length).toBe(2);
+      sigils.forEach((s) => expect(s.classList.contains('hidden')).toBe(true));
+      const visible = view.contentDOM.querySelectorAll('.lp-bold .sigil:not(.hidden)');
+      expect(visible.length).toBe(0);
+    });
+
+    it('caret inside bold mark — 2 sigil elements without .hidden, italic sigils on same line keep .hidden', () => {
+      // "A **bold** and *italic* word"
+      //  0123456789012345678901234567
+      // Bold range starts at 2 (the first `*`); caret inside "bold" at offset 5.
+      const { view } = mountEditor('A **bold** and *italic* word', 5);
+      const boldSigils = Array.from(view.contentDOM.querySelectorAll('.lp-bold .sigil'));
+      expect(boldSigils.length).toBe(2);
+      boldSigils.forEach((s) => expect(s.classList.contains('hidden')).toBe(false));
+      const italicSigils = Array.from(view.contentDOM.querySelectorAll('.lp-italic .sigil'));
+      expect(italicSigils.length).toBeGreaterThan(0);
+      italicSigils.forEach((s) => expect(s.classList.contains('hidden')).toBe(true));
+    });
+
+    it('caret crossing the mark boundary flips the sigil classes', () => {
+      // "**bold** word"
+      //  0123456789012
+      // Bold range [0,8); position 10 is outside, position 3 is inside "bold".
+      const { view } = mountEditor('**bold** word', 10);
+      const sigilsOutside = Array.from(view.contentDOM.querySelectorAll('.lp-bold .sigil'));
+      expect(sigilsOutside.length).toBe(2);
+      expect(sigilsOutside.every((s) => s.classList.contains('hidden'))).toBe(true);
+
+      setSelection(view, 3);
+      const sigilsInside = Array.from(view.contentDOM.querySelectorAll('.lp-bold .sigil'));
+      expect(sigilsInside.length).toBe(2);
+      expect(sigilsInside.every((s) => !s.classList.contains('hidden'))).toBe(true);
+    });
+
+    it('wrapper class for bold is lp-bold not cm-md-bold', () => {
+      const { view } = mountEditor('**bold**', 0);
+      expect(view.contentDOM.querySelector('.lp-bold')).not.toBeNull();
+      expect(view.contentDOM.querySelector('.cm-md-bold')).toBeNull();
+    });
+
+    it('InlineCode wrapper class stays cm-md-code (not renamed to lp-code)', () => {
+      const { view } = mountEditor('A `code` span', 0);
+      expect(view.contentDOM.querySelector('.cm-md-code')).not.toBeNull();
+      expect(view.contentDOM.querySelector('.lp-code')).toBeNull();
     });
   });
 
@@ -289,20 +358,28 @@ describe('inlineMarks extension', () => {
   describe('redrawing on selection-only transactions', () => {
     it('recomputes the decoration set when only the selection changes', () => {
       const { view } = mountEditor('**bold**', 0);
+      const allRevealed = () =>
+        Array.from(view.contentDOM.querySelectorAll('.lp-bold .sigil')).every(
+          (s) => !s.classList.contains('hidden'),
+        );
+      const allHidden = () =>
+        Array.from(view.contentDOM.querySelectorAll('.lp-bold .sigil')).every((s) =>
+          s.classList.contains('hidden'),
+        );
       // Before: caret at start (pos 0) is at the start of the bold mark's
       // leading sigil, which means it intersects — sigils revealed.
-      expect(renderedText(view).includes('**bold**')).toBe(true);
+      expect(allRevealed()).toBe(true);
       // Move caret to end of doc; still intersects the trailing sigil's
       // end boundary, so still revealed.
       setSelection(view, view.state.doc.length);
-      expect(renderedText(view).includes('**bold**')).toBe(true);
+      expect(allRevealed()).toBe(true);
       // Now insert a leading char so the bold mark moves right; place
       // caret at position 0, which is now strictly before the mark.
       view.dispatch({
         changes: { from: 0, insert: 'x ' },
         selection: EditorSelection.single(0),
       });
-      expect(renderedText(view).includes('**bold**')).toBe(false);
+      expect(allHidden()).toBe(true);
     });
   });
 });
