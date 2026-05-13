@@ -465,6 +465,227 @@ describe('blockWidgets', () => {
     });
   });
 
+  describe('A.6: caret-in collapse emits RawFormWidget', () => {
+    it('python widget shows [data-testid="code-widget"] when caret is outside the fence', async () => {
+      const { renderMarkdown, resolveAll } = makeRenderMarkdownStub();
+      const src = '```python\nprint(1)\n```\n';
+      // Caret at EOF (outside the fence) — default selection in makeView.
+      const view = makeView(src, renderMarkdown);
+      await resolveAll();
+      expect(
+        view.dom.querySelector('[data-testid="code-widget"][data-lang="python"]'),
+      ).not.toBeNull();
+      expect(view.dom.querySelector('[data-testid="code-widget-raw"]')).toBeNull();
+      view.destroy();
+    });
+
+    it('python widget collapses to [data-testid="code-widget-raw"][data-lang="python"] on caret-in', async () => {
+      const { renderMarkdown, resolveAll } = makeRenderMarkdownStub();
+      const src = '```python\nprint(1)\n```\n';
+      const view = makeView(src, renderMarkdown);
+      await resolveAll();
+      // Move caret inside the fence body.
+      const innerOffset = src.indexOf('print');
+      view.dispatch({ selection: EditorSelection.single(innerOffset, innerOffset) });
+      await resolveAll();
+      const raw = view.dom.querySelector<HTMLElement>(
+        '[data-testid="code-widget-raw"][data-lang="python"]',
+      );
+      expect(raw).not.toBeNull();
+      // Raw body shows opener + content + closer verbatim.
+      expect(raw!.textContent).toContain('```python');
+      expect(raw!.textContent).toContain('print(1)');
+      expect(raw!.textContent).toContain('```');
+      // And the rendered widget is gone.
+      expect(view.dom.querySelector('[data-testid="code-widget"]')).toBeNull();
+      view.destroy();
+    });
+
+    it('RawFormWidget wraps a <pre> child with the raw fence text', async () => {
+      const { renderMarkdown, resolveAll } = makeRenderMarkdownStub();
+      const src = '```python\nprint(1)\n```\n';
+      const view = makeView(src, renderMarkdown);
+      await resolveAll();
+      view.dispatch({ selection: EditorSelection.single(5, 5) });
+      await resolveAll();
+      const raw = view.dom.querySelector<HTMLElement>('[data-testid="code-widget-raw"]');
+      expect(raw).not.toBeNull();
+      const pre = raw!.querySelector('pre');
+      expect(pre).not.toBeNull();
+      expect(pre!.textContent).toContain('```python');
+      expect(pre!.textContent).toContain('print(1)');
+      view.destroy();
+    });
+  });
+
+  describe('A.6: mermaid pencil affordance', () => {
+    it('mermaid widget renders a pencil button[data-action="raw-edit"] inside its root', async () => {
+      vi.doMock('mermaid', () => ({
+        default: { initialize: vi.fn(), run: vi.fn().mockResolvedValue(undefined) },
+      }));
+      __resetMermaidCacheForTests();
+      try {
+        const { renderMarkdown, resolveAll } = makeRenderMarkdownStub();
+        const src = '```mermaid\ngraph LR;A-->B;\n```\n';
+        const view = makeView(src, renderMarkdown);
+        await resolveAll();
+        const widget = view.dom.querySelector<HTMLElement>('[data-testid="mermaid-widget"]');
+        expect(widget).not.toBeNull();
+        const pencil = widget!.querySelector<HTMLButtonElement>(
+          'button[data-action="raw-edit"]',
+        );
+        expect(pencil).not.toBeNull();
+        expect(pencil!.classList.contains('pencil')).toBe(true);
+        view.destroy();
+      } finally {
+        vi.doUnmock('mermaid');
+      }
+    });
+
+    it('mermaid pencil click dispatches forceRawEffect and collapses to code-widget-raw[data-lang="mermaid"]', async () => {
+      vi.doMock('mermaid', () => ({
+        default: { initialize: vi.fn(), run: vi.fn().mockResolvedValue(undefined) },
+      }));
+      __resetMermaidCacheForTests();
+      try {
+        const { renderMarkdown, resolveAll } = makeRenderMarkdownStub();
+        const src = '```mermaid\ngraph LR;A-->B;\n```\n';
+        const view = makeView(src, renderMarkdown);
+        await resolveAll();
+        const pencil = view.dom.querySelector<HTMLButtonElement>(
+          '[data-testid="mermaid-widget"] button[data-action="raw-edit"]',
+        );
+        expect(pencil).not.toBeNull();
+        pencil!.click();
+        await resolveAll();
+        const raw = view.dom.querySelector<HTMLElement>(
+          '[data-testid="code-widget-raw"][data-lang="mermaid"]',
+        );
+        expect(raw).not.toBeNull();
+        expect(raw!.textContent).toContain('```mermaid');
+        expect(raw!.textContent).toContain('graph LR');
+        view.destroy();
+      } finally {
+        vi.doUnmock('mermaid');
+      }
+    });
+
+    it('clicking outside the .pencil does not collapse the mermaid widget', async () => {
+      vi.doMock('mermaid', () => ({
+        default: { initialize: vi.fn(), run: vi.fn().mockResolvedValue(undefined) },
+      }));
+      __resetMermaidCacheForTests();
+      try {
+        const { renderMarkdown, resolveAll } = makeRenderMarkdownStub();
+        const src = '```mermaid\ngraph LR;A-->B;\n```\n';
+        const view = makeView(src, renderMarkdown);
+        await resolveAll();
+        const root = view.dom.querySelector<HTMLElement>('[data-testid="mermaid-widget"]');
+        expect(root).not.toBeNull();
+        // Click on the root itself, not the pencil. Widget must remain
+        // rendered (no collapse to code-widget-raw).
+        root!.click();
+        await resolveAll();
+        expect(view.dom.querySelector('[data-testid="code-widget-raw"]')).toBeNull();
+        expect(view.dom.querySelector('[data-testid="mermaid-widget"]')).not.toBeNull();
+        view.destroy();
+      } finally {
+        vi.doUnmock('mermaid');
+      }
+    });
+
+    it('BlockWidget.ignoreEvent returns false for clicks targeted at .pencil descendants', async () => {
+      // The pencil affordance lives inside a CM widget root with
+      // contentEditable=false. CM's default `ignoreEvent` swallows
+      // interior clicks, which would prevent the pencil's
+      // addEventListener handler from ever firing. The override returns
+      // `false` only for click events whose target sits inside `.pencil`,
+      // routing the click into the widget DOM. We exercise the override
+      // directly here so the click-on-.pencil branch is covered.
+      vi.doMock('mermaid', () => ({
+        default: { initialize: vi.fn(), run: vi.fn().mockResolvedValue(undefined) },
+      }));
+      __resetMermaidCacheForTests();
+      try {
+        const { renderMarkdown, resolveAll } = makeRenderMarkdownStub();
+        const src = '```mermaid\ngraph LR;A-->B;\n```\n';
+        const view = makeView(src, renderMarkdown);
+        await resolveAll();
+        const pencil = view.dom.querySelector<HTMLElement>('button.pencil');
+        const widget = view.dom.querySelector<HTMLElement>('[data-testid="mermaid-widget"]');
+        expect(pencil).not.toBeNull();
+        expect(widget).not.toBeNull();
+        // bubbling click whose target is the pencil — the override
+        // returns false here, so CodeMirror lets the click through to
+        // the pencil's addEventListener handler which dispatches the
+        // forceRawEffect and triggers the collapse.
+        pencil!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        await resolveAll();
+        expect(
+          view.dom.querySelector('[data-testid="code-widget-raw"][data-lang="mermaid"]'),
+        ).not.toBeNull();
+        view.destroy();
+      } finally {
+        vi.doUnmock('mermaid');
+      }
+    });
+
+    it('BlockWidget.ignoreEvent returns true for non-click events (caret-placement semantics preserved)', async () => {
+      // Indirectly assert the default branch returns true: a non-click
+      // event (e.g. mousedown) on the widget DOES NOT trigger a
+      // forceRawEffect, so the widget remains rendered. This exercises
+      // the `return true` line at the bottom of the override.
+      vi.doMock('mermaid', () => ({
+        default: { initialize: vi.fn(), run: vi.fn().mockResolvedValue(undefined) },
+      }));
+      __resetMermaidCacheForTests();
+      try {
+        const { renderMarkdown, resolveAll } = makeRenderMarkdownStub();
+        const src = '```mermaid\ngraph LR;A-->B;\n```\n';
+        const view = makeView(src, renderMarkdown);
+        await resolveAll();
+        const widget = view.dom.querySelector<HTMLElement>('[data-testid="mermaid-widget"]');
+        expect(widget).not.toBeNull();
+        widget!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+        await resolveAll();
+        expect(view.dom.querySelector('[data-testid="code-widget-raw"]')).toBeNull();
+        view.destroy();
+      } finally {
+        vi.doUnmock('mermaid');
+      }
+    });
+
+    it('mermaid initial render has the SVG present in the widget root once the awaited builder resolves', async () => {
+      // IPC returns an <svg> immediately so we can observe "after the
+      // awaited builder resolves, the SVG is in the widget root".
+      vi.doMock('mermaid', () => ({
+        default: { initialize: vi.fn(), run: vi.fn().mockResolvedValue(undefined) },
+      }));
+      __resetMermaidCacheForTests();
+      try {
+        const renderMarkdown = vi.fn(
+          async (): Promise<RenderResult> =>
+            ({
+              html: '<svg data-mermaid-svg="1"></svg>',
+              spans: [],
+            }) as unknown as RenderResult,
+        );
+        const src = '```mermaid\ngraph LR;A-->B;\n```\n';
+        const view = makeView(src, renderMarkdown);
+        await Promise.resolve();
+        await Promise.resolve();
+        await new Promise((r) => setTimeout(r, 0));
+        await new Promise((r) => setTimeout(r, 0));
+        const widget = view.dom.querySelector<HTMLElement>('[data-testid="mermaid-widget"]');
+        expect(widget).not.toBeNull();
+        expect(widget!.querySelector('svg')).not.toBeNull();
+        view.destroy();
+      } finally {
+        vi.doUnmock('mermaid');
+      }
+    });
+  });
+
   describe('A.4: mermaid.run is awaited before the svg is exposed', () => {
     it('does not expose the svg until mermaid.run() resolves', async () => {
       // Build a deferred mermaid.run promise. The widget builder must

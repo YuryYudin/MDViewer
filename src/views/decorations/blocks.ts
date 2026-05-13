@@ -3,6 +3,7 @@ import {
   type Extension,
   type EditorState,
   type Range,
+  StateEffect,
   StateField,
   type Transaction,
 } from '@codemirror/state';
@@ -10,6 +11,8 @@ import {
   Decoration,
   type DecorationSet,
   EditorView,
+  ViewPlugin,
+  type ViewUpdate,
   WidgetType,
 } from '@codemirror/view';
 import type { SyntaxNodeRef } from '@lezer/common';
@@ -215,6 +218,44 @@ function loadMermaid(): Promise<{ run: (opts: { nodes: HTMLElement[] }) => Promi
 }
 
 /**
+ * StateEffect carrying the raw fence text of a block whose user clicked
+ * the "✎ Raw" pencil affordance. The next StateField update merges this
+ * key into `forceRawField`'s Set so the next `buildDecorations` recompute
+ * emits a `RawFormWidget` for that source instead of the rendered
+ * `BlockWidget`.
+ *
+ * Per Decisions §6: a plain closure-captured "force raw" flag would NOT
+ * trigger a StateField recompute. CodeMirror's recompute is driven by
+ * transaction effects/changes, so the affordance has to dispatch a
+ * StateEffect on click.
+ */
+const forceRawEffect = StateEffect.define<string>();
+
+/**
+ * Accumulator of "force raw" flags across transactions. Once a source key
+ * is added, it stays — the widget for that source renders as
+ * `RawFormWidget` for the rest of the editor's lifetime (or until the
+ * doc edit removes the underlying fence). Reading this field alongside
+ * `selectionIntersects` lets the StateField pick BlockWidget vs
+ * RawFormWidget on every recompute.
+ */
+const forceRawField = StateField.define<Set<string>>({
+  create() {
+    return new Set();
+  },
+  update(set, tr) {
+    let next: Set<string> | null = null;
+    for (const e of tr.effects) {
+      if (e.is(forceRawEffect)) {
+        if (!next) next = new Set(set);
+        next.add(e.value);
+      }
+    }
+    return next ?? set;
+  },
+});
+
+/**
  * Side-effect bookkeeping for the widget population path. The StateField
  * holds the Decoration RangeSet (block widgets require state-side
  * provision per CodeMirror's "no block widgets from plugins" rule), but
@@ -233,6 +274,16 @@ interface WidgetCtx {
    * height (mermaid SVGs in particular).
    */
   readonly onRendered: () => void;
+  /**
+   * Mutable reference to the currently-mounted EditorView. Set at
+   * plugin-init time via the updateListener. Read inside the mermaid
+   * pencil click handler so the affordance can dispatch
+   * `forceRawEffect.of(source)`. Mutability is unavoidable because the
+   * EditorView is constructed AFTER the WidgetCtx (the ctx is closed
+   * over by the StateField factory which is, in turn, registered as part
+   * of the EditorState that constructs the view).
+   */
+  editorView: EditorView | null;
 }
 
 /**
@@ -286,9 +337,40 @@ class BlockWidget extends WidgetType {
     // over the widget instead of landing inside its DOM.
     root.contentEditable = 'false';
 
+    // The IPC-rendered body lands in an inner container instead of
+    // directly on `root`. This lets sibling affordances (e.g. the
+    // mermaid "✎ Raw" pencil) coexist with `paintBody`'s
+    // `replaceChildren()` semantics — `paintBody` only touches the
+    // inner container's children, so the pencil stays intact.
+    const body = document.createElement('div');
+    body.setAttribute('data-widget-body', '');
+    root.appendChild(body);
+
+    if (this.kind === 'mermaid') {
+      // The "✎ Raw" pencil overlay. Clicking it dispatches a
+      // `forceRawEffect.of(source)` which lands in `forceRawField` and
+      // causes the next StateField recompute to swap this BlockWidget
+      // for a RawFormWidget. The pencil class is read by
+      // `BlockWidget.ignoreEvent` to selectively route click events into
+      // the widget DOM (default CM behaviour swallows widget-interior
+      // clicks because the widget root is `contentEditable=false`).
+      const pencil = document.createElement('button');
+      pencil.className = 'pencil';
+      pencil.setAttribute('data-action', 'raw-edit');
+      pencil.textContent = '✎ Raw';
+      const source = this.source;
+      const ctx = this.ctx;
+      pencil.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        ev.preventDefault();
+        ctx.editorView?.dispatch({ effects: forceRawEffect.of(source) });
+      });
+      root.appendChild(pencil);
+    }
+
     const cached = this.ctx.cache.get(this.source);
     if (cached !== undefined) {
-      paintBody(root, this.kind, cached);
+      paintBody(body, this.kind, cached);
     } else if (this.ctx.inFlight.has(this.source)) {
       // Another widget instance for the same source has already fired the
       // IPC; just wait for the cache to fill. (Same-source dedup matters
@@ -305,7 +387,7 @@ class BlockWidget extends WidgetType {
           // to know — the next transaction's StateField recompute will
           // produce a structurally identical RangeSet (same `eq` result),
           // so the existing DOM stays.
-          paintBody(root, this.kind, res.html);
+          paintBody(body, this.kind, res.html);
           this.ctx.onRendered();
         })
         .catch(() => {
@@ -318,8 +400,74 @@ class BlockWidget extends WidgetType {
   }
 
   /**
-   * Atomic widgets ignore every interior event. The widget body has no
-   * interactive children in Phase 1; events fall through to the editor.
+   * Atomic widgets ignore most interior events. The exception is a click
+   * whose target sits inside `.pencil` (the mermaid Raw affordance) —
+   * CodeMirror swallows widget-interior clicks by default in
+   * `contentEditable=false` zones, which would prevent the pencil's
+   * `addEventListener('click', ...)` from ever firing. Returning `false`
+   * for that specific case routes the click event into the widget DOM
+   * (and therefore into the pencil's handler). All other events
+   * (selection / arrow-key motion / pointer events on non-pencil
+   * regions) fall through to CM's default caret-placement semantics.
+   */
+  override ignoreEvent(event: Event): boolean {
+    if (event.type === 'click') {
+      const target = event.target as Element | null;
+      if (target?.closest?.('.pencil')) return false;
+    }
+    return true;
+  }
+}
+
+/**
+ * Raw-form widget: the "show the underlying fence text verbatim" surface.
+ * Emitted in place of `BlockWidget` when either (a) the main selection
+ * intersects the block's source range (caret-in collapse), or (b) the
+ * source is flagged in `forceRawField` (e.g. via the mermaid pencil).
+ *
+ * The DOM contract is the wysiwyg spec's: a `<div data-testid="code-widget-raw" data-lang="...">`
+ * root wrapping a `<pre>` that contains the entire fenced range verbatim
+ * (opener + body + closer). The pencil affordance is NOT mirrored here
+ * because the raw form is already the "raw view"; users move the caret
+ * out (or edit the doc) to restore the rendered widget. Mermaid widgets
+ * that landed here via the pencil stay here for the rest of the editor
+ * lifetime — that's by design (Decisions §6: once you ask for raw, you
+ * get raw).
+ */
+class RawFormWidget extends WidgetType {
+  constructor(
+    readonly kind: WidgetKind,
+    readonly source: string,
+    readonly infoString: string,
+  ) {
+    super();
+  }
+
+  /**
+   * Two RawFormWidget instances are equal when (kind, source) matches.
+   * `infoString` is excluded for the same reason BlockWidget excludes it:
+   * derived purely from `source` so structural eq covers it.
+   */
+  eq(other: WidgetType): boolean {
+    return (
+      other instanceof RawFormWidget && other.kind === this.kind && other.source === this.source
+    );
+  }
+
+  toDOM(): HTMLElement {
+    const root = document.createElement('div');
+    root.setAttribute('data-testid', 'code-widget-raw');
+    root.setAttribute('data-lang', normalizeLang(this.infoString));
+    root.contentEditable = 'false';
+    const pre = document.createElement('pre');
+    pre.textContent = this.source;
+    root.appendChild(pre);
+    return root;
+  }
+
+  /**
+   * The raw form is a static read-only surface — no interior interactive
+   * affordances. Defer all events to CM's default behaviour.
    */
   override ignoreEvent(): boolean {
     return true;
@@ -393,15 +541,38 @@ async function paintMermaidBody(root: HTMLElement, html: string): Promise<void> 
 }
 
 /**
- * Build the DecorationSet for the current state. Skips blocks whose range
- * the main selection intersects (caret-in collapse). The returned ranges
- * are pre-sorted by `from` because `tree.iterate` visits in document order.
+ * Build the DecorationSet for the current state. For each block found by
+ * `findBlocks`, emit one of:
+ *
+ *   - `RawFormWidget` when the source is flagged in `forceRawField`
+ *     (mermaid pencil), OR when the main selection intersects the
+ *     block's source range (caret-in collapse). The previous "skip with
+ *     `continue`" behaviour left the underlying lezer-rendered source
+ *     visible verbatim — useful for raw editing, but the wysiwyg spec
+ *     asserts a `<div data-testid="code-widget-raw" data-lang="...">`
+ *     wrapper, so we now emit an explicit widget around the same range.
+ *   - `BlockWidget` otherwise (the rendered atomic form).
+ *
+ * The returned ranges are pre-sorted by `from` because `tree.iterate`
+ * visits in document order.
  */
 function buildDecorations(state: EditorState, ctx: WidgetCtx): DecorationSet {
   const blocks = findBlocks(state);
+  const forced = state.field(forceRawField, false) ?? new Set<string>();
   const ranges: Range<Decoration>[] = [];
   for (const b of blocks) {
-    if (selectionIntersects(state, b.from, b.to)) continue;
+    const isForced = forced.has(b.source);
+    const isCaretIn = selectionIntersects(state, b.from, b.to);
+    if (isForced || isCaretIn) {
+      const widget = new RawFormWidget(b.kind, b.source, b.infoString);
+      ranges.push(
+        Decoration.replace({
+          widget,
+          block: true,
+        }).range(b.from, b.to),
+      );
+      continue;
+    }
     const widget = new BlockWidget(b.kind, b.source, b.infoString, ctx);
     ranges.push(
       Decoration.replace({
@@ -429,8 +600,9 @@ export function blockWidgets(opts: BlockWidgetsOptions): Extension {
   // to a `view` parameter inside `toDOM`/`updateDOM`. We thread the
   // currently-mounted view via a settable reference filled in by an
   // EditorView.updateListener — that's the canonical way to bridge from
-  // a state-side StateField back into the View's measure pipeline.
-  let liveView: EditorView | null = null;
+  // a state-side StateField back into the View's measure pipeline. The
+  // same reference also serves the mermaid pencil's `view.dispatch` call
+  // — see WidgetCtx.editorView.
   const ctx: WidgetCtx = {
     cache,
     ipcRenderMarkdown: opts.renderMarkdown,
@@ -440,8 +612,9 @@ export function blockWidgets(opts: BlockWidgetsOptions): Extension {
       // the existing widget DOM but the editor's viewport math wouldn't
       // notice — usually fine, but mermaid SVGs can change line height
       // after rendering.
-      liveView?.requestMeasure();
+      ctx.editorView?.requestMeasure();
     },
+    editorView: null,
   };
 
   const field = StateField.define<DecorationSet>({
@@ -449,10 +622,13 @@ export function blockWidgets(opts: BlockWidgetsOptions): Extension {
       return buildDecorations(state, ctx);
     },
     update(value, tr: Transaction) {
-      // Recompute on doc changes (the lezer tree shifted) and selection
-      // changes (caret-in / caret-out toggle). Other transactions (e.g.
-      // viewport-only scrolls) leave the widget set untouched.
-      if (tr.docChanged || tr.selection) {
+      // Recompute on doc changes (the lezer tree shifted), selection
+      // changes (caret-in / caret-out toggle), and transactions carrying
+      // a `forceRawEffect` (mermaid pencil flagging a source as
+      // raw-only). Other transactions (e.g. viewport-only scrolls)
+      // leave the widget set untouched.
+      const hasForceRaw = tr.effects.some((e) => e.is(forceRawEffect));
+      if (tr.docChanged || tr.selection || hasForceRaw) {
         return buildDecorations(tr.state, ctx);
       }
       return value;
@@ -464,12 +640,20 @@ export function blockWidgets(opts: BlockWidgetsOptions): Extension {
     provide: (f) => EditorView.decorations.from(f),
   });
 
-  // ViewPlugin that just maintains the `liveView` reference + flags
-  // arrow-key motion across widgets as atomic. We can't put this on the
-  // StateField because `atomicRanges` is view-side and we need the
-  // EditorView handle for `requestMeasure`.
-  const viewBinding = EditorView.updateListener.of((update) => {
-    liveView = update.view;
+  // ViewPlugin that captures the EditorView at construction time and
+  // refreshes the reference on every update. The `updateListener` flavour
+  // alone wouldn't be enough — listeners do NOT fire on initial mount,
+  // which would leave `ctx.editorView` null until some unrelated
+  // transaction lands. The mermaid pencil's click handler needs
+  // `view.dispatch` available BEFORE the first user-triggered update,
+  // so we plumb the view through a ViewPlugin's constructor.
+  const viewBinding = ViewPlugin.define((view) => {
+    ctx.editorView = view;
+    return {
+      update(update: ViewUpdate) {
+        ctx.editorView = update.view;
+      },
+    };
   });
 
   // EditorView.atomicRanges expects a function over the view; the
@@ -480,5 +664,5 @@ export function blockWidgets(opts: BlockWidgetsOptions): Extension {
     (view) => view.state.field(field, false) ?? Decoration.none,
   );
 
-  return [field, viewBinding, atomicRangesExt];
+  return [forceRawField, field, viewBinding, atomicRangesExt];
 }
