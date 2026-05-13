@@ -1,6 +1,19 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import { StateEffect, type Extension } from '@codemirror/state';
+import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
+import { GFM } from '@lezer/markdown';
+
 import { mountLiveEditor } from '../../src/views/LiveEditor';
 import type { Settings, Thread, ResolveOutcome } from '../../src/types-generated';
+// B.6 integration smoke imports the Phase-2 extensions and asserts
+// they compose cleanly with the Phase-1 LiveEditor host. The factories
+// themselves are unit-tested in tests/views/decorations/*.test.ts;
+// here we only verify the wire-up invariants spec'd in plan task B.6.
+import { inlineMarks, inlineMarksKeymap } from '../../src/views/decorations/inlineMarks';
+import { blockWidgets } from '../../src/views/decorations/blocks';
+import { tables } from '../../src/views/decorations/tables';
+import { commentHighlights } from '../../src/views/decorations/commentHighlights';
+import { pasteHandler } from '../../src/views/decorations/paste';
 
 function makeRoot(): HTMLElement {
   const root = document.createElement('div');
@@ -1545,6 +1558,425 @@ describe('LiveEditor', () => {
       // Only the surviving thread fed through the callback.
       expect(onAnchorsResolved).toHaveBeenCalledTimes(1);
       expect(onAnchorsResolved).toHaveBeenCalledWith('th-2', { kind: 'resolved', start: 0, end: 1 });
+      view.destroy();
+    });
+  });
+
+  /**
+   * B.6 — Phase-2 integration smoke.
+   *
+   * This block mounts a single LiveEditor instance with the full
+   * Phase-1 wiring already in the host PLUS the four Phase-2
+   * extensions appended via `StateEffect.appendConfig` (the exact
+   * pattern Document.ts uses post-mount):
+   *
+   *   - tables()              — B.1 GFM table widget (per-cell
+   *                             contentEditable + +row/+col/raw
+   *                             toolbar).
+   *   - blockWidgets({...})   — B.1 atomic widgets for code / mermaid
+   *                             / html / image; tables are NOT emitted
+   *                             from this set anymore (see blocks.ts
+   *                             "tables.ts owns the surface").
+   *   - inlineMarks() +       — B.3 caret-aware sigil hide/reveal and
+   *     inlineMarksKeymap()     Cmd+B / Cmd+I / Cmd+E / Cmd+K toggles.
+   *   - pasteHandler({...})   — B.4 turndown HTML→md when the user
+   *                             setting `paste_html_behavior` is
+   *                             `"markdown"`.
+   *
+   * Plus the B.2 idle-reanchor timer that lives inside `LiveEditor.ts`
+   * itself (no extension to append — the timer is wired in via the
+   * update listener).
+   *
+   * The block asserts three invariants:
+   *   1) The Phase-1 byte-identical Render → Raw → Render toggle still
+   *      holds (mode flips are StateEffects, NOT doc edits, even with
+   *      tables/blocks/inlineMarks/paste all live).
+   *   2) A user-event-tagged cell edit followed by `idle_reanchor_ms`
+   *      of quiescence (with `auto_save_debounce_ms` configured WAY
+   *      higher than idle) triggers EXACTLY ONE `resolve_anchor` pass
+   *      per thread — the idle pump fires once and does not re-arm
+   *      after the saveInFlight gate releases.
+   *   3) Cmd+B dispatched on a table cell's DOM is a no-op for the
+   *      table's source slice — the cell's text bytes between the
+   *      surrounding pipes are unchanged. This is the "table widget
+   *      owns focus" contract from the design doc: the keymap may
+   *      still toggle `**` around the editor's main selection (which
+   *      lives outside the atomic widget range), but it MUST NOT
+   *      mutate the cell's source.
+   */
+  describe('B.6 — Phase-2 integration smoke (tables + paste + inlineMarks + idle re-anchor)', () => {
+    /**
+     * Builds the four Phase-2 extension factories with a no-op IPC
+     * stub for renderMarkdown (blockWidgets needs one to satisfy its
+     * options type; with no code / mermaid / html / image blocks in
+     * the docs we use, the IPC is never called). The returned
+     * Extension[] is dispatched on the editor via
+     * `StateEffect.appendConfig` — the exact pattern Document.ts uses.
+     */
+    function phase2Extensions(getPasteHtmlBehavior: () => string): Extension[] {
+      return [
+        // Markdown language (with GFM extensions so the lezer tree
+        // includes Table / Strikethrough nodes) — the decoration
+        // extensions parse the tree, so this MUST come first.
+        markdown({ base: markdownLanguage, extensions: [GFM] }),
+        inlineMarks(),
+        inlineMarksKeymap(),
+        // Block widgets renderer; not exercised by the docs in this
+        // suite (no fenced code / mermaid / html / image) but loaded
+        // to prove it composes with tables + inlineMarks without a
+        // RangeSet collision on table blocks.
+        blockWidgets({
+          renderMarkdown: () =>
+            Promise.resolve({ html: '', anchors: [] } as unknown as never),
+        }),
+        tables(),
+        commentHighlights(),
+        pasteHandler({
+          getPasteHtmlBehavior,
+          // No-op loader — none of the integration-smoke tests
+          // exercise the paste path; we only need the extension
+          // present in the config so it can fight for the paste DOM
+          // event in the same composed extension stack.
+          loadTurndown: async () => ({ turndown: (s: string) => s }),
+        }),
+      ];
+    }
+
+    /**
+     * Mount a LiveEditor and immediately dispatch the Phase-2
+     * extensions via `StateEffect.appendConfig`. Returns both the
+     * LiveEditor handle and the underlying EditorView for tests that
+     * need to reach into the DOM (e.g. the table-cell keymap probe).
+     */
+    function mountWithPhase2(
+      source: string,
+      ipc: IpcStub,
+      args: {
+        threads?: Thread[];
+        autoSaveMs?: number;
+        idleMs?: number;
+        renderReadonly?: boolean;
+        pasteBehavior?: string;
+        onAnchorsResolved?: (id: string, outcome: ResolveOutcome) => void;
+      } = {},
+    ): { view: ReturnType<typeof mountLiveEditor>; root: HTMLElement } {
+      const root = makeRoot();
+      const settings = makeSettings({
+        auto_save_debounce_ms: args.autoSaveMs ?? 60_000,
+        render_readonly: args.renderReadonly ?? false,
+      });
+      // B.2 — `idle_reanchor_ms` is read off the editor settings via
+      // a one-line cast in LiveEditor.ts (cross-phase ordering: B.4
+      // wires the field into types-generated.ts).
+      (settings.editor as unknown as { idle_reanchor_ms: number }).idle_reanchor_ms =
+        args.idleMs ?? 1500;
+      const view = mountLiveEditor(root, ipc as never, {
+        tabId: 't',
+        path: '/tmp/a.md',
+        source,
+        settings,
+        threads: args.threads ?? [],
+        onAnchorsResolved: args.onAnchorsResolved,
+      });
+      view.editorView.dispatch({
+        effects: StateEffect.appendConfig.of(
+          phase2Extensions(() => args.pasteBehavior ?? 'plain'),
+        ),
+      });
+      return { view, root };
+    }
+
+    /**
+     * Invariant #1 — Phase-1 byte-identical Render → Raw → Render
+     * toggle still holds with all Phase-2 extensions loaded.
+     *
+     * Mode flips are StateEffects (NOT doc changes), so even with
+     * decoration extensions that render widgets / hide sigils, the
+     * underlying `state.doc.toString()` MUST be byte-identical
+     * before/after each flip. This is the contract that lets the
+     * "open in raw to copy bytes" workflow round-trip without
+     * introducing whitespace drift from the Render-side rendering.
+     */
+    it('Render → Raw → Render keeps the document bytes identical with all Phase-2 extensions loaded', () => {
+      const ipc = makeIpc();
+      // A document that exercises tables, inline marks, AND would
+      // exercise blockWidgets if there were a fenced code block (we
+      // skip that here to avoid the async renderMarkdown round-trip).
+      // The trailing newline keeps the table well-formed under GFM.
+      const source = [
+        '# Title',
+        '',
+        'A paragraph with **bold** and *italic* and `code`.',
+        '',
+        '| Col A | Col B |',
+        '|-------|-------|',
+        '| 1     | 2     |',
+        '| 3     | 4     |',
+        '',
+      ].join('\n');
+      const { view } = mountWithPhase2(source, ipc);
+
+      const initialBytes = view.editorView.state.doc.toString();
+      expect(initialBytes).toBe(source);
+
+      view.setMode('raw');
+      const afterRaw = view.editorView.state.doc.toString();
+      expect(afterRaw).toBe(initialBytes);
+
+      view.setMode('render');
+      const afterRenderAgain = view.editorView.state.doc.toString();
+      expect(afterRenderAgain).toBe(initialBytes);
+
+      // Belt and suspenders — `view.currentSource()` is the public
+      // surface Document.ts reads via `LiveEditorView.currentSource`,
+      // and must agree with `state.doc.toString()`.
+      expect(view.currentSource()).toBe(source);
+
+      // No autosave fired during the mode toggles — autosave was
+      // already proven inert for mode toggles by the Phase-1 mode
+      // test above; this assertion locks the same invariant in the
+      // Phase-2 composed stack.
+      expect(ipc.saveDocument).not.toHaveBeenCalled();
+
+      view.destroy();
+    });
+
+    /**
+     * Invariant #2 — A table cell edit followed by an idle pause
+     * fires `resolve_anchor` exactly ONCE per thread. The idle pump
+     * MUST be the only thing that calls `resolve_anchor` in this
+     * test window — autosave is configured well past the idle
+     * window, so it cannot beat the idle pump to the IPC.
+     *
+     * This locks the `saveInFlight` gate / idle-cancel-on-save
+     * contract from B.2 in the composed Phase-2 stack: if the gate
+     * were broken, a second pass (post-save) would land after the
+     * idle pass, and the resolveAnchor call count would be 2 per
+     * thread.
+     */
+    it('a table cell edit followed by an idle pause fires resolve_anchor exactly once per thread', async () => {
+      vi.useFakeTimers();
+      const ipc = makeIpc();
+      const threads = [
+        makeThread('th-1', 0, 4, 'hell'),
+        makeThread('th-2', 4, 5, 'o'),
+      ];
+      const onAnchorsResolved = vi.fn();
+      const source = '| h1 | h2 |\n|----|----|\n| body | x |\n';
+      const { view } = mountWithPhase2(source, ipc, {
+        threads,
+        // Autosave debounce is much higher than the idle window, so
+        // the idle pump fires first (and would-be autosave never
+        // arrives within this test's timer advances).
+        autoSaveMs: 60_000,
+        idleMs: 1500,
+        onAnchorsResolved,
+      });
+
+      // Drive a table-cell edit through the same path the cell-input
+      // DOM listener uses: a user-event-tagged transaction. This
+      // mirrors what tables.ts dispatches when the user types into a
+      // contentEditable cell.
+      view.editorView.dispatch({
+        // Replace " body " with " hello " inside the cell — offsets
+        // inside the source, NOT around the pipes.
+        changes: { from: 25, to: 30, insert: 'hello' },
+        userEvent: 'input.cell-edit',
+      });
+      // The doc has mutated; dirty is set; autosave debounce is
+      // armed (60s) but the idle timer (1.5s) is armed too.
+      expect(ipc.saveDocument).not.toHaveBeenCalled();
+      expect(ipc.resolveAnchor).not.toHaveBeenCalled();
+
+      // Cross the idle boundary. Drain microtasks so the per-thread
+      // resolveAnchor await chain settles.
+      vi.advanceTimersByTime(1500);
+      for (let i = 0; i < 12; i++) await Promise.resolve();
+
+      // Exactly one resolveAnchor pass per thread.
+      expect(ipc.resolveAnchor).toHaveBeenCalledTimes(threads.length);
+      expect(ipc.resolveAnchor).toHaveBeenNthCalledWith(1, 't', threads[0].anchor);
+      expect(ipc.resolveAnchor).toHaveBeenNthCalledWith(2, 't', threads[1].anchor);
+      // onAnchorsResolved was fed for each thread.
+      expect(onAnchorsResolved).toHaveBeenCalledTimes(threads.length);
+      // And — critically — saveDocument has NOT fired (autosave is
+      // 60s; we only advanced 1.5s), so the post-save pump cannot be
+      // the source of these calls.
+      expect(ipc.saveDocument).not.toHaveBeenCalled();
+
+      // Advance past where a second idle pump WOULD have fired if
+      // the timer re-armed itself after the first run. The pump must
+      // NOT double-fire: it consumes its `idleTimer` slot inside
+      // `runIdleReanchor` and only re-arms on a fresh user input.
+      vi.advanceTimersByTime(10_000);
+      for (let i = 0; i < 5; i++) await Promise.resolve();
+      expect(ipc.resolveAnchor).toHaveBeenCalledTimes(threads.length);
+
+      view.destroy();
+    });
+
+    /**
+     * Invariant #2b — the `saveInFlight` gate in particular. Setup
+     * is the inverse cadence of the test above: autosave is shorter
+     * than idle, so the save lands first and is in flight while the
+     * would-be idle boundary passes. The idle pump MUST NOT fire
+     * while `saveInFlight` is true, and the post-save pump fires
+     * exactly once per thread. Final tally: one resolveAnchor pass
+     * per thread, sourced from the post-save pump alone.
+     */
+    it('idle re-anchor does not double-fire after a save (saveInFlight gate)', async () => {
+      vi.useFakeTimers();
+      let resolveSave: ((v: unknown) => void) | undefined;
+      const ipc = makeIpc({
+        saveDocument: vi.fn().mockImplementation(
+          () =>
+            new Promise((resolve) => {
+              resolveSave = resolve;
+            }),
+        ),
+      });
+      const threads = [makeThread('th-1', 0, 4, 'hell')];
+      const source = '| h1 | h2 |\n|----|----|\n| body | x |\n';
+      const { view } = mountWithPhase2(source, ipc, {
+        threads,
+        // Autosave shorter than idle so the save lands first.
+        autoSaveMs: 100,
+        idleMs: 1500,
+      });
+
+      view.editorView.dispatch({
+        changes: { from: 25, to: 30, insert: 'hello' },
+        userEvent: 'input.cell-edit',
+      });
+      // Autosave fires; saveDocument is invoked but the promise stays
+      // unresolved -> save is in-flight.
+      vi.advanceTimersByTime(100);
+      for (let i = 0; i < 3; i++) await Promise.resolve();
+      expect(ipc.saveDocument).toHaveBeenCalledTimes(1);
+
+      // Cross the idle boundary while the save is in flight. The
+      // idle pump must NOT fire because `saveInFlight === true`.
+      // (Even if some future change forgot to cancel the idle
+      // timer on `flushSave`, the `runIdleReanchor` `saveInFlight`
+      // guard short-circuits before the IPC.)
+      vi.advanceTimersByTime(5_000);
+      for (let i = 0; i < 5; i++) await Promise.resolve();
+      expect(ipc.resolveAnchor).not.toHaveBeenCalled();
+
+      // Let the save resolve. The post-save pump fires resolveAnchor
+      // once per thread.
+      resolveSave!({ kind: 'ok', etag: null });
+      for (let i = 0; i < 12; i++) await Promise.resolve();
+      expect(ipc.resolveAnchor).toHaveBeenCalledTimes(threads.length);
+
+      // Advance further — no second idle pass after the save's
+      // re-anchor pump returns. `flushSave` cancels the pending
+      // idle timer; with no fresh user input the timer stays
+      // disarmed.
+      vi.advanceTimersByTime(10_000);
+      for (let i = 0; i < 5; i++) await Promise.resolve();
+      expect(ipc.resolveAnchor).toHaveBeenCalledTimes(threads.length);
+
+      view.destroy();
+    });
+
+    /**
+     * Invariant #3 — Cmd+B dispatched on a table cell DOM does NOT
+     * mutate the cell's source slice. The table widget is atomic
+     * (atomicRanges facet) — the CodeMirror main selection cannot
+     * land inside the widget range via ordinary cursor motion, so
+     * if the keymap fires while the user's focus is on a cell
+     * (browser-level focus), the keymap acts on the clamped main
+     * selection which lives OUTSIDE the table. The cell's source
+     * bytes therefore stay byte-identical.
+     *
+     * The test dispatches a bubbling Cmd+B `keydown` on the cell
+     * element — the same DOM-level event the browser would emit
+     * if the user pressed Cmd+B while typing into the cell — and
+     * checks that the table source slice round-trips unchanged.
+     */
+    it('Cmd+B on a table cell does not insert ** around the cell source slice', () => {
+      const ipc = makeIpc();
+      // Pad the doc with a paragraph BEFORE the table so the main
+      // editor selection at offset 0 lives outside the widget range.
+      // If the keymap ends up dispatching an empty-selection wrap,
+      // the `****` lands in the paragraph — NOT in the table cell.
+      const paragraph = 'A paragraph.\n\n';
+      const tableSource = '| h1 | h2 |\n|----|----|\n| body | x |\n';
+      const source = paragraph + tableSource;
+      const { view, root } = mountWithPhase2(source, ipc);
+
+      // Sanity — the table widget materialised in the DOM. Without
+      // this query the test couldn't dispatch a realistic keydown
+      // on the cell, so the assertion is load-bearing.
+      const cell = root.querySelector<HTMLElement>(
+        '[data-testid="table-widget"] [data-row="0"][data-col="0"]',
+      );
+      expect(cell).not.toBeNull();
+      expect(cell!.textContent).toBe('body');
+
+      // Dispatch a bubbling Cmd+B keydown on the cell. Ctrl is the
+      // platform-correct modifier in jsdom (CM's `Mod-` resolves to
+      // Ctrl when `navigator.platform` is not a Mac, which jsdom's
+      // default is not).
+      const event = new KeyboardEvent('keydown', {
+        key: 'b',
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      cell!.dispatchEvent(event);
+
+      // The TABLE'S source slice — between the surrounding pipes —
+      // is byte-identical. Specifically: the cell text "body" was
+      // NOT wrapped in `**`, and the column-separator pipes /
+      // alignment row / header are all intact.
+      const docAfter = view.editorView.state.doc.toString();
+      expect(docAfter.includes(tableSource.trimEnd())).toBe(true);
+      // The cell's source slice — the four-byte substring "body" —
+      // appears exactly once, NOT as "**body**" or with any other
+      // sigil injection inside the table region.
+      const tableStart = docAfter.indexOf('| h1');
+      expect(tableStart).toBeGreaterThanOrEqual(0);
+      const tableSlice = docAfter.slice(tableStart);
+      expect(tableSlice.startsWith(tableSource.trimEnd())).toBe(true);
+      // Defense-in-depth: no `**` injected anywhere inside the
+      // table source slice. If a future change made the keymap
+      // mutate the cell, this assertion would flip first.
+      const tableExtent = tableSource.trimEnd().length;
+      expect(tableSlice.slice(0, tableExtent).includes('**')).toBe(false);
+
+      view.destroy();
+    });
+
+    /**
+     * Invariant #3 follow-up — the same Cmd+B dispatch, but checking
+     * that the keymap's "act on main selection" semantics still hold
+     * for selections outside the widget. We aren't asserting the
+     * exact placement of any inserted `**` (that's the inlineMarks
+     * keymap's contract, covered in its own test file) — only that
+     * dispatching Cmd+B on a cell does NOT throw, does NOT destroy
+     * the editor, and does NOT remove the table widget from the DOM.
+     */
+    it('Cmd+B on a table cell does not destroy the editor host or remove the table widget', () => {
+      const ipc = makeIpc();
+      const source = 'A paragraph.\n\n| h1 | h2 |\n|----|----|\n| body | x |\n';
+      const { view, root } = mountWithPhase2(source, ipc);
+
+      const cell = root.querySelector<HTMLElement>(
+        '[data-testid="table-widget"] [data-row="0"][data-col="0"]',
+      )!;
+      const event = new KeyboardEvent('keydown', {
+        key: 'b',
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      expect(() => cell.dispatchEvent(event)).not.toThrow();
+      // Editor DOM and the table widget both survive the dispatch.
+      expect(root.querySelector('.cm-editor')).not.toBeNull();
+      expect(root.querySelector('[data-testid="table-widget"]')).not.toBeNull();
+
       view.destroy();
     });
   });
