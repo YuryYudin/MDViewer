@@ -84,6 +84,20 @@ export interface WorkspaceHandle {
    *  Document or Conflict view. StartPage's openDocument flow funnels here
    *  via __mdv_setActive then triggers a refresh. */
   setActive(outcome: OpenOutcome): void;
+  /**
+   * A4: update the per-tab dirty registry. Called by TabBar's document-
+   * level `mdviewer:tab-dirty` listener whenever LiveEditor reports a
+   * dirty/clean transition. Dirty=true sets the bit; dirty=false removes
+   * the entry (treating the Map as a presence set keeps the surface
+   * minimal and makes `getDirtyState` cheap).
+   */
+  setTabDirty(path: string, dirty: boolean): void;
+  /**
+   * A4: read the per-tab dirty bit. TabBar's pill builder calls this on
+   * every render so the indicator survives re-mounts (close/open/switch).
+   * Returns `false` for paths the registry has never seen.
+   */
+  getDirtyState(path: string): boolean;
 }
 
 /**
@@ -199,6 +213,25 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
   const state: WorkspaceState = { tabs: [], activeId: null };
   const tabbar = shell.querySelector<HTMLElement>('[data-region="tabbar"]')!;
   const body = shell.querySelector<HTMLElement>('[data-region="body"]')!;
+
+  // A4: per-tab dirty registry. The Map is the source of truth for
+  // `[data-testid="tab-dirty"]` visibility on each tab pill. Two flows
+  // converge on this state:
+  //   - LiveEditor dispatches `mdviewer:tab-dirty` (with detail
+  //     {path, dirty}) on first input AND after a successful save;
+  //     TabBar's document-level listener calls setTabDirty(...) for us.
+  //   - TabBar's pill builder calls getDirtyState(path) at render time
+  //     so re-mounts (open/close/switch) reflect the current bit.
+  // We treat the Map as a presence set: dirty=true sets the entry,
+  // dirty=false deletes it. Cheaper than persisting booleans.
+  const dirtyRegistry = new Map<string, boolean>();
+  function setTabDirty(path: string, dirty: boolean): void {
+    if (dirty) dirtyRegistry.set(path, true);
+    else dirtyRegistry.delete(path);
+  }
+  function getDirtyState(path: string): boolean {
+    return dirtyRegistry.get(path) === true;
+  }
 
   // Comments-sidebar visibility (in-session only — not persisted). Three
   // input surfaces converge on `mdviewer:toggle-sidebar`: the close button
@@ -502,6 +535,12 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
         await refresh();
       },
       onAfterClose: () => { void refresh(); },
+      // A4: thread the dirtyRegistry read+write surface through so
+      // (a) each pill's initial `hidden` reflects the current state and
+      // (b) the document-level mdviewer:tab-dirty listener can funnel
+      // LiveEditor's transitions back into the same Map.
+      getDirtyState,
+      setTabDirty,
     });
 
     // C2: a pending Conflict outcome wins over both StartPage and Document
@@ -879,5 +918,5 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
   }
 
   await refresh();
-  return { refresh, setActive };
+  return { refresh, setActive, setTabDirty, getDirtyState };
 }

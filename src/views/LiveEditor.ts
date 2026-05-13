@@ -186,6 +186,16 @@ export function mountLiveEditor(
       // Swallow — set_dirty is a hint to the watcher, not a hard
       // contract. A transient failure here must NOT mask the save.
     }
+    // A4: matching dirty:false push so the TabBar pill re-hides its
+    // .tab-dirty indicator. Dispatched UNCONDITIONALLY after a successful
+    // save (mirroring the setDirty(false) call above) — we rely on the
+    // Rust-side reject having already thrown out of `await ipc.saveDocument`
+    // so reaching this point implies the save succeeded.
+    document.dispatchEvent(
+      new CustomEvent('mdviewer:tab-dirty', {
+        detail: { path: args.path, dirty: false },
+      }),
+    );
     // Post-save re-anchor pass. Each thread's anchor is resolved
     // against the just-saved source; the outcome is fed back to the
     // caller via `onAnchorsResolved` so A.7's commentHighlights can
@@ -234,6 +244,17 @@ export function mountLiveEditor(
     void ipc.setDirty(args.path, true).catch(() => {
       /* swallow */
     });
+    // A4: push a parallel CustomEvent so the TabBar can light up the
+    // per-tab dirty indicator. The Rust-side setDirty has other consumers
+    // (window-close prompt, save indicator) and stays as-is; this event
+    // is purely the UI-side signal. Document-level dispatch keeps us
+    // off callback-prop drilling through the Workspace → Document →
+    // LiveEditor chain (Decisions §2).
+    document.dispatchEvent(
+      new CustomEvent('mdviewer:tab-dirty', {
+        detail: { path: args.path, dirty: true },
+      }),
+    );
   }
 
   function onConflictOpen(): void {

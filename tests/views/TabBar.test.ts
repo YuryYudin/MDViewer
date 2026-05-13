@@ -220,4 +220,102 @@ describe('TabBar', () => {
     // Label is the basename — the full path is reachable via the title attribute.
     expect(active!.textContent).toContain('b.md');
   });
+
+  describe('dirty indicator', () => {
+    it('renders .tab-dirty as first child with hidden set from getDirtyState', () => {
+      const root = document.createElement('div');
+      const state: WorkspaceState = {
+        tabs: [
+          { id: 't1', path: '/clean.md' },
+          { id: 't2', path: '/dirty.md' },
+        ],
+        activeId: 't1',
+      };
+      const getDirtyState = (path: string): boolean => path === '/dirty.md';
+      mountTabBar(root, makeIpc(), state, { getDirtyState });
+      const pills = root.querySelectorAll<HTMLElement>('[data-test="tab"]');
+      expect(pills.length).toBe(2);
+      expect(pills[0].firstElementChild?.classList.contains('tab-dirty')).toBe(true);
+      expect(pills[0].firstElementChild?.getAttribute('data-testid')).toBe('tab-dirty');
+      expect(pills[0].firstElementChild?.hasAttribute('hidden')).toBe(true);
+      expect(pills[1].firstElementChild?.classList.contains('tab-dirty')).toBe(true);
+      expect(pills[1].firstElementChild?.hasAttribute('hidden')).toBe(false);
+    });
+
+    it('carries data-path attribute on each pill', () => {
+      const root = document.createElement('div');
+      const state: WorkspaceState = {
+        tabs: [{ id: 't1', path: 'C:\\Users\\x\\a.md' }],
+        activeId: 't1',
+      };
+      mountTabBar(root, makeIpc(), state, { getDirtyState: () => false });
+      const pill = root.querySelector<HTMLElement>('[data-test="tab"]');
+      expect(pill?.dataset.path).toBe('C:\\Users\\x\\a.md');
+    });
+
+    it('toggles hidden on matching pill when mdviewer:tab-dirty event fires (incl. CSS-special paths)', () => {
+      const root = document.createElement('div');
+      const pathWithSpecials = '/some path/[v1.0]:file.md';
+      const registry = new Map<string, boolean>();
+      const getDirtyState = (p: string): boolean => registry.get(p) === true;
+      const setTabDirty = (p: string, dirty: boolean): void => {
+        if (dirty) registry.set(p, true);
+        else registry.delete(p);
+      };
+      const state: WorkspaceState = {
+        tabs: [{ id: 't1', path: pathWithSpecials }],
+        activeId: 't1',
+      };
+      mountTabBar(root, makeIpc(), state, { getDirtyState, setTabDirty });
+      document.dispatchEvent(
+        new CustomEvent('mdviewer:tab-dirty', {
+          detail: { path: pathWithSpecials, dirty: true },
+        }),
+      );
+      const pill = root.querySelector<HTMLElement>('[data-test="tab"]');
+      expect(pill?.firstElementChild?.hasAttribute('hidden')).toBe(false);
+      expect(registry.get(pathWithSpecials)).toBe(true);
+      document.dispatchEvent(
+        new CustomEvent('mdviewer:tab-dirty', {
+          detail: { path: pathWithSpecials, dirty: false },
+        }),
+      );
+      expect(pill?.firstElementChild?.hasAttribute('hidden')).toBe(true);
+      expect(registry.has(pathWithSpecials)).toBe(false);
+    });
+
+    it('preserves dirty state across tab-bar re-renders by reading the registry', () => {
+      const root = document.createElement('div');
+      const registry = new Map<string, boolean>();
+      const getDirtyState = (p: string): boolean => registry.get(p) === true;
+      const setTabDirty = (p: string, dirty: boolean): void => {
+        if (dirty) registry.set(p, true);
+        else registry.delete(p);
+      };
+      registry.set('/a.md', true);
+      const state1: WorkspaceState = {
+        tabs: [{ id: 't1', path: '/a.md' }],
+        activeId: 't1',
+      };
+      mountTabBar(root, makeIpc(), state1, { getDirtyState, setTabDirty });
+      // Re-render with another tab added — the existing dirty state must
+      // be reflected on /a.md's pill from the registry.
+      const state2: WorkspaceState = {
+        tabs: [
+          { id: 't1', path: '/a.md' },
+          { id: 't2', path: '/b.md' },
+        ],
+        activeId: 't1',
+      };
+      mountTabBar(root, makeIpc(), state2, { getDirtyState, setTabDirty });
+      const pillA = Array.from(root.querySelectorAll<HTMLElement>('[data-test="tab"]')).find(
+        (p) => p.dataset.path === '/a.md',
+      );
+      const pillB = Array.from(root.querySelectorAll<HTMLElement>('[data-test="tab"]')).find(
+        (p) => p.dataset.path === '/b.md',
+      );
+      expect(pillA?.firstElementChild?.hasAttribute('hidden')).toBe(false);
+      expect(pillB?.firstElementChild?.hasAttribute('hidden')).toBe(true);
+    });
+  });
 });
