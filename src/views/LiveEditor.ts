@@ -145,6 +145,12 @@ export function mountLiveEditor(
 
   const debounceMs = args.settings.editor.auto_save_debounce_ms;
   const renderReadonly = args.settings.editor.render_readonly;
+  // B.2: editor.idle_reanchor_ms is a typed EditorSettings field that
+  // ships in B.4 (the cross-phase ordering is intentional — see plan
+  // task B.2 done_when). Until B.4 regenerates types-generated.ts,
+  // read it through a one-line cast and default to 1500 ms.
+  const idleReanchorMs =
+    (args.settings.editor as unknown as { idle_reanchor_ms?: number }).idle_reanchor_ms ?? 1500;
   const initialMode: LiveEditorMode = args.initialMode ?? 'render';
 
   const modeField = makeModeField(initialMode);
@@ -154,9 +160,22 @@ export function mountLiveEditor(
   // listener, conflict listeners, and forceSave so all paths share
   // the same single source of truth for "is there a pending save?"
   let timer: ReturnType<typeof setTimeout> | undefined;
+  // B.2 idle re-anchor timer. Separate from the autosave debounce
+  // because the two cadences are independent — autosave persists the
+  // doc to disk; the idle pump only refreshes anchor positions so
+  // commentHighlights doesn't drift mid-edit (saves already re-anchor
+  // via onAnchorsResolved, so the idle pump is suppressed while a save
+  // is in flight and is cancelled when a save starts).
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let dirty = false;
   let conflictPaused = false;
   let destroyed = false;
+  // True from the moment `flushSave` is invoked until the post-save
+  // re-anchor pump has fed every thread back through `onAnchorsResolved`.
+  // The idle pump consults this flag to avoid running concurrently with
+  // a save (which would issue a redundant resolveAnchor pass for the
+  // same source the save will re-anchor).
+  let saveInFlight = false;
 
   function clearTimer(): void {
     if (timer !== undefined) {
@@ -165,63 +184,114 @@ export function mountLiveEditor(
     }
   }
 
-  async function flushSave(): Promise<void> {
-    clearTimer();
-    if (destroyed) return;
-    const contents = editorView.state.doc.toString();
-    const outcome = await Promise.resolve(ipc.saveDocument(args.tabId, contents));
-    if (destroyed) return;
-    // Phase-1 dirty-clear: every successful save clears the dirty
-    // flag. The "successful" check is implicit — if `saveDocument`
-    // rejected, the await above would have thrown and we'd never
-    // get here. The Rust handler reports conflicts via the resolved
-    // SaveOutcome.kind (`'conflict'`); we still clear dirty in that
-    // case because Conflict.ts will reopen its own dialog and the
-    // dirty flag is reset by the conflict resolution flow.
-    void outcome;
-    dirty = false;
-    try {
-      await ipc.setDirty(args.path, false);
-    } catch {
-      // Swallow — set_dirty is a hint to the watcher, not a hard
-      // contract. A transient failure here must NOT mask the save.
+  function clearIdleTimer(): void {
+    if (idleTimer !== undefined) {
+      clearTimeout(idleTimer);
+      idleTimer = undefined;
     }
-    // A4: matching dirty:false push so the TabBar pill re-hides its
-    // .tab-dirty indicator. Dispatched UNCONDITIONALLY after a successful
-    // save (mirroring the setDirty(false) call above) — we rely on the
-    // Rust-side reject having already thrown out of `await ipc.saveDocument`
-    // so reaching this point implies the save succeeded.
-    document.dispatchEvent(
-      new CustomEvent('mdviewer:tab-dirty', {
-        detail: { path: args.path, dirty: false },
-      }),
-    );
-    // Post-save re-anchor pass. Each thread's anchor is resolved
-    // against the just-saved source; the outcome is fed back to the
-    // caller via `onAnchorsResolved` so A.7's commentHighlights can
-    // repaint without owning the IPC call itself.
+  }
+
+  async function runIdleReanchor(): Promise<void> {
+    idleTimer = undefined;
+    if (destroyed) return;
+    // Guards mirror the spec: dirty AND no save in flight.
+    if (!dirty) return;
+    if (saveInFlight) return;
+    // Fire resolve_anchor for each known thread. Outcomes feed back
+    // through the same onAnchorsResolved callback the post-save pump
+    // uses, so Document.ts can dispatch `refreshAnchors` to repaint
+    // commentHighlights via its existing wiring.
     for (const thread of args.threads) {
       try {
         const resolved = await ipc.resolveAnchor(args.tabId, thread.anchor);
         if (destroyed) return;
         args.onAnchorsResolved?.(thread.id, resolved);
       } catch {
-        // Anchor resolution is best-effort; a failure on one thread
-        // must not abort the loop or surface as an unhandled rejection.
+        // Anchor resolution is best-effort; one thread failing must
+        // not abort the loop or surface as an unhandled rejection.
       }
     }
-    // Canonical once-per-save signal. Fires AFTER the per-thread
-    // onAnchorsResolved pump so Document.ts can refresh its hidden
-    // render-shadow div exactly once per save (rather than N times,
-    // one per thread). Skipped when the view was destroyed mid-save
-    // — the destroyed-check above the loop would have already
-    // returned, but we double-check here for the zero-threads path.
+  }
+
+  function scheduleIdleReanchor(): void {
     if (destroyed) return;
+    clearIdleTimer();
+    idleTimer = setTimeout(() => {
+      void runIdleReanchor();
+    }, idleReanchorMs);
+  }
+
+  async function flushSave(): Promise<void> {
+    clearTimer();
+    // Saves cancel the pending idle timer: the post-save re-anchor pump
+    // covers the exact same surface, so the idle pump would only fire
+    // a redundant pass (and the `saveInFlight` guard already blocks it
+    // mid-save). Cancelling here keeps the idle clock from re-arming
+    // immediately after a successful save with no fresh user input.
+    clearIdleTimer();
+    if (destroyed) return;
+    saveInFlight = true;
     try {
-      args.onSaved?.(args.path);
-    } catch {
-      // The onSaved callback is best-effort; a caller throwing must
-      // not surface as an unhandled rejection on the save promise.
+      const contents = editorView.state.doc.toString();
+      const outcome = await Promise.resolve(ipc.saveDocument(args.tabId, contents));
+      if (destroyed) return;
+      // Phase-1 dirty-clear: every successful save clears the dirty
+      // flag. The "successful" check is implicit — if `saveDocument`
+      // rejected, the await above would have thrown and we'd never
+      // get here. The Rust handler reports conflicts via the resolved
+      // SaveOutcome.kind (`'conflict'`); we still clear dirty in that
+      // case because Conflict.ts will reopen its own dialog and the
+      // dirty flag is reset by the conflict resolution flow.
+      void outcome;
+      dirty = false;
+      try {
+        await ipc.setDirty(args.path, false);
+      } catch {
+        // Swallow — set_dirty is a hint to the watcher, not a hard
+        // contract. A transient failure here must NOT mask the save.
+      }
+      // A4: matching dirty:false push so the TabBar pill re-hides its
+      // .tab-dirty indicator. Dispatched UNCONDITIONALLY after a successful
+      // save (mirroring the setDirty(false) call above) — we rely on the
+      // Rust-side reject having already thrown out of `await ipc.saveDocument`
+      // so reaching this point implies the save succeeded.
+      document.dispatchEvent(
+        new CustomEvent('mdviewer:tab-dirty', {
+          detail: { path: args.path, dirty: false },
+        }),
+      );
+      // Post-save re-anchor pass. Each thread's anchor is resolved
+      // against the just-saved source; the outcome is fed back to the
+      // caller via `onAnchorsResolved` so A.7's commentHighlights can
+      // repaint without owning the IPC call itself.
+      for (const thread of args.threads) {
+        try {
+          const resolved = await ipc.resolveAnchor(args.tabId, thread.anchor);
+          if (destroyed) return;
+          args.onAnchorsResolved?.(thread.id, resolved);
+        } catch {
+          // Anchor resolution is best-effort; a failure on one thread
+          // must not abort the loop or surface as an unhandled rejection.
+        }
+      }
+      // Canonical once-per-save signal. Fires AFTER the per-thread
+      // onAnchorsResolved pump so Document.ts can refresh its hidden
+      // render-shadow div exactly once per save (rather than N times,
+      // one per thread). Skipped when the view was destroyed mid-save
+      // — the destroyed-check above the loop would have already
+      // returned, but we double-check here for the zero-threads path.
+      if (destroyed) return;
+      try {
+        args.onSaved?.(args.path);
+      } catch {
+        // The onSaved callback is best-effort; a caller throwing must
+        // not surface as an unhandled rejection on the save promise.
+      }
+    } finally {
+      // Always clear the in-flight flag — failure or success — so a
+      // later idle pump or subsequent flushSave is not blocked by a
+      // stuck flag.
+      saveInFlight = false;
     }
   }
 
@@ -260,6 +330,11 @@ export function mountLiveEditor(
   function onConflictOpen(): void {
     conflictPaused = true;
     clearTimer();
+    // B.2: also cancel the pending idle pump while the conflict
+    // dialog is open. The user is not actively editing during the
+    // conflict modal, and an idle pump that fires mid-dialog would
+    // race the user's reload/keep/hand-merge decision.
+    clearIdleTimer();
   }
 
   function onConflictClosed(): void {
@@ -284,6 +359,13 @@ export function mountLiveEditor(
     if (!fromUser) return;
     markDirtyOnInput();
     scheduleSave();
+    // B.2: every user-input transaction also resets the idle re-anchor
+    // timer. The timer fires only when the editor is quiescent for
+    // `idleReanchorMs` AND dirty AND no save is in flight (those guards
+    // live in `runIdleReanchor`). Programmatic transactions (mode flip,
+    // post-save re-anchor) are filtered out above by the `fromUser`
+    // check, so they don't perturb the idle clock.
+    scheduleIdleReanchor();
   });
 
   const startState = EditorState.create({
@@ -422,6 +504,7 @@ export function mountLiveEditor(
   function destroy(): void {
     destroyed = true;
     clearTimer();
+    clearIdleTimer();
     document.removeEventListener(CONFLICT_OPEN_EVENT, onConflictOpen);
     document.removeEventListener(CONFLICT_CLOSED_EVENT, onConflictClosed);
     if (webdriverActive && w.__mdviewerE2E) {

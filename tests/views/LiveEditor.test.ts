@@ -1321,4 +1321,231 @@ describe('LiveEditor', () => {
       expect(root.querySelector('.cm-editor')).toBeNull();
     });
   });
+
+  describe('idle re-anchor', () => {
+    it('fires resolve_anchor for each thread once after editor.idle_reanchor_ms of quiescence', async () => {
+      vi.useFakeTimers();
+      const root = makeRoot();
+      const ipc = makeIpc();
+      const threads = [
+        makeThread('th-1', 0, 4, 'hell'),
+        makeThread('th-2', 4, 5, 'o'),
+      ];
+      const onAnchorsResolved = vi.fn();
+      const view = mountLiveEditor(root, ipc as never, {
+        // Auto-save debounce is much higher than idle so the idle pump
+        // is the only thing that can fire resolveAnchor in this window.
+        tabId: 't',
+        path: '/tmp/a.md',
+        source: 'hello',
+        settings: makeSettings({ auto_save_debounce_ms: 60_000 }),
+        threads,
+        onAnchorsResolved,
+      });
+      typeInto(view, '!');
+      // Idle defaults to 1500ms — advance to just before and assert nothing fired.
+      vi.advanceTimersByTime(1499);
+      expect(ipc.resolveAnchor).not.toHaveBeenCalled();
+      // Cross the idle boundary; the pump drains a thread-count of microtasks.
+      vi.advanceTimersByTime(1);
+      for (let i = 0; i < 12; i++) await Promise.resolve();
+      expect(ipc.resolveAnchor).toHaveBeenCalledTimes(2);
+      expect(ipc.resolveAnchor).toHaveBeenNthCalledWith(1, 't', threads[0].anchor);
+      expect(ipc.resolveAnchor).toHaveBeenNthCalledWith(2, 't', threads[1].anchor);
+      // onAnchorsResolved fed each outcome back so commentHighlights can repaint.
+      expect(onAnchorsResolved).toHaveBeenCalledTimes(2);
+      view.destroy();
+    });
+
+    it('resets the idle timer on every user-input transaction (typing keeps it pending)', async () => {
+      vi.useFakeTimers();
+      const root = makeRoot();
+      const ipc = makeIpc();
+      const threads = [makeThread('th-1', 0, 4, 'hell')];
+      const view = mountLiveEditor(root, ipc as never, {
+        tabId: 't',
+        path: '/tmp/a.md',
+        source: 'hello',
+        settings: makeSettings({ auto_save_debounce_ms: 60_000 }),
+        threads,
+      });
+      typeInto(view, 'a');
+      vi.advanceTimersByTime(1000);
+      // Another keystroke before the idle window expires resets the timer.
+      typeInto(view, 'b');
+      vi.advanceTimersByTime(1000);
+      typeInto(view, 'c');
+      vi.advanceTimersByTime(1499);
+      expect(ipc.resolveAnchor).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+      expect(ipc.resolveAnchor).toHaveBeenCalledTimes(1);
+      view.destroy();
+    });
+
+    it('does not fire idle re-anchor when the editor is not dirty', () => {
+      vi.useFakeTimers();
+      const root = makeRoot();
+      const ipc = makeIpc();
+      const threads = [makeThread('th-1', 0, 4, 'hell')];
+      const view = mountLiveEditor(root, ipc as never, {
+        tabId: 't',
+        path: '/tmp/a.md',
+        source: 'hello',
+        settings: makeSettings({ auto_save_debounce_ms: 60_000 }),
+        threads,
+      });
+      // No user input — the idle timer never starts.
+      vi.advanceTimersByTime(10_000);
+      expect(ipc.resolveAnchor).not.toHaveBeenCalled();
+      view.destroy();
+    });
+
+    it('does not fire idle re-anchor while a save is in flight', async () => {
+      vi.useFakeTimers();
+      const root = makeRoot();
+      let resolveSave: ((v: unknown) => void) | undefined;
+      const ipc = makeIpc({
+        saveDocument: vi.fn().mockImplementation(
+          () =>
+            new Promise((resolve) => {
+              resolveSave = resolve;
+            }),
+        ),
+      });
+      const threads = [makeThread('th-1', 0, 4, 'hell')];
+      const view = mountLiveEditor(root, ipc as never, {
+        tabId: 't',
+        path: '/tmp/a.md',
+        source: 'hello',
+        // Auto-save debounce is shorter than idle so the save lands first
+        // and stays in-flight while we cross the idle boundary.
+        settings: makeSettings({ auto_save_debounce_ms: 100 }),
+        threads,
+      });
+      typeInto(view, '!');
+      // The autosave debounce fires; saveDocument is invoked but the
+      // returned promise never resolves -> save stays in flight.
+      vi.advanceTimersByTime(100);
+      for (let i = 0; i < 3; i++) await Promise.resolve();
+      expect(ipc.saveDocument).toHaveBeenCalledTimes(1);
+      // Cross the idle boundary while the save is in-flight.
+      vi.advanceTimersByTime(2_000);
+      for (let i = 0; i < 5; i++) await Promise.resolve();
+      // Save has not resolved, so the post-save re-anchor pump has not
+      // run AND the idle pump must NOT have run either.
+      expect(ipc.resolveAnchor).not.toHaveBeenCalled();
+      // Now let the save resolve; the post-save pump fires its own
+      // resolveAnchor pass (already covered by other tests) — but the
+      // idle pump did not double-fire while the save was in flight.
+      resolveSave!({ kind: 'ok', etag: null });
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+      // Exactly the post-save resolveAnchor pass — once per thread.
+      expect(ipc.resolveAnchor).toHaveBeenCalledTimes(1);
+      view.destroy();
+    });
+
+    it('saving cancels the pending idle timer (idle pump does not double-fire after save)', async () => {
+      vi.useFakeTimers();
+      const root = makeRoot();
+      const ipc = makeIpc();
+      const threads = [makeThread('th-1', 0, 4, 'hell')];
+      const view = mountLiveEditor(root, ipc as never, {
+        tabId: 't',
+        path: '/tmp/a.md',
+        source: 'hello',
+        // Autosave fires WELL before the idle window expires.
+        settings: makeSettings({ auto_save_debounce_ms: 50 }),
+        threads,
+      });
+      typeInto(view, '!');
+      vi.advanceTimersByTime(50);
+      // Drain the save chain: saveDocument -> resolveAnchor -> setDirty(false).
+      for (let i = 0; i < 12; i++) await Promise.resolve();
+      // Post-save re-anchor fired exactly once.
+      expect(ipc.resolveAnchor).toHaveBeenCalledTimes(1);
+      // Now cross the would-have-been idle boundary. Since the save
+      // cancelled the pending idle timer, no second resolveAnchor pass.
+      vi.advanceTimersByTime(2_000);
+      for (let i = 0; i < 5; i++) await Promise.resolve();
+      expect(ipc.resolveAnchor).toHaveBeenCalledTimes(1);
+      view.destroy();
+    });
+
+    it('picks up settings.editor.idle_reanchor_ms override (800ms)', async () => {
+      vi.useFakeTimers();
+      const root = makeRoot();
+      const ipc = makeIpc();
+      const threads = [makeThread('th-1', 0, 4, 'hell')];
+      // The corresponding types-generated.ts field lands in B.4; cast to
+      // `any` so this test compiles in the meantime (intentional cross-
+      // phase ordering — see plan.json B.2 done_when).
+      const settings = makeSettings({ auto_save_debounce_ms: 60_000 });
+      (settings.editor as unknown as { idle_reanchor_ms: number }).idle_reanchor_ms = 800;
+      const view = mountLiveEditor(root, ipc as never, {
+        tabId: 't',
+        path: '/tmp/a.md',
+        source: 'hello',
+        settings: settings,
+        threads,
+      });
+      typeInto(view, '!');
+      vi.advanceTimersByTime(799);
+      expect(ipc.resolveAnchor).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+      expect(ipc.resolveAnchor).toHaveBeenCalledTimes(1);
+      view.destroy();
+    });
+
+    it('idle pump does not fire after destroy()', () => {
+      vi.useFakeTimers();
+      const root = makeRoot();
+      const ipc = makeIpc();
+      const threads = [makeThread('th-1', 0, 4, 'hell')];
+      const view = mountLiveEditor(root, ipc as never, {
+        tabId: 't',
+        path: '/tmp/a.md',
+        source: 'hello',
+        settings: makeSettings({ auto_save_debounce_ms: 60_000 }),
+        threads,
+      });
+      typeInto(view, '!');
+      view.destroy();
+      vi.advanceTimersByTime(10_000);
+      expect(ipc.resolveAnchor).not.toHaveBeenCalled();
+    });
+
+    it('idle pump swallows resolveAnchor rejection per thread without aborting', async () => {
+      vi.useFakeTimers();
+      const root = makeRoot();
+      const ipc = makeIpc({
+        resolveAnchor: vi
+          .fn()
+          .mockRejectedValueOnce(new Error('boom'))
+          .mockResolvedValueOnce({ kind: 'resolved', start: 0, end: 1 } as ResolveOutcome),
+      });
+      const threads = [
+        makeThread('th-1', 0, 4, 'hell'),
+        makeThread('th-2', 4, 5, 'o'),
+      ];
+      const onAnchorsResolved = vi.fn();
+      const view = mountLiveEditor(root, ipc as never, {
+        tabId: 't',
+        path: '/tmp/a.md',
+        source: 'hello',
+        settings: makeSettings({ auto_save_debounce_ms: 60_000 }),
+        threads,
+        onAnchorsResolved,
+      });
+      typeInto(view, '!');
+      vi.advanceTimersByTime(1500);
+      for (let i = 0; i < 12; i++) await Promise.resolve();
+      expect(ipc.resolveAnchor).toHaveBeenCalledTimes(2);
+      // Only the surviving thread fed through the callback.
+      expect(onAnchorsResolved).toHaveBeenCalledTimes(1);
+      expect(onAnchorsResolved).toHaveBeenCalledWith('th-2', { kind: 'resolved', start: 0, end: 1 });
+      view.destroy();
+    });
+  });
 });
