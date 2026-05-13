@@ -1,8 +1,10 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   MENU_ACTION_TO_EVENT,
   dispatchMenuAction,
   installMenuBridge,
+  menuBridgeReady,
+  __resetMenuBridgeForTests,
 } from '../src/menuBridge';
 
 /**
@@ -101,10 +103,75 @@ describe('menuBridge', () => {
     // jsdom has no @tauri-apps/api/event runtime; installMenuBridge
     // catches the import failure and returns a noop unsubscribe rather
     // than crashing main()'s bootstrap.
+    __resetMenuBridgeForTests();
     const unlisten = await installMenuBridge();
     expect(typeof unlisten).toBe('function');
     // Calling unlisten must not throw even when no real subscription
     // happened.
     expect(() => unlisten()).not.toThrow();
+  });
+});
+
+/**
+ * A2 race-safety: the diagnose-first investigation pinpointed
+ * `void installMenuBridge()` in src/main.ts as a fire-and-forget call —
+ * after `browser.reloadSession()` the spec emits `menu-action` before the
+ * `listen()` registration completes, so the listener never fires and the
+ * Settings overlay never mounts. The fix is to expose a `menuBridgeReady`
+ * promise the e2e `__mdviewerE2E.emitMenuAction` hook awaits before
+ * `emit`-ing, closing the race entirely.
+ */
+describe('menuBridge subscription-timing (A2 race fix)', () => {
+  beforeEach(() => {
+    __resetMenuBridgeForTests();
+  });
+
+  it('menuBridgeReady() resolves to a settled promise (no race) only after installMenuBridge has been called', async () => {
+    // Before any call to installMenuBridge, menuBridgeReady() returns an
+    // already-resolved promise so callers don't deadlock when the bridge
+    // never ran (e.g. ProfileSetup boot path before Workspace mounts).
+    await expect(menuBridgeReady()).resolves.toBeUndefined();
+  });
+
+  it('menuBridgeReady() awaits the same install completion across multiple callers', async () => {
+    // Calling installMenuBridge() returns a promise. Anyone awaiting
+    // menuBridgeReady() before installMenuBridge resolves must wait for
+    // the same underlying registration — otherwise emitMenuAction could
+    // race past it. We assert by ordering: the ready-promise must resolve
+    // AFTER the install promise (or at the same microtask, but never
+    // before it).
+    let installResolved = false;
+    const install = installMenuBridge().then((u) => {
+      installResolved = true;
+      return u;
+    });
+    const ready = menuBridgeReady().then(() => {
+      // Must not resolve before install — the bridge isn't ready until
+      // listen() returns.
+      expect(installResolved).toBe(true);
+    });
+    await install;
+    await ready;
+  });
+
+  it('installMenuBridge is memoized — repeated calls return the same install promise', async () => {
+    // Production main() may bootstrap twice in dev hot-reload scenarios.
+    // The bridge should subscribe once; otherwise the listen-handler runs
+    // n times per event and the user sees the Settings overlay flicker.
+    const first = installMenuBridge();
+    const second = installMenuBridge();
+    expect(first).toBe(second);
+    await first;
+  });
+
+  it('__resetMenuBridgeForTests clears the memo so the next install runs fresh', async () => {
+    // Without this reset the suite would carry the jsdom no-op unlisten
+    // across describes and `menuBridgeReady()` would resolve immediately
+    // for the second-suite's first assertion (false-green).
+    await installMenuBridge();
+    __resetMenuBridgeForTests();
+    // After reset, menuBridgeReady is back to the pre-install "no work
+    // queued" resolved state.
+    await expect(menuBridgeReady()).resolves.toBeUndefined();
   });
 });

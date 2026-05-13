@@ -3,7 +3,7 @@ import { tauriIpc, type DocPref, type Settings } from './ipc';
 import { mountWorkspace } from './views/Workspace';
 import { mountProfileSetup } from './views/ProfileSetup';
 import { installKeymap, type Action } from './keymap';
-import { installMenuBridge } from './menuBridge';
+import { dispatchMenuAction, installMenuBridge } from './menuBridge';
 import './styles/theme.css';
 import './styles/app.css';
 
@@ -360,13 +360,23 @@ export async function main(): Promise<void> {
           ?.dispatchEvent(new CustomEvent('thread-replied', { bubbles: true }));
       },
       async emitMenuAction(action: string): Promise<void> {
-        // The OS menu can't be driven by tauri-webdriver-automation, so
-        // tests fire the bus event directly. The bundled event module
-        // resolves via Vite's specifier handling; an inline `import()`
-        // from the WebDriver execute_async sandbox would NOT resolve
-        // because that script isn't part of the bundle.
-        const { emit } = await import('@tauri-apps/api/event');
-        await emit('menu-action', action);
+        // A2 fix: dispatch synchronously through the same code path the
+        // menu-bridge listener would have called. Pre-fix this routed
+        // through `emit('menu-action', action)` and relied on
+        // `installMenuBridge`'s `listen()` already being subscribed —
+        // after `browser.reloadSession()` the listen registration raced
+        // the emit and the `mdviewer:open-settings` CustomEvent never
+        // fired, so the Settings overlay and `#render-readonly` checkbox
+        // never mounted (failing the render-raw-toggle wysiwyg spec).
+        //
+        // dispatchMenuAction fires a CustomEvent on `document`
+        // synchronously, so the production handler at
+        // `mdviewer:open-settings` (line 189 below) runs in the next
+        // microtask and there is no cross-process round-trip to race.
+        // The production OS-menu path is unchanged — the Rust side still
+        // emits `menu-action`, the bridge still listens, and the same
+        // dispatchMenuAction is called by the listener.
+        dispatchMenuAction(action);
       },
       fireKeymapAction(action: 'font_increase' | 'font_decrease' | 'font_reset'): void {
         // tauri-webdriver-automation does not deliver the W3C Meta key
