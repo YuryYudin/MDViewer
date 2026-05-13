@@ -351,6 +351,22 @@ describe('Workspace', () => {
     expect(typeof hook).toBe('function');
   });
 
+  it('exposes setTabDirty and getDirtyState through a path-keyed dirtyRegistry', async () => {
+    // A4: the workspace owns the source of truth for per-tab dirty state.
+    // TabBar reads it at render time (so re-mounts preserve the indicator);
+    // LiveEditor pushes updates via the `mdviewer:tab-dirty` CustomEvent
+    // which the TabBar listener funnels back into setTabDirty.
+    const root = document.createElement('div');
+    const ws = await mountWorkspace(root, makeIpc());
+    expect(ws.getDirtyState('/a.md')).toBe(false);
+    ws.setTabDirty('/a.md', true);
+    expect(ws.getDirtyState('/a.md')).toBe(true);
+    ws.setTabDirty('/a.md', false);
+    expect(ws.getDirtyState('/a.md')).toBe(false);
+    // Unrelated paths remain unset.
+    expect(ws.getDirtyState('/b.md')).toBe(false);
+  });
+
   it('subscribes to the show-conflict tauri event and routes to the Conflict view', async () => {
     const root = document.createElement('div');
     await mountWorkspace(root, makeIpc(['t-1']));

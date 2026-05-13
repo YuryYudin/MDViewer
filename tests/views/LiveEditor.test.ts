@@ -211,6 +211,57 @@ describe('LiveEditor', () => {
     });
   });
 
+  describe('mdviewer:tab-dirty CustomEvent', () => {
+    it('dispatches mdviewer:tab-dirty with dirty:true on first user input', () => {
+      const root = makeRoot();
+      const ipc = makeIpc();
+      const events: CustomEvent[] = [];
+      const handler = (e: Event) => events.push(e as CustomEvent);
+      document.addEventListener('mdviewer:tab-dirty', handler);
+      const view = mountLiveEditor(root, ipc as never, {
+        tabId: 't',
+        path: '/tmp/x.md',
+        source: '',
+        settings: makeSettings({ auto_save_debounce_ms: 100 }),
+        threads: [],
+      });
+      typeInto(view, 'a');
+      expect(events).toHaveLength(1);
+      expect(events[0].detail).toEqual({ path: '/tmp/x.md', dirty: true });
+      // Subsequent input while already-dirty must NOT fire another dirty:true.
+      typeInto(view, 'b');
+      expect(events).toHaveLength(1);
+      document.removeEventListener('mdviewer:tab-dirty', handler);
+      view.destroy();
+    });
+
+    it('dispatches mdviewer:tab-dirty with dirty:false after flushSave', async () => {
+      vi.useFakeTimers();
+      const root = makeRoot();
+      const ipc = makeIpc();
+      const events: CustomEvent[] = [];
+      const handler = (e: Event) => events.push(e as CustomEvent);
+      document.addEventListener('mdviewer:tab-dirty', handler);
+      const view = mountLiveEditor(root, ipc as never, {
+        tabId: 't',
+        path: '/tmp/x.md',
+        source: '',
+        settings: makeSettings({ auto_save_debounce_ms: 50 }),
+        threads: [],
+      });
+      typeInto(view, 'a');
+      vi.advanceTimersByTime(50);
+      // Drain the await chain.
+      for (let i = 0; i < 8; i++) await Promise.resolve();
+      const last = events[events.length - 1];
+      expect(last.detail).toEqual({ path: '/tmp/x.md', dirty: false });
+      // First event was dirty:true, last is dirty:false.
+      expect(events[0].detail).toEqual({ path: '/tmp/x.md', dirty: true });
+      document.removeEventListener('mdviewer:tab-dirty', handler);
+      view.destroy();
+    });
+  });
+
   describe('render_readonly', () => {
     it('mounts with editable=false when render_readonly && mode==="render"', () => {
       const root = makeRoot();

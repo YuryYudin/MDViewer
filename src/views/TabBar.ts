@@ -32,7 +32,34 @@ export interface TabBarCallbacks {
   onActivate?: (tab: { id: string; path: string }) => void | Promise<void>;
   /** Called after `ipc.closeTab` resolves. The host repaints. */
   onAfterClose?: () => void | Promise<void>;
+  /**
+   * A4: read the current dirty bit for a tab path. Threaded in by the
+   * Workspace so each pill renders the correct initial `hidden` state on
+   * its `.tab-dirty` first child. Without this, a TabBar re-render
+   * (close/open/switch) would erase the dirty indicator the user just
+   * saw — the registry is the persistent source of truth, this is the
+   * read channel. Defaults to "always clean" when omitted, which is the
+   * pre-A4 behavior.
+   */
+  getDirtyState?: (path: string) => boolean;
+  /**
+   * A4: update the workspace's dirty registry. The TabBar's document-level
+   * `mdviewer:tab-dirty` listener calls this on every event so the registry
+   * stays in sync; subsequent re-renders pick it up via `getDirtyState`.
+   * One-way flow: producer (LiveEditor → CustomEvent) → consumer
+   * (TabBar listener → registry update). Defaults to no-op when omitted.
+   */
+  setTabDirty?: (path: string, dirty: boolean) => void;
 }
+
+/**
+ * Module-level handle on the previous mount's tab-dirty listener so a
+ * re-mount tears down the prior closure before installing a fresh one.
+ * mountTabBar runs on every Workspace.refresh() — without this, every
+ * refresh leaves an additional listener on `document` and a single
+ * `mdviewer:tab-dirty` dispatch would mutate the registry N times.
+ */
+let prevTabDirtyTeardown: (() => void) | undefined;
 
 export function mountTabBar(
   root: HTMLElement,
@@ -40,10 +67,19 @@ export function mountTabBar(
   state: WorkspaceState,
   callbacks?: TabBarCallbacks,
 ): void {
+  // Tear down any prior mount's document-level listener before we install
+  // the new one. The closure captures `strip` and `setTabDirty` from the
+  // previous mount, which would otherwise outlive their scope.
+  prevTabDirtyTeardown?.();
+  prevTabDirtyTeardown = undefined;
+
   root.replaceChildren();
   const strip = document.createElement('div');
   strip.setAttribute('data-test', 'tabbar');
   strip.className = 'tabbar';
+
+  const getDirtyState = callbacks?.getDirtyState ?? (() => false);
+  const setTabDirty = callbacks?.setTabDirty ?? (() => undefined);
 
   for (const tab of state.tabs) {
     const btn = document.createElement('button');
@@ -52,6 +88,25 @@ export function mountTabBar(
     btn.setAttribute('data-active', String(tab.id === state.activeId));
     btn.className = 'tab' + (tab.id === state.activeId ? ' active' : '');
     btn.title = tab.path;
+    // A4: expose the path via dataset so the document-level
+    // mdviewer:tab-dirty listener can look up the matching pill by
+    // direct string equality. (Attribute selectors would require CSS-
+    // escaping every special char in a path — colons, dots, backslashes,
+    // spaces, brackets all need escaping; direct string equality dodges
+    // the issue entirely.)
+    btn.dataset.path = tab.path;
+
+    // A4: dirty indicator as the FIRST child of the pill. The wireframe
+    // and e2e spec key off `[data-testid="tab-dirty"]`; visibility uses
+    // the HTML `hidden` attribute (matches the spec's `.isExisting()`
+    // / `.isDisplayed()` checks) rather than CSS-only `display: none`.
+    const dot = document.createElement('span');
+    dot.className = 'tab-dirty';
+    dot.setAttribute('data-testid', 'tab-dirty');
+    if (!getDirtyState(tab.path)) {
+      dot.setAttribute('hidden', '');
+    }
+    btn.appendChild(dot);
 
     const label = document.createElement('span');
     label.className = 'tab-label';
@@ -102,6 +157,34 @@ export function mountTabBar(
   strip.appendChild(add);
 
   root.appendChild(strip);
+
+  // A4: document-level mdviewer:tab-dirty listener. LiveEditor dispatches
+  // this on first user input (dirty:true) and after a successful save
+  // (dirty:false). We funnel the value into the registry via the
+  // `setTabDirty` callback (so a future re-render reads the correct
+  // state) and then toggle `hidden` on the matching pill in-place — no
+  // full re-render needed. Pill lookup is by direct dataset.path string
+  // equality inside a `querySelectorAll('[data-test="tab"]')` walk,
+  // NOT a CSS attribute selector: paths with colons, dots, backslashes,
+  // spaces, or brackets would all need CSS escaping and direct equality
+  // dodges that entirely.
+  const onTabDirty = (ev: Event): void => {
+    const ce = ev as CustomEvent<{ path: string; dirty: boolean }>;
+    const detail = ce.detail;
+    if (!detail || typeof detail.path !== 'string') return;
+    setTabDirty(detail.path, detail.dirty);
+    strip.querySelectorAll<HTMLElement>('[data-test="tab"]').forEach((pill) => {
+      if (pill.dataset.path !== detail.path) return;
+      const dot = pill.firstElementChild as HTMLElement | null;
+      if (!dot) return;
+      if (detail.dirty) dot.removeAttribute('hidden');
+      else dot.setAttribute('hidden', '');
+    });
+  };
+  document.addEventListener('mdviewer:tab-dirty', onTabDirty);
+  prevTabDirtyTeardown = () => {
+    document.removeEventListener('mdviewer:tab-dirty', onTabDirty);
+  };
 }
 
 function basename(p: string): string {
