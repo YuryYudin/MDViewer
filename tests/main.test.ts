@@ -9,7 +9,7 @@
  *   - keymap installation + the toggle_dark dispatcher
  *   - the bootstrap error fallback
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Settings } from '../src/ipc';
 
 // jsdom in this configuration ships a Storage *property* but not its
@@ -368,6 +368,118 @@ describe('main()', () => {
     fakeIpc.getSettings.mockResolvedValueOnce(settingsWith());
     const { main } = await import('../src/main');
     await expect(main()).rejects.toThrow(/#app element missing/);
+  });
+});
+
+/**
+ * A2 race-safety regression: pre-fix, `void installMenuBridge()` in main()
+ * was fire-and-forget AND `__mdviewerE2E.emitMenuAction` routed through
+ * Tauri's `emit('menu-action', ...)`. After `browser.reloadSession()` the
+ * e2e spec called the hook before Tauri's `listen()` registration
+ * completed, so the emit reached no listener and the
+ * `mdviewer:open-settings` CustomEvent never fired — leaving the Settings
+ * overlay (and `#render-readonly`) unmounted.
+ *
+ * The fix collapses the hook onto `dispatchMenuAction(action)` — the same
+ * CustomEvent dispatch the bridge's listen-handler would have called —
+ * eliminating the cross-process round-trip and the race entirely. The
+ * bridge itself stays in place for the production OS-menu path (which
+ * fires long after the bridge has subscribed). For tests + e2e specs,
+ * the new direct-dispatch path is deterministic.
+ */
+describe('A2: __mdviewerE2E.emitMenuAction race safety', () => {
+  beforeEach(async () => {
+    resetDom(true);
+    Object.values(fakeIpc).forEach((m) => (m as any).mockClear?.());
+    fakeIpc.listOpenDocuments.mockResolvedValue([]);
+    fakeIpc.listRecents.mockResolvedValue([]);
+    const { __resetMenuBridgeForTests } = await import('../src/menuBridge');
+    __resetMenuBridgeForTests();
+    (window as unknown as { __WEBDRIVER__: boolean }).__WEBDRIVER__ = true;
+  });
+
+  afterEach(() => {
+    delete (window as unknown as { __WEBDRIVER__?: boolean }).__WEBDRIVER__;
+  });
+
+  it('emitMenuAction("settings") synchronously dispatches mdviewer:open-settings (no emit/listen round-trip)', async () => {
+    fakeIpc.getSettings.mockResolvedValueOnce(settingsWith());
+    const { main } = await import('../src/main');
+    await main();
+
+    const w = window as unknown as {
+      __mdviewerE2E?: { emitMenuAction(action: string): Promise<void> };
+    };
+    expect(w.__mdviewerE2E?.emitMenuAction).toBeTypeOf('function');
+
+    // The render-raw-toggle.spec.ts:152 call. Post-fix this resolves
+    // without going through the Tauri event bus — there's no race
+    // because dispatchMenuAction fires a CustomEvent on `document`
+    // synchronously.
+    const handler = vi.fn();
+    document.addEventListener('mdviewer:open-settings', handler, { once: true });
+    await w.__mdviewerE2E!.emitMenuAction('settings');
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it('emitMenuAction("open-settings") canonical form dispatches mdviewer:open-settings', async () => {
+    // Spec 14 uses the canonical 'open-settings' string. Same path —
+    // dispatchMenuAction handles both via MENU_ACTION_TO_EVENT.
+    fakeIpc.getSettings.mockResolvedValueOnce(settingsWith());
+    const { main } = await import('../src/main');
+    await main();
+    const w = window as unknown as {
+      __mdviewerE2E?: { emitMenuAction(action: string): Promise<void> };
+    };
+    const handler = vi.fn();
+    document.addEventListener('mdviewer:open-settings', handler, { once: true });
+    await w.__mdviewerE2E!.emitMenuAction('open-settings');
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it('emitMenuAction handles unknown actions silently (matches dispatchMenuAction contract)', async () => {
+    fakeIpc.getSettings.mockResolvedValueOnce(settingsWith());
+    const { main } = await import('../src/main');
+    await main();
+    const w = window as unknown as {
+      __mdviewerE2E?: { emitMenuAction(action: string): Promise<void> };
+    };
+    // Unknown actions return null from dispatchMenuAction and dispatch
+    // nothing. emitMenuAction must resolve without throwing.
+    await expect(w.__mdviewerE2E!.emitMenuAction('not-a-real-action')).resolves.toBeUndefined();
+  });
+
+  it('emitMenuAction is independent of Tauri runtime (no @tauri-apps/api/event import)', async () => {
+    // Diagnostic-pinning test: pre-fix, emitMenuAction did
+    // `const { emit } = await import('@tauri-apps/api/event'); await emit(...)`.
+    // That second await is the race source — until the listener
+    // registered by installMenuBridge resolves, the emit reaches nothing.
+    // The post-fix hook MUST NOT touch @tauri-apps/api/event. We assert
+    // by checking that dispatch completes synchronously enough that the
+    // CustomEvent handler fires before the next macrotask.
+    fakeIpc.getSettings.mockResolvedValueOnce(settingsWith());
+    const { main } = await import('../src/main');
+    await main();
+    const w = window as unknown as {
+      __mdviewerE2E?: { emitMenuAction(action: string): Promise<void> };
+    };
+    let fired = false;
+    document.addEventListener(
+      'mdviewer:open-settings',
+      () => {
+        fired = true;
+      },
+      { once: true },
+    );
+    // Start emit, immediately schedule a macrotask, then check fired.
+    // Pre-fix, fired would be false because the dynamic import for
+    // @tauri-apps/api/event takes multiple microtasks to resolve.
+    // Post-fix, the handler runs synchronously inside emitMenuAction.
+    void w.__mdviewerE2E!.emitMenuAction('settings');
+    // Single microtask flush — dispatchMenuAction is synchronous, so the
+    // handler already fired before any await in emitMenuAction.
+    await Promise.resolve();
+    expect(fired).toBe(true);
   });
 });
 

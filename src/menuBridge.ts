@@ -64,18 +64,62 @@ export function dispatchMenuAction(action: string): string | null {
  * tests of the dispatch logic don't need a Tauri runtime stub. Returns a
  * promise that resolves to an unsubscribe function once the listener is
  * attached; resolves to a no-op when the runtime is unavailable.
+ *
+ * A2: the install is memoized at module scope. Pre-A2, this was a
+ * fire-and-forget `void installMenuBridge()` in main.ts AND
+ * `__mdviewerE2E.emitMenuAction` routed through Tauri's `emit('menu-action',
+ * ...)`. After `browser.reloadSession()` the e2e spec emitted before the
+ * Tauri `listen()` registration completed, so the listener never fired
+ * and the Settings overlay never mounted. The hook now dispatches
+ * directly via `dispatchMenuAction` (see main.ts:362) — the bridge stays
+ * memoized here so a hot-reload dev cycle (main() re-runs) doesn't
+ * subscribe a second listener that would double-fire every OS menu click.
+ * `menuBridgeReady` is exported alongside as a defensive seam: future
+ * boot paths that DO want to wait on the listen registration can opt in
+ * without reaching across the module boundary.
  */
-export async function installMenuBridge(): Promise<() => void> {
-  try {
-    const { listen } = await import('@tauri-apps/api/event');
-    const unlisten = await listen<string>('menu-action', (ev) => {
-      // The payload is the action string — Rust emits `app.emit("menu-action", action)`
-      // where `action` is a `&str`. Tauri serializes it as a JSON string.
-      if (typeof ev.payload === 'string') dispatchMenuAction(ev.payload);
-    });
-    return unlisten;
-  } catch {
-    // jsdom / non-Tauri environments — the bridge is a no-op.
-    return () => undefined;
-  }
+let installPromise: Promise<() => void> | null = null;
+
+export function installMenuBridge(): Promise<() => void> {
+  if (installPromise) return installPromise;
+  installPromise = (async (): Promise<() => void> => {
+    try {
+      const { listen } = await import('@tauri-apps/api/event');
+      const unlisten = await listen<string>('menu-action', (ev) => {
+        // The payload is the action string — Rust emits
+        // `app.emit("menu-action", action)` where `action` is a `&str`.
+        // Tauri serializes it as a JSON string.
+        if (typeof ev.payload === 'string') dispatchMenuAction(ev.payload);
+      });
+      return unlisten;
+    } catch {
+      // jsdom / non-Tauri environments — the bridge is a no-op.
+      return () => undefined;
+    }
+  })();
+  return installPromise;
+}
+
+/**
+ * Returns a promise that settles once the most-recent `installMenuBridge`
+ * call has finished subscribing the Tauri listener. When no install has
+ * been triggered yet (boot paths that never reach main(), tests), this
+ * returns an already-resolved promise so callers don't deadlock.
+ *
+ * Exported as a defensive seam — A2 did not need it because the e2e
+ * hook now dispatches directly via `dispatchMenuAction`. Future boot
+ * paths that DO need to wait on the listen registration (a different
+ * test harness, a startup smoke test) can opt in without reaching
+ * across the module boundary.
+ */
+export function menuBridgeReady(): Promise<unknown> {
+  return installPromise ?? Promise.resolve();
+}
+
+/** @internal — test-only reset hook. Vitest resets module state between
+ *  describes that exercise the memoization branch; production never calls
+ *  this (and Vite's tree-shaker drops it from release bundles because
+ *  nothing in src/ imports it). */
+export function __resetMenuBridgeForTests(): void {
+  installPromise = null;
 }
