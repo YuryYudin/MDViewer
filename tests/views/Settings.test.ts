@@ -28,6 +28,12 @@ function defaultSettings(): Settings {
       // A.9: Phase-1 read-only toggle on the render surface. Fresh
       // installs see `false` (editable render is the new default).
       render_readonly: false,
+      // B.4: Phase-2 polish keys with their documented fresh-install
+      // defaults. The Settings UI must render selects/inputs that
+      // round-trip these values through `setSettings`.
+      caret_in_block_behavior: 'collapse-widget',
+      paste_html_behavior: 'plain',
+      idle_reanchor_ms: 1500,
     },
     comments: {
       auto_merge: 'always',
@@ -582,6 +588,109 @@ describe('Settings', () => {
     await mountSettings(root, ipc as any);
     const color = root.querySelector<HTMLInputElement>('[data-test="profile-color"]')!;
     expect(color.value).toBe('#888888');
+  });
+
+  // B.4: three new Phase-2 polish keys land in the Editor & Viewer card.
+  // Each gets a round-trip test that:
+  //   1) verifies the rendered control reflects the seeded value, and
+  //   2) verifies that changing it calls setSettings with the new value
+  //      in the correct nested path.
+  it('editor: caret_in_block_behavior <select> renders default and round-trips', async () => {
+    const root = document.createElement('div');
+    const ipc = makeIpc();
+    await mountSettings(root, ipc as any);
+    const sel = root.querySelector<HTMLSelectElement>('[data-test="caret-in-block-behavior"]');
+    expect(sel).not.toBeNull();
+    expect(sel!.tagName).toBe('SELECT');
+    expect(sel!.value).toBe('collapse-widget');
+    expect(Array.from(sel!.options).map((o) => o.value).sort()).toEqual([
+      'always-raw',
+      'collapse-widget',
+    ]);
+    sel!.value = 'always-raw';
+    sel!.dispatchEvent(new Event('change'));
+    await flush();
+    expect(ipc.setSettings.mock.calls.at(-1)![0].editor.caret_in_block_behavior).toBe(
+      'always-raw',
+    );
+  });
+
+  it('editor: caret_in_block_behavior reflects a non-default seeded value', async () => {
+    const root = document.createElement('div');
+    const settings = defaultSettings();
+    settings.editor.caret_in_block_behavior = 'always-raw';
+    const ipc = makeIpc({ getSettings: vi.fn().mockResolvedValue(settings) });
+    await mountSettings(root, ipc as any);
+    const sel = root.querySelector<HTMLSelectElement>('[data-test="caret-in-block-behavior"]')!;
+    expect(sel.value).toBe('always-raw');
+  });
+
+  it('editor: paste_html_behavior <select> renders default and round-trips', async () => {
+    const root = document.createElement('div');
+    const ipc = makeIpc();
+    await mountSettings(root, ipc as any);
+    const sel = root.querySelector<HTMLSelectElement>('[data-test="paste-html-behavior"]');
+    expect(sel).not.toBeNull();
+    expect(sel!.tagName).toBe('SELECT');
+    expect(sel!.value).toBe('plain');
+    expect(Array.from(sel!.options).map((o) => o.value).sort()).toEqual(['markdown', 'plain']);
+    sel!.value = 'markdown';
+    sel!.dispatchEvent(new Event('change'));
+    await flush();
+    expect(ipc.setSettings.mock.calls.at(-1)![0].editor.paste_html_behavior).toBe('markdown');
+  });
+
+  it('editor: paste_html_behavior reflects a non-default seeded value', async () => {
+    const root = document.createElement('div');
+    const settings = defaultSettings();
+    settings.editor.paste_html_behavior = 'markdown';
+    const ipc = makeIpc({ getSettings: vi.fn().mockResolvedValue(settings) });
+    await mountSettings(root, ipc as any);
+    const sel = root.querySelector<HTMLSelectElement>('[data-test="paste-html-behavior"]')!;
+    expect(sel.value).toBe('markdown');
+  });
+
+  it('editor: idle_reanchor_ms numeric input renders default and round-trips', async () => {
+    const root = document.createElement('div');
+    const ipc = makeIpc();
+    await mountSettings(root, ipc as any);
+    const inp = root.querySelector<HTMLInputElement>('[data-test="idle-reanchor-ms"]');
+    expect(inp).not.toBeNull();
+    expect(inp!.tagName).toBe('INPUT');
+    expect(inp!.type).toBe('number');
+    expect(inp!.value).toBe('1500');
+    inp!.value = '2750';
+    inp!.dispatchEvent(new Event('change'));
+    await flush();
+    expect(ipc.setSettings.mock.calls.at(-1)![0].editor.idle_reanchor_ms).toBe(2750);
+  });
+
+  it('editor: idle_reanchor_ms ignores a non-numeric input (no save)', async () => {
+    // Empty / NaN input means the user is mid-edit — leave the prior
+    // value in place (matches the existing auto_save_debounce_ms
+    // pattern).
+    const root = document.createElement('div');
+    const ipc = makeIpc();
+    await mountSettings(root, ipc as any);
+    const inp = root.querySelector<HTMLInputElement>('[data-test="idle-reanchor-ms"]')!;
+    inp.value = '';
+    inp.dispatchEvent(new Event('change'));
+    await flush();
+    // No idle_reanchor_ms-bearing call must have landed.
+    const calls = ipc.setSettings.mock.calls;
+    for (const c of calls) {
+      expect(c[0].editor.idle_reanchor_ms).toBe(1500);
+    }
+  });
+
+  it('editor: idle_reanchor_ms reflects a non-default seeded value', async () => {
+    const root = document.createElement('div');
+    const settings = defaultSettings();
+    settings.editor.idle_reanchor_ms = 2750;
+    const ipc = makeIpc({ getSettings: vi.fn().mockResolvedValue(settings) });
+    await mountSettings(root, ipc as any);
+    const inp = root.querySelector<HTMLInputElement>('[data-test="idle-reanchor-ms"]')!;
+    expect(inp.value).toBe('2750');
   });
 
   it('debounce coalesces rapid input events into one save', async () => {

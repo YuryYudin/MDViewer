@@ -418,6 +418,70 @@ function buildEditor(ipc: Ipc, settings: Settings): HTMLElement {
     void ipc.setSettings(settings);
   });
 
+  // B.4: Phase-2 polish — three new EditorSettings keys surfaced as
+  // controls in the Editor & Viewer card. The select/input shape
+  // mirrors the pattern used by the default-open-mode and
+  // external-change-behavior controls above.
+  //
+  // caret_in_block_behavior governs what happens when the caret lands
+  // inside an atomic block widget (a code block, math block, image,
+  // etc.). `collapse-widget` (default) collapses the widget to its
+  // underlying source so the caret has somewhere to land; `always-raw`
+  // auto-switches the whole tab to raw mode instead.
+  const caretInBlock = labeledSelect(
+    'Caret in block widgets ',
+    [
+      ['collapse-widget', 'Collapse widget to raw source'],
+      ['always-raw', 'Switch tab to raw mode'],
+    ],
+    settings.editor.caret_in_block_behavior,
+    { 'data-test': 'caret-in-block-behavior' },
+  );
+  s.appendChild(caretInBlock.row);
+  caretInBlock.select.addEventListener('change', () => {
+    settings.editor.caret_in_block_behavior = caretInBlock.select.value;
+    void ipc.setSettings(settings);
+  });
+
+  // paste_html_behavior decides how a paste that carries `text/html` is
+  // handled. `plain` (default) inserts the text/plain payload verbatim;
+  // `markdown` lazy-loads turndown and converts HTML→markdown on the
+  // first triggering paste of a session (see `decorations/paste.ts`).
+  const pasteHtml = labeledSelect(
+    'Paste from web ',
+    [
+      ['plain', 'Plain text (default)'],
+      ['markdown', 'Convert HTML to markdown'],
+    ],
+    settings.editor.paste_html_behavior,
+    { 'data-test': 'paste-html-behavior' },
+  );
+  s.appendChild(pasteHtml.row);
+  pasteHtml.select.addEventListener('change', () => {
+    settings.editor.paste_html_behavior = pasteHtml.select.value;
+    void ipc.setSettings(settings);
+  });
+
+  // idle_reanchor_ms — the live editor re-anchors comment highlights
+  // this often while the user is editing without saving. Lower = more
+  // CPU churn but tighter caret-following; higher = visible drift.
+  // The default (1500ms) was tuned on the wireframe-driven design
+  // round. NaN input (empty field while the user is mid-edit) is
+  // skipped — same pattern as auto_save_debounce_ms above.
+  const idleReanchor = labeledInput('Idle re-anchor (ms) ', {
+    type: 'number',
+    min: '0',
+    'data-test': 'idle-reanchor-ms',
+    value: String(settings.editor.idle_reanchor_ms),
+  });
+  s.appendChild(idleReanchor.row);
+  idleReanchor.input.addEventListener('change', () => {
+    const ms = parseInt(idleReanchor.input.value, 10);
+    if (!Number.isFinite(ms)) return;
+    settings.editor.idle_reanchor_ms = ms;
+    void ipc.setSettings(settings);
+  });
+
   return s;
 }
 

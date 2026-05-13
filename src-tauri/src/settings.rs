@@ -178,6 +178,47 @@ pub struct EditorSettings {
     /// pre-WYSIWYG `default_open_mode` was `"view"`.
     #[serde(default)]
     pub render_readonly: bool,
+    /// B.4: how the editor handles a caret that lands inside an atomic
+    /// block widget (a code block, math block, image, etc.). Phase-2
+    /// default is `"collapse-widget"` — the widget collapses to its
+    /// underlying source so the caret has somewhere to land. The
+    /// `"always-raw"` alternative auto-switches the whole tab to raw
+    /// mode when the caret enters any block widget. String-typed (not
+    /// an enum) so a future variant can land without a TS-side change.
+    /// `#[serde(default = "default_caret_in_block_behavior")]` so legacy
+    /// settings.toml files written before this key existed deserialize
+    /// cleanly with the documented default.
+    #[serde(default = "default_caret_in_block_behavior")]
+    pub caret_in_block_behavior: String,
+    /// B.4: how the editor handles a paste whose clipboard carries
+    /// `text/html`. Default `"plain"` inserts the `text/plain` payload
+    /// verbatim (the existing behavior — paste extension yields). The
+    /// `"markdown"` alternative lazy-imports turndown on the first
+    /// triggering paste, converts the HTML to markdown, and inserts at
+    /// the selection. String-typed for the same forward-compat reason
+    /// as `caret_in_block_behavior` above.
+    #[serde(default = "default_paste_html_behavior")]
+    pub paste_html_behavior: String,
+    /// B.4: idle re-anchor cadence in milliseconds — the live editor
+    /// refreshes anchor positions for commentHighlights this often
+    /// while the user is editing without saving, so highlights don't
+    /// drift mid-edit. Default 1500ms balances "noticeable lag if
+    /// higher" against "unnecessary CPU churn if lower". Read by
+    /// `mountLiveEditor` (B.2) on every mount.
+    #[serde(default = "default_idle_reanchor_ms")]
+    pub idle_reanchor_ms: u32,
+}
+
+fn default_caret_in_block_behavior() -> String {
+    "collapse-widget".to_string()
+}
+
+fn default_paste_html_behavior() -> String {
+    "plain".to_string()
+}
+
+fn default_idle_reanchor_ms() -> u32 {
+    1500
 }
 
 impl Default for EditorSettings {
@@ -195,6 +236,9 @@ impl Default for EditorSettings {
             show_whitespace: false,
             word_wrap: true,
             render_readonly: false,
+            caret_in_block_behavior: default_caret_in_block_behavior(),
+            paste_html_behavior: default_paste_html_behavior(),
+            idle_reanchor_ms: default_idle_reanchor_ms(),
         }
     }
 }
@@ -239,6 +283,17 @@ impl<'de> Deserialize<'de> for EditorSettings {
             word_wrap: bool,
             #[serde(default)]
             render_readonly: bool,
+            // B.4: three new Phase-2 polish keys. Each carries its
+            // own `#[serde(default = "...")]` so a settings.toml file
+            // written by an older app version (no key present) parses
+            // cleanly with the documented default; an explicit value
+            // passes through unchanged into the final struct below.
+            #[serde(default = "default_caret_in_block_behavior")]
+            caret_in_block_behavior: String,
+            #[serde(default = "default_paste_html_behavior")]
+            paste_html_behavior: String,
+            #[serde(default = "default_idle_reanchor_ms")]
+            idle_reanchor_ms: u32,
         }
 
         let raw = RawEditorSettings::deserialize(deserializer)?;
@@ -267,6 +322,9 @@ impl<'de> Deserialize<'de> for EditorSettings {
             show_whitespace: raw.show_whitespace,
             word_wrap: raw.word_wrap,
             render_readonly,
+            caret_in_block_behavior: raw.caret_in_block_behavior,
+            paste_html_behavior: raw.paste_html_behavior,
+            idle_reanchor_ms: raw.idle_reanchor_ms,
         })
     }
 }
@@ -731,6 +789,84 @@ mod tests {
                 "default shortcut for {action} missing after load",
             );
         }
+    }
+
+    /// B.4: fresh-install defaults for the three new EditorSettings keys
+    /// `caret_in_block_behavior`, `paste_html_behavior`, `idle_reanchor_ms`.
+    /// These keys back the WYSIWYG Phase-2 polish UI surface in
+    /// Settings.ts; the LiveEditor consumer in B.2 reads `idle_reanchor_ms`
+    /// at mount time. Defaults are pinned so a fresh settings.toml writes
+    /// the same canonical values the rest of the suite asserts against.
+    #[test]
+    fn editor_settings_default_includes_b4_polish_keys() {
+        let e = EditorSettings::default();
+        assert_eq!(e.caret_in_block_behavior, "collapse-widget");
+        assert_eq!(e.paste_html_behavior, "plain");
+        assert_eq!(e.idle_reanchor_ms, 1500);
+    }
+
+    /// B.4: legacy settings.toml files written before the three new
+    /// EditorSettings keys existed must still deserialize cleanly and
+    /// pick up the documented defaults. `#[serde(default = "...")]`
+    /// guards on each new field carry the contract.
+    #[test]
+    fn editor_settings_deserialize_supplies_b4_defaults_for_missing_keys() {
+        let toml_str = concat!(
+            "default_open_mode = \"render\"\n",
+            "auto_save = true\n",
+            "auto_save_debounce_ms = 750\n",
+            "external_change_behavior = \"ask\"\n",
+            "syntax_highlighting = true\n",
+            "mermaid_enabled = true\n",
+            "show_whitespace = false\n",
+            "word_wrap = true\n",
+        );
+        let e: EditorSettings = toml::from_str(toml_str).expect("parse");
+        assert_eq!(e.caret_in_block_behavior, "collapse-widget");
+        assert_eq!(e.paste_html_behavior, "plain");
+        assert_eq!(e.idle_reanchor_ms, 1500);
+    }
+
+    /// B.4: explicit non-default values for the three new keys must
+    /// round-trip through serialize → deserialize without loss. This
+    /// pins the "user customizes once, value sticks across reloads"
+    /// invariant the Settings UI relies on.
+    #[test]
+    fn editor_settings_round_trip_preserves_b4_custom_values() {
+        let mut e = EditorSettings::default();
+        e.caret_in_block_behavior = "always-raw".into();
+        e.paste_html_behavior = "markdown".into();
+        e.idle_reanchor_ms = 3000;
+        let toml_str = toml::to_string(&e).expect("ser");
+        let back: EditorSettings = toml::from_str(&toml_str).expect("de");
+        assert_eq!(back.caret_in_block_behavior, "always-raw");
+        assert_eq!(back.paste_html_behavior, "markdown");
+        assert_eq!(back.idle_reanchor_ms, 3000);
+    }
+
+    /// B.4: a settings.toml that DOES carry the three new keys with
+    /// non-default values must read those user choices through, not
+    /// fall back to defaults — guards against an accidental
+    /// `#[serde(default)]` pattern that overrides the parsed value.
+    #[test]
+    fn editor_settings_deserialize_respects_explicit_b4_values() {
+        let toml_str = concat!(
+            "default_open_mode = \"render\"\n",
+            "auto_save = true\n",
+            "auto_save_debounce_ms = 750\n",
+            "external_change_behavior = \"ask\"\n",
+            "syntax_highlighting = true\n",
+            "mermaid_enabled = true\n",
+            "show_whitespace = false\n",
+            "word_wrap = true\n",
+            "caret_in_block_behavior = \"always-raw\"\n",
+            "paste_html_behavior = \"markdown\"\n",
+            "idle_reanchor_ms = 2750\n",
+        );
+        let e: EditorSettings = toml::from_str(toml_str).expect("parse");
+        assert_eq!(e.caret_in_block_behavior, "always-raw");
+        assert_eq!(e.paste_html_behavior, "markdown");
+        assert_eq!(e.idle_reanchor_ms, 2750);
     }
 
     /// User-customized shortcuts must NOT be overwritten by the default
