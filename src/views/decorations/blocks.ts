@@ -37,6 +37,13 @@ export interface BlockWidgetsOptions {
  * Discriminated tag stored on each widget. Drives both the
  * `data-block-widget="…"` DOM attribute (which tests inspect) and the
  * mermaid-only post-render side effect.
+ *
+ * Tables were previously handled here (Phase 1 atomic widget) but are
+ * now owned by `src/views/decorations/tables.ts` (B.1 — per-cell
+ * contentEditable + toolbar + raw pencil). The "table" kind stays in
+ * the union for backward compat with the public `WidgetKind` type, but
+ * `findBlocks` no longer emits Table specs so the two extensions can
+ * coexist in the same EditorView without RangeSet collisions.
  */
 type WidgetKind = 'mermaid' | 'code' | 'html' | 'image' | 'table';
 
@@ -131,11 +138,13 @@ function findBlocks(state: EditorState): BlockSpec[] {
           return;
         }
         case 'Table': {
-          const source = state.doc.sliceString(node.from, node.to);
-          out.push({ kind: 'table', from: node.from, to: node.to, source, infoString: '' });
-          // Don't descend — TableHeader / TableRow / TableCell are
-          // collapsed under the atomic widget in Phase 1. (Phase 2's
-          // tables extension will reach into these for per-cell editing.)
+          // Tables are owned by `tables.ts` (B.1) — that extension
+          // emits its own per-table widget with per-cell contentEditable
+          // and a +row/+col toolbar. blocks.ts MUST NOT also emit a
+          // table widget here, or the two extensions would conflict
+          // when both are mounted (two block decorations at the same
+          // [from, to) range). Returning `false` stops descent without
+          // emitting a BlockSpec for the Table.
           return false;
         }
         default:

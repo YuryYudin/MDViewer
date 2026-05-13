@@ -140,16 +140,23 @@ describe('blockWidgets', () => {
       view.destroy();
     });
 
-    it('classifies a GFM Table as a table widget', async () => {
+    it('does NOT emit a table widget (B.1: tables are owned by tables.ts now)', async () => {
+      // Tables were previously handled by blocks.ts in Phase 1 (atomic
+      // widget that collapsed to raw GFM on caret-in). B.1 moves table
+      // handling to its own extension at `src/views/decorations/tables.ts`
+      // — that extension emits per-cell contentEditable widgets with a
+      // +row/+col/✎-Raw toolbar. blocks.ts MUST stop emitting Table
+      // widgets to avoid RangeSet collisions when both extensions are
+      // mounted in the same EditorView.
       const { renderMarkdown, resolveAll } = makeRenderMarkdownStub();
       const src = '| a | b |\n| - | - |\n| 1 | 2 |\n';
       const view = makeView(src, renderMarkdown);
       await resolveAll();
-      expect(widgetKinds(view)).toContain('table');
+      expect(widgetKinds(view)).not.toContain('table');
       view.destroy();
     });
 
-    it('emits one widget per matching block in a mixed document', async () => {
+    it('emits one widget per matching block in a mixed document (excluding tables, which tables.ts owns)', async () => {
       const { renderMarkdown, resolveAll } = makeRenderMarkdownStub();
       const src = [
         '```mermaid',
@@ -173,7 +180,9 @@ describe('blockWidgets', () => {
       const view = makeView(src, renderMarkdown);
       await resolveAll();
       const kinds = widgetKinds(view).sort();
-      expect(kinds).toEqual(['code', 'html', 'image', 'mermaid', 'table']);
+      // B.1: Tables are no longer emitted by blocks.ts — see the
+      // "does NOT emit a table widget" case above for the rationale.
+      expect(kinds).toEqual(['code', 'html', 'image', 'mermaid']);
       view.destroy();
     });
   });
@@ -231,22 +240,18 @@ describe('blockWidgets', () => {
       view.destroy();
     });
 
-    it('collapses a Table widget on caret-in revealing the raw GFM source', async () => {
+    it('B.1: no Table widget is emitted by blocks.ts — tables.ts owns the surface', async () => {
+      // The Phase 1 caret-in collapse semantics for Table moved with
+      // the rest of the table handling to tables.ts (B.1). blocks.ts
+      // simply no longer participates for Table nodes — there's
+      // nothing to collapse here.
       const { renderMarkdown, resolveAll } = makeRenderMarkdownStub();
       const src = '| a | b |\n| - | - |\n| 1 | 2 |\n';
       const view = makeView(src, renderMarkdown);
       await resolveAll();
-      expect(widgetKinds(view)).toContain('table');
-
-      // Place caret inside the table block.
-      view.dispatch({ selection: EditorSelection.single(2, 2) });
-      await resolveAll();
       expect(widgetKinds(view)).not.toContain('table');
-
-      // The rendered editor text now shows the pipe characters (raw GFM).
-      // We check via the EditorView's content DOM rather than the widget
-      // (which is gone). The first line should contain "| a | b |".
-      expect(view.contentDOM.textContent ?? '').toContain('| a | b |');
+      // No caret-in / caret-out cycle to test here; that contract is
+      // covered by tables.test.ts.
       view.destroy();
     });
 

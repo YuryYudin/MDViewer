@@ -7,6 +7,7 @@ import { mountLiveEditor, type LiveEditorView } from './LiveEditor';
 import { attachSelectionPopover } from './SelectionPopover';
 import { inlineMarks, inlineMarksKeymap } from './decorations/inlineMarks';
 import { blockWidgets } from './decorations/blocks';
+import { tables } from './decorations/tables';
 import { commentHighlights, refreshAnchors } from './decorations/commentHighlights';
 
 // Decoration CSS — imported here so Vite picks them up via the
@@ -428,6 +429,10 @@ export async function mountDocument(
     // standard autosave / dirty pathways already wired in LiveEditor.
     inlineMarksKeymap(),
     blockWidgets({ renderMarkdown: (s: string) => ipc.renderMarkdown(s) }),
+    // B.1: tables() emits per-cell editable widgets for GFM Table
+    // nodes. blocks.ts deliberately stops emitting Table widgets now
+    // (see decorations/blocks.ts "tables.ts owns the surface" comment).
+    tables(),
     commentHighlights(),
   ];
   live.editorView.dispatch({
