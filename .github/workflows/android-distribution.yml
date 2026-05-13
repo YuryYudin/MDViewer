@@ -1,0 +1,241 @@
+name: Android Firebase Distribution
+
+# Pushes a signed release APK to Firebase App Distribution for the
+# configured tester group. Manual trigger only — every distribution is a
+# deliberate choice, so we never burn tester quotas or notification noise
+# on routine commits. A future iteration could fire this automatically on
+# tag push (alongside release.yml) but the manual gate is the safe default
+# for an OSS project.
+#
+# ─── Required secrets (Settings → Secrets and variables → Actions) ───
+#
+#   FIREBASE_SERVICE_ACCOUNT
+#     Base64-encoded JSON of a Google service account with the
+#     "Firebase App Distribution Admin" role. Create the account at
+#       https://console.cloud.google.com/iam-admin/serviceaccounts
+#     restricted to the Firebase project that hosts the Android app.
+#     The role grants *only* upload/manage permissions for App
+#     Distribution — it cannot read user data or modify other Firebase
+#     services. Encode the downloaded JSON with `base64 -w0 < key.json`
+#     (or `base64 -i key.json | tr -d '\n'` on macOS) before pasting.
+#
+#   FIREBASE_ANDROID_APP_ID
+#     The Firebase Android App ID, of the form `1:NNN…:android:HHH…`,
+#     copied from Firebase Console → Project Settings → Your apps. Not
+#     truly secret (it's exposed in `google-services.json`), but kept in
+#     secrets here so the repo doesn't advertise which Firebase project
+#     it ships to.
+#
+#   FIREBASE_TESTER_GROUP (optional — defaults to `internal-testers`)
+#     The alias of a tester group defined in Firebase Console →
+#     App Distribution → Testers & groups. Group-by-name is preferable
+#     to a comma-separated email list because tester membership is then
+#     managed in the Firebase UI rather than the repo.
+#
+#   ANDROID_RELEASE_KEYSTORE_BASE64, ANDROID_RELEASE_KEY_ALIAS,
+#   ANDROID_RELEASE_KEYSTORE_PASSWORD, ANDROID_RELEASE_KEY_PASSWORD
+#     The same four secrets release.yml uses to sign release APKs —
+#     see android/keystore/README.md. Reused intentionally: testers
+#     should see the same APK shape as production (R8, real signature)
+#     so distribution-only quirks don't hide release-only bugs.
+#
+# ─── Why secrets never reach forks ───
+#
+# GitHub does NOT pass repository secrets to workflow runs triggered by
+# pull requests from forks. Combined with the `workflow_dispatch` trigger
+# (which only repo collaborators with `write` can invoke), this means an
+# external contributor cannot exfiltrate the service account or signing
+# key by opening a malicious PR — the workflow simply will not run with
+# the secrets attached on their behalf.
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_notes:
+        description: 'Release notes for this distribution (visible to testers)'
+        required: false
+        default: ''
+      tester_group:
+        description: 'Firebase tester group alias (overrides FIREBASE_TESTER_GROUP secret)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  distribute:
+    name: Build + distribute Android APK
+    runs-on: ubuntu-latest
+    # Bind to a GitHub Actions Environment so the Firebase + keystore
+    # secrets are sourced from environment-scoped secrets (not repo-wide
+    # secrets). The environment is the canonical place to configure:
+    #   * Required reviewers — every dispatch is gated on a human OK
+    #     before the secrets are injected. Without this, anyone with
+    #     write access could push to testers from the Actions tab.
+    #   * Deployment branch policy — pin to `main` so the secrets are
+    #     not even injected on a feature-branch dispatch (hard guard,
+    #     complements the `if:` line below which is a soft guard).
+    # Settings → Environments → New environment → name it
+    # `firebase-distribution` and configure both. Then add the
+    # FIREBASE_*, ANDROID_RELEASE_* secrets under that environment.
+    environment: firebase-distribution
+    # Soft branch guard: also rejects dispatch from a non-main ref before
+    # any step runs. The environment's branch policy is the hard guard
+    # (GitHub refuses to inject secrets at all); this `if:` makes the
+    # short-circuit visible in the run timeline.
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Same fetch-depth=0 rationale as release.yml: `git describe`
+          # in app/build.gradle.kts derives versionName from the last tag.
+          # Default shallow checkout would produce `0.0.0-dev` APKs that
+          # testers can't tell apart on Firebase's APK-version sort.
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - uses: android-actions/setup-android@v3
+
+      # Mirrors release.yml's NDK install — see comments there for the
+      # AGP-compatibility rationale. Bump in lockstep with the gradle
+      # fallback (android/core/build.gradle.kts) when bumping AGP.
+      - name: Install AGP-compatible NDK + cmake
+        run: |
+          NDK_VERSION="27.2.12479018"
+          sdkmanager --install "ndk;$NDK_VERSION" "cmake;3.22.1" >/dev/null
+          ndk_dir="$ANDROID_HOME/ndk/$NDK_VERSION"
+          if [ ! -d "$ndk_dir" ]; then
+            echo "::error::NDK install failed: $ndk_dir not present after sdkmanager"
+            exit 1
+          fi
+          echo "ANDROID_NDK_HOME=$ndk_dir" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$ndk_dir" >> "$GITHUB_ENV"
+
+      - name: Assemble release APK
+        working-directory: android
+        env:
+          ANDROID_RELEASE_KEYSTORE_BASE64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
+          ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          ANDROID_RELEASE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWORD }}
+          ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+        run: ./gradlew :app:assembleRelease --stacktrace
+
+      # Defense-in-depth: the gradle `cleanupReleaseKeystore` finalizer
+      # already runs on success+failure, but a stray tmp keystore in the
+      # workspace would be uploaded as a build artifact by a future
+      # debug-only `actions/upload-artifact` step. Fail loud here.
+      - name: Verify tmp keystore was cleaned up
+        working-directory: android
+        run: |
+          if [ -f app/build/release-keystore.jks ]; then
+            echo "::error::Release keystore tmp file leaked into workspace"
+            exit 1
+          fi
+
+      # Materialize the service-account JSON from the base64 secret into
+      # a tmp file the upload action can read. `RUNNER_TEMP` is wiped at
+      # job end and is outside the workspace, so the JSON never lands
+      # anywhere artifacts get collected. `umask 077` ensures the file
+      # is owner-read-only even before the wipe.
+      - name: Decode Firebase service account
+        id: sa
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          if [ -z "$FIREBASE_SERVICE_ACCOUNT" ]; then
+            echo "::error::FIREBASE_SERVICE_ACCOUNT secret is empty or missing"
+            exit 1
+          fi
+          umask 077
+          sa_path="$RUNNER_TEMP/firebase-sa.json"
+          printf '%s' "$FIREBASE_SERVICE_ACCOUNT" | base64 --decode > "$sa_path"
+          echo "path=$sa_path" >> "$GITHUB_OUTPUT"
+
+      # Compose the release notes for testers. Workflow-input field takes
+      # priority; when empty we fall back to the subjects of every commit
+      # since the last tag, which is the most useful default for an
+      # ad-hoc test build. Truncated to ~16 KB because Firebase rejects
+      # absurdly long release notes.
+      #
+      # User-supplied input is read via env (INPUT_NOTES) — never
+      # interpolated directly into the shell — so a tester-group name or
+      # release-notes payload containing back-ticks or `$(...)` cannot
+      # execute arbitrary commands.
+      - name: Compose release notes
+        id: notes
+        env:
+          INPUT_NOTES: ${{ inputs.release_notes }}
+        run: |
+          if [ -n "$INPUT_NOTES" ]; then
+            notes="$INPUT_NOTES"
+          else
+            last_tag=$(git describe --tags --abbrev=0 2>/dev/null || echo '')
+            if [ -n "$last_tag" ]; then
+              notes="Test build at $(git rev-parse --short HEAD), commits since $last_tag:"$'\n'$(git log --pretty='* %s' "$last_tag"..HEAD)
+            else
+              notes="Test build at $(git rev-parse --short HEAD)"
+            fi
+          fi
+          notes=$(printf '%s' "$notes" | head -c 16000)
+          {
+            echo 'value<<__EOF__'
+            printf '%s\n' "$notes"
+            echo '__EOF__'
+          } >> "$GITHUB_OUTPUT"
+
+      # Resolve the tester group: workflow-input override → secret →
+      # hardcoded fallback. Computed in shell (not inline in the action's
+      # `with:` block) so the precedence is obvious in the run log and
+      # the value can be sanity-checked before the upload step fires.
+      - name: Resolve tester group
+        id: group
+        env:
+          INPUT_GROUP: ${{ inputs.tester_group }}
+          SECRET_GROUP: ${{ secrets.FIREBASE_TESTER_GROUP }}
+        run: |
+          if [ -n "$INPUT_GROUP" ]; then
+            group="$INPUT_GROUP"
+          elif [ -n "$SECRET_GROUP" ]; then
+            group="$SECRET_GROUP"
+          else
+            group="internal-testers"
+          fi
+          echo "value=$group" >> "$GITHUB_OUTPUT"
+
+      # Upload via the de-facto-standard action. Authenticates with the
+      # service-account JSON (`serviceCredentialsFileContent` is misnamed
+      # by the action — it accepts a file PATH, not file contents), then
+      # calls Firebase's distribution REST API.
+      - name: Upload to Firebase App Distribution
+        uses: wzieba/Firebase-Distribution-Github-Action@v1
+        with:
+          appId: ${{ secrets.FIREBASE_ANDROID_APP_ID }}
+          serviceCredentialsFileContent: ${{ steps.sa.outputs.path }}
+          groups: ${{ steps.group.outputs.value }}
+          file: android/app/build/outputs/apk/release/app-release.apk
+          releaseNotes: ${{ steps.notes.outputs.value }}
+
+      # Last-line-of-defense scrub: even though RUNNER_TEMP is wiped at
+      # job end, an explicit `rm` makes the cleanup intent visible to a
+      # reader and runs even if a future step adds an artifact upload
+      # before the implicit wipe.
+      - name: Scrub service-account credential
+        if: always()
+        run: rm -f "$RUNNER_TEMP/firebase-sa.json"
