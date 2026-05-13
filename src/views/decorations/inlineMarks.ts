@@ -22,11 +22,13 @@
 
 import { syntaxTree } from '@codemirror/language';
 import type { EditorState, Extension } from '@codemirror/state';
-import { RangeSetBuilder } from '@codemirror/state';
+import { EditorSelection, RangeSetBuilder } from '@codemirror/state';
 import {
   Decoration,
   type DecorationSet,
   EditorView,
+  type KeyBinding,
+  keymap,
   ViewPlugin,
   type ViewUpdate,
   WidgetType,
@@ -385,6 +387,148 @@ function handleImage(node: SyntaxNodeRef, state: EditorState, out: PositionedDec
     to: node.to,
     deco: Decoration.replace({ widget: new InlineImageWidget(src, alt) }),
   });
+}
+
+/* ------------------------------------------------------------------ */
+/* B.3 — Cmd+B / Cmd+I / Cmd+E / Cmd+K toggle keybindings              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Toggle the main selection wrapped in `sigil`. If the selection
+ * already starts and ends with the sigil string, strip it; otherwise
+ * insert it. Caret-positioning invariant: after an insert the
+ * selection still covers the same content (shifted by sigil.length);
+ * after a strip the selection covers the unwrapped content. Empty
+ * selections (carets) collapse to inserting `sigil + sigil` and place
+ * the caret in between, so the user can keep typing inside the new
+ * mark.
+ */
+function toggleSymmetricWrap(view: EditorView, sigil: string): boolean {
+  const sel = view.state.selection.main;
+  const { from, to } = sel;
+  const sigilLen = sigil.length;
+
+  if (from === to) {
+    // Empty selection — insert paired sigils and park caret between.
+    view.dispatch({
+      changes: { from, insert: sigil + sigil },
+      selection: EditorSelection.single(from + sigilLen),
+      userEvent: 'input.toggle',
+    });
+    return true;
+  }
+
+  const selected = view.state.sliceDoc(from, to);
+  if (
+    selected.length >= sigilLen * 2 &&
+    selected.startsWith(sigil) &&
+    selected.endsWith(sigil)
+  ) {
+    // Strip: replace `<sigil>X<sigil>` with `X`. Selection covers X.
+    const inner = selected.slice(sigilLen, selected.length - sigilLen);
+    view.dispatch({
+      changes: { from, to, insert: inner },
+      selection: EditorSelection.single(from, from + inner.length),
+      userEvent: 'input.toggle',
+    });
+    return true;
+  }
+
+  // Insert: wrap selection with sigils, keep selection over the
+  // original content (shifted by sigilLen).
+  view.dispatch({
+    changes: [
+      { from, insert: sigil },
+      { from: to, insert: sigil },
+    ],
+    selection: EditorSelection.single(from + sigilLen, to + sigilLen),
+    userEvent: 'input.toggle',
+  });
+  return true;
+}
+
+/**
+ * Cmd+E variant. Inline code typically uses a single backtick, but
+ * when the selection itself contains a backtick the wrapping fence
+ * must widen to two backticks so the inner backtick stays literal
+ * (CommonMark §6.1: the opening run must be a non-substring of the
+ * code content). Strip handles both widths symmetrically.
+ */
+function toggleInlineCode(view: EditorView): boolean {
+  const sel = view.state.selection.main;
+  const { from, to } = sel;
+
+  if (from === to) {
+    // Empty selection — default to single-backtick pair.
+    return toggleSymmetricWrap(view, '`');
+  }
+
+  const selected = view.state.sliceDoc(from, to);
+
+  // Strip if the selection already wraps a code mark — try the wider
+  // ``…`` first so `` ``a`b`` `` doesn't trip a false-match on the
+  // single-backtick branch. The startsWith('``') guard on the second
+  // branch protects against half-stripping a `` `` `` selection.
+  if (selected.startsWith('``') && selected.endsWith('``') && selected.length >= 4) {
+    return toggleSymmetricWrap(view, '``');
+  }
+  if (
+    !selected.startsWith('``') &&
+    selected.startsWith('`') &&
+    selected.endsWith('`') &&
+    selected.length >= 2
+  ) {
+    return toggleSymmetricWrap(view, '`');
+  }
+
+  // Insert: pick the fence width based on whether the selection
+  // contains a literal backtick.
+  const fence = selected.includes('`') ? '``' : '`';
+  return toggleSymmetricWrap(view, fence);
+}
+
+/**
+ * Cmd+K — link skeleton. Inserts `[text](url-placeholder)` at the
+ * selection; if the selection is non-empty, its contents become the
+ * link text and only the `url-placeholder` is selected so the user
+ * can type directly to fill it in.
+ */
+function insertLinkSkeleton(view: EditorView): boolean {
+  const sel = view.state.selection.main;
+  const { from, to } = sel;
+  const selected = view.state.sliceDoc(from, to);
+  const text = selected.length > 0 ? selected : 'text';
+  const placeholder = 'url-placeholder';
+  const inserted = `[${text}](${placeholder})`;
+
+  // The url-placeholder sits between `](` and the trailing `)`.
+  // Its offset relative to `inserted` is:
+  //   1 ("[") + text.length + 2 ("](")
+  const placeholderStart = from + 1 + text.length + 2;
+  const placeholderEnd = placeholderStart + placeholder.length;
+
+  view.dispatch({
+    changes: { from, to, insert: inserted },
+    selection: EditorSelection.single(placeholderStart, placeholderEnd),
+    userEvent: 'input.toggle',
+  });
+  return true;
+}
+
+/**
+ * Returns a CodeMirror keymap extension wiring Cmd+B / Cmd+I / Cmd+E
+ * / Cmd+K to the toggle commands above. `Mod-` resolves to Cmd on
+ * macOS and Ctrl elsewhere — the binding is platform-correct without
+ * a manual platform check.
+ */
+export function inlineMarksKeymap(): Extension {
+  const bindings: KeyBinding[] = [
+    { key: 'Mod-b', preventDefault: true, run: (view) => toggleSymmetricWrap(view, '**') },
+    { key: 'Mod-i', preventDefault: true, run: (view) => toggleSymmetricWrap(view, '*') },
+    { key: 'Mod-e', preventDefault: true, run: (view) => toggleInlineCode(view) },
+    { key: 'Mod-k', preventDefault: true, run: (view) => insertLinkSkeleton(view) },
+  ];
+  return keymap.of(bindings);
 }
 
 /**

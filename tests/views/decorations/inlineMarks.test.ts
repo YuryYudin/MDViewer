@@ -1,9 +1,9 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { EditorState, EditorSelection } from '@codemirror/state';
-import { EditorView } from '@codemirror/view';
+import { EditorView, runScopeHandlers } from '@codemirror/view';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 
-import { inlineMarks } from '../../../src/views/decorations/inlineMarks';
+import { inlineMarks, inlineMarksKeymap } from '../../../src/views/decorations/inlineMarks';
 
 /**
  * Spin up a real EditorView with the markdown language + the inlineMarks
@@ -380,6 +380,182 @@ describe('inlineMarks extension', () => {
         selection: EditorSelection.single(0),
       });
       expect(allHidden()).toBe(true);
+    });
+  });
+
+  describe('inlineMarksKeymap — Cmd+B / Cmd+I / Cmd+E / Cmd+K', () => {
+    /**
+     * Build an editor with the keymap installed. `os.platform` shims
+     * are not needed — CodeMirror's `Mod-` token is resolved against
+     * `navigator.platform` (defaults to non-mac in jsdom, so Mod ===
+     * Ctrl). Tests fire a Ctrl-prefixed KeyboardEvent.
+     */
+    function mountWithKeymap(
+      doc: string,
+      from: number,
+      to: number = from,
+    ): { view: EditorView } {
+      const root = document.createElement('div');
+      document.body.appendChild(root);
+      const state = EditorState.create({
+        doc,
+        selection: EditorSelection.single(from, to),
+        extensions: [
+          markdown({ base: markdownLanguage }),
+          inlineMarks(),
+          inlineMarksKeymap(),
+        ],
+      });
+      const view = new EditorView({ state, parent: root });
+      return { view };
+    }
+
+    /** Dispatch a Ctrl-prefixed keydown through CodeMirror's scope dispatcher. */
+    function pressCtrl(view: EditorView, key: string): boolean {
+      const event = new KeyboardEvent('keydown', {
+        key,
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      return runScopeHandlers(view, event, 'editor');
+    }
+
+    it('exports a keymap extension value', () => {
+      const ext = inlineMarksKeymap();
+      expect(ext).toBeDefined();
+    });
+
+    describe('Cmd+B — StrongEmphasis (**)', () => {
+      it('inserts **…** around a non-bold selection and selects the inner content', () => {
+        const { view } = mountWithKeymap('hello world', 0, 5); // select "hello"
+        const handled = pressCtrl(view, 'b');
+        expect(handled).toBe(true);
+        expect(view.state.doc.toString()).toBe('**hello** world');
+        // Caret-positioning invariant: the selection still covers the
+        // same content "hello" — shifted by 2 because of the inserted
+        // leading `**`.
+        const sel = view.state.selection.main;
+        expect(sel.from).toBe(2);
+        expect(sel.to).toBe(7);
+        expect(view.state.sliceDoc(sel.from, sel.to)).toBe('hello');
+      });
+
+      it('strips ** when the selection already wraps a bold mark', () => {
+        const { view } = mountWithKeymap('**hello** world', 0, 9); // select "**hello**"
+        const handled = pressCtrl(view, 'b');
+        expect(handled).toBe(true);
+        expect(view.state.doc.toString()).toBe('hello world');
+        const sel = view.state.selection.main;
+        // Selection now covers the unwrapped content.
+        expect(view.state.sliceDoc(sel.from, sel.to)).toBe('hello');
+        expect(sel.from).toBe(0);
+        expect(sel.to).toBe(5);
+      });
+
+      it('inserts a **** pair around an empty selection with caret in the middle', () => {
+        const { view } = mountWithKeymap('xy', 1, 1);
+        pressCtrl(view, 'b');
+        expect(view.state.doc.toString()).toBe('x****y');
+        const sel = view.state.selection.main;
+        // Caret sits between the two pairs of asterisks.
+        expect(sel.from).toBe(3);
+        expect(sel.to).toBe(3);
+      });
+    });
+
+    describe('Cmd+I — Emphasis (*)', () => {
+      it('inserts *…* around the selection and shifts selection by one', () => {
+        const { view } = mountWithKeymap('abc def', 0, 3); // select "abc"
+        pressCtrl(view, 'i');
+        expect(view.state.doc.toString()).toBe('*abc* def');
+        const sel = view.state.selection.main;
+        expect(sel.from).toBe(1);
+        expect(sel.to).toBe(4);
+        expect(view.state.sliceDoc(sel.from, sel.to)).toBe('abc');
+      });
+
+      it('strips * when the selection wraps a *…* mark', () => {
+        const { view } = mountWithKeymap('*abc* def', 0, 5); // select "*abc*"
+        pressCtrl(view, 'i');
+        expect(view.state.doc.toString()).toBe('abc def');
+        const sel = view.state.selection.main;
+        expect(sel.from).toBe(0);
+        expect(sel.to).toBe(3);
+      });
+    });
+
+    describe('Cmd+E — InlineCode (backticks)', () => {
+      it('wraps the selection with single backticks when no backtick is present', () => {
+        const { view } = mountWithKeymap('hello world', 0, 5);
+        pressCtrl(view, 'e');
+        expect(view.state.doc.toString()).toBe('`hello` world');
+        const sel = view.state.selection.main;
+        expect(sel.from).toBe(1);
+        expect(sel.to).toBe(6);
+        expect(view.state.sliceDoc(sel.from, sel.to)).toBe('hello');
+      });
+
+      it('uses DOUBLE backticks when the selection contains a backtick', () => {
+        // Selection: "a`b" — has one backtick → use ``…`` so the inner
+        // backtick remains literal.
+        const { view } = mountWithKeymap('xa`by', 1, 4); // select "a`b"
+        pressCtrl(view, 'e');
+        expect(view.state.doc.toString()).toBe('x``a`b``y');
+        const sel = view.state.selection.main;
+        expect(sel.from).toBe(3);
+        expect(sel.to).toBe(6);
+        expect(view.state.sliceDoc(sel.from, sel.to)).toBe('a`b');
+      });
+
+      it('strips single backticks when the selection wraps a `…` mark', () => {
+        const { view } = mountWithKeymap('`hello` world', 0, 7);
+        pressCtrl(view, 'e');
+        expect(view.state.doc.toString()).toBe('hello world');
+        const sel = view.state.selection.main;
+        expect(sel.from).toBe(0);
+        expect(sel.to).toBe(5);
+      });
+
+      it('strips DOUBLE backticks when the selection wraps a ``…`` mark', () => {
+        const { view } = mountWithKeymap('``a`b`` rest', 0, 7);
+        pressCtrl(view, 'e');
+        expect(view.state.doc.toString()).toBe('a`b rest');
+        const sel = view.state.selection.main;
+        expect(sel.from).toBe(0);
+        expect(sel.to).toBe(3);
+      });
+
+      it('inserts a single-backtick pair around an empty caret', () => {
+        const { view } = mountWithKeymap('xy', 1, 1);
+        pressCtrl(view, 'e');
+        expect(view.state.doc.toString()).toBe('x``y');
+        const sel = view.state.selection.main;
+        expect(sel.from).toBe(2);
+        expect(sel.to).toBe(2);
+      });
+    });
+
+    describe('Cmd+K — link insertion', () => {
+      it('inserts [text](url-placeholder) using the selection as the link text', () => {
+        const { view } = mountWithKeymap('see docs here', 4, 8); // select "docs"
+        pressCtrl(view, 'k');
+        expect(view.state.doc.toString()).toBe('see [docs](url-placeholder) here');
+        // Caret-positioning invariant for Cmd+K: the url-placeholder is
+        // selected so the user can type to overwrite it.
+        const sel = view.state.selection.main;
+        expect(view.state.sliceDoc(sel.from, sel.to)).toBe('url-placeholder');
+      });
+
+      it('inserts [text](url-placeholder) with the placeholder selected when no selection exists', () => {
+        // With an empty caret, the wrapper inserts the link skeleton
+        // verbatim and selects the url-placeholder.
+        const { view } = mountWithKeymap('hi', 2, 2);
+        pressCtrl(view, 'k');
+        expect(view.state.doc.toString()).toBe('hi[text](url-placeholder)');
+        const sel = view.state.selection.main;
+        expect(view.state.sliceDoc(sel.from, sel.to)).toBe('url-placeholder');
+      });
     });
   });
 });

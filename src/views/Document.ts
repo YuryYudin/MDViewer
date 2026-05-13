@@ -5,7 +5,7 @@ import { GFM } from '@lezer/markdown';
 import type { Ipc, Settings, Thread, ResolveOutcome } from '../ipc';
 import { mountLiveEditor, type LiveEditorView } from './LiveEditor';
 import { attachSelectionPopover } from './SelectionPopover';
-import { inlineMarks } from './decorations/inlineMarks';
+import { inlineMarks, inlineMarksKeymap } from './decorations/inlineMarks';
 import { blockWidgets } from './decorations/blocks';
 import { commentHighlights, refreshAnchors } from './decorations/commentHighlights';
 
@@ -421,6 +421,12 @@ export async function mountDocument(
   const decorationExtensions: Extension[] = [
     markdown({ base: markdownLanguage, extensions: [GFM] }),
     inlineMarks(),
+    // B.3 — Cmd+B / Cmd+I / Cmd+E / Cmd+K toggle keybindings. The
+    // keymap lives alongside the decoration so it ships with the
+    // same module that owns inline-mark rendering. The keybindings
+    // dispatch user-event-tagged transactions that flow through the
+    // standard autosave / dirty pathways already wired in LiveEditor.
+    inlineMarksKeymap(),
     blockWidgets({ renderMarkdown: (s: string) => ipc.renderMarkdown(s) }),
     commentHighlights(),
   ];
