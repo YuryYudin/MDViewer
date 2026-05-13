@@ -180,14 +180,16 @@ describe('Document', () => {
       const toggle = root.querySelector<HTMLDivElement>('[data-testid="mode-toggle"]')!;
       expect(toggle).toBeTruthy();
       expect(toggle.hidden).toBe(true);
-      // The legacy `[data-action="toggle-render-raw"]` selector hits
-      // the opposite-mode button via the back-compat alias.
-      const legacy = root.querySelector<HTMLButtonElement>('[data-action~="toggle-render-raw"]')!;
-      expect(legacy).toBeTruthy();
-      expect(legacy.hidden).toBe(true);
+      // Default mode is render; the opposite-mode (raw) button carries
+      // the toggle-edit action alias.
+      const opposite = root.querySelector<HTMLButtonElement>(
+        '[data-testid="mode-toggle"] button[data-mode="raw"]',
+      )!;
+      expect(opposite).toBeTruthy();
+      expect(opposite.hidden).toBe(true);
     });
 
-    it('default mode is render — legacy back-compat alias lives on the Raw button (the action it triggers)', async () => {
+    it('default mode is render — the opposite-mode (Raw) button is visible and labelled "Raw"', async () => {
       const root = makeRoot();
       await mountDocument(root, ipc(), {
         tabId: 't',
@@ -197,14 +199,16 @@ describe('Document', () => {
         path: '/tmp/a.md',
         settings: settings(),
       });
-      const btn = root.querySelector<HTMLButtonElement>('[data-action~="toggle-render-raw"]')!;
+      const btn = root.querySelector<HTMLButtonElement>(
+        '[data-testid="mode-toggle"] button[data-mode="raw"]',
+      )!;
       expect(btn.hidden).toBe(false);
       // The button shows the destination mode — clicking "Raw" switches
       // FROM render TO raw, matching the wireframe label convention.
       expect(btn.textContent).toBe('Raw');
     });
 
-    it('clicking the legacy back-compat alias flips mode; the alias migrates to the opposite-mode button each time', async () => {
+    it('clicking the opposite-mode button flips mode; the opposite-button label tracks the destination mode', async () => {
       const root = makeRoot();
       await mountDocument(root, ipc(), {
         tabId: 't',
@@ -214,19 +218,21 @@ describe('Document', () => {
         path: '/tmp/a.md',
         settings: settings(),
       });
-      // Re-query after each click — under the two-button structure
-      // the legacy alias migrates between buttons, so a cached handle
-      // would not track the destination-mode label.
-      const legacy = () =>
-        root.querySelector<HTMLButtonElement>('[data-action~="toggle-render-raw"]')!;
-      expect(legacy().textContent).toBe('Raw');
-      legacy().click();
-      // After clicking once we're in raw mode — alias hopped to the
-      // Render button, whose textContent is "Render".
-      expect(legacy().textContent).toBe('Render');
-      legacy().click();
-      // And back to render — alias returns to the Raw button.
-      expect(legacy().textContent).toBe('Raw');
+      // Re-query after each click — the opposite-mode button (the one
+      // NOT currently pressed) swaps between Raw and Render as the mode
+      // flips. aria-pressed="false" is the structural marker.
+      const opposite = () =>
+        root.querySelector<HTMLButtonElement>(
+          '[data-testid="mode-toggle"] button[aria-pressed="false"]',
+        )!;
+      expect(opposite().textContent).toBe('Raw');
+      opposite().click();
+      // After clicking once we're in raw mode — the opposite-mode
+      // button is now Render.
+      expect(opposite().textContent).toBe('Render');
+      opposite().click();
+      // And back to render — opposite-mode button is Raw again.
+      expect(opposite().textContent).toBe('Raw');
     });
 
     it('clicking the toggle does NOT trigger a saveDocument IPC', async () => {
@@ -243,11 +249,13 @@ describe('Document', () => {
         path: '/tmp/a.md',
         settings: settings(),
       });
-      const legacy = () =>
-        root.querySelector<HTMLButtonElement>('[data-action~="toggle-render-raw"]')!;
-      legacy().click();
-      legacy().click();
-      legacy().click();
+      const opposite = () =>
+        root.querySelector<HTMLButtonElement>(
+          '[data-testid="mode-toggle"] button[aria-pressed="false"]',
+        )!;
+      opposite().click();
+      opposite().click();
+      opposite().click();
       // Drain any pending microtasks so an erroneously-queued save
       // would surface.
       await drainMicrotasks();
@@ -768,11 +776,10 @@ describe('Document', () => {
       });
       const editorHost = root.querySelector<HTMLDivElement>('[data-testid="live-editor"]')!;
       expect(editorHost).toBeTruthy();
-      // data-region is a space-separated token list containing both
-      // the new and legacy names.
-      const tokens = (editorHost.getAttribute('data-region') ?? '').split(/\s+/);
-      expect(tokens).toContain('editor');
-      expect(tokens).toContain('render');
+      // data-region is the exact string 'render' — root-level e2e
+      // specs query it via CSS exact-match (= not ~=), so it must
+      // not be a token list.
+      expect(editorHost.getAttribute('data-region')).toBe('render');
       // data-test back-compat alias for spec 05 line 22 lives on the
       // same element as data-testid.
       expect(editorHost.getAttribute('data-test')).toBe('editor');

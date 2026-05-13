@@ -93,11 +93,6 @@ export async function mountDocument(
   // OPPOSITE-mode button by the subscribeMode handle later in this
   // function; spec 05 needs the alias on whichever button takes the
   // user out of the current mode.
-  //
-  // The legacy single-button surface (`button[data-action="toggle-
-  // render-raw"]`) is preserved on the opposite-mode button via a
-  // second space-separated token in the same `data-action` attribute,
-  // because pre-A.2 tests + e2e specs use that selector.
   const toggleContainer = document.createElement('div');
   toggleContainer.setAttribute('data-testid', 'mode-toggle');
   const renderBtn = document.createElement('button');
@@ -189,11 +184,10 @@ export async function mountDocument(
 
   // --- Editor host ----------------------------------------------------
   // Selector aliases on the SAME element, each load-bearing:
-  //   * data-region="editor render" — space-separated token list:
-  //       "editor" is the new Phase-A surface name; "render" preserves
-  //       the legacy back-compat token used by root-level e2e specs
-  //       (e2e/0x-*.spec.ts) that query the rendered-HTML pane the
-  //       LiveEditor replaced.
+  //   * data-region="render" — exact-match string queried by the
+  //       wysiwyg WDIO specs and the root-level e2e specs
+  //       (e2e/0x-*.spec.ts) via CSS exact-match `[data-region="render"]`
+  //       (NOT a token-list match — keep this single token).
   //   * data-testid="live-editor" — wireframe contract for the
   //       Phase-1 wysiwyg WDIO specs (per wireframes/01-render-default.html).
   //   * data-test="editor" — back-compat alias for spec 05 line 22's
@@ -204,7 +198,7 @@ export async function mountDocument(
   //       toggle buttons but OPPOSITE semantics — buttons carry the
   //       TARGET mode (where this button switches to).
   const editorHost = document.createElement('div');
-  editorHost.setAttribute('data-region', 'editor render');
+  editorHost.setAttribute('data-region', 'render');
   editorHost.setAttribute('data-testid', 'live-editor');
   editorHost.setAttribute('data-test', 'editor');
   view.appendChild(editorHost);
@@ -386,21 +380,20 @@ export async function mountDocument(
   //      OPPOSITE-mode button. In render mode the alias lands on the
   //      Raw button (clicking it switches to raw, i.e. "toggle to
   //      edit/raw mode"); in raw mode it lands on Render. Spec 05's
-  //      click targets find the alias either way.
+  //      click target finds the alias either way.
   //
-  // The legacy `data-action="toggle-render-raw"` token sits alongside
-  // `toggle-edit` on the same opposite-mode button so older selectors
-  // keep working. subscribeMode's synchronous initial-fire contract
-  // (see LiveEditor.subscribeMode) guarantees both attributes land
-  // BEFORE this call returns, so the first DOM query after mount sees
-  // a fully-populated state.
+  // The value is the exact string `toggle-edit` — root-level e2e
+  // selectors use CSS exact-match (=), not token-match (~=), so any
+  // additional tokens would defeat the queries. subscribeMode's
+  // synchronous initial-fire contract (see LiveEditor.subscribeMode)
+  // guarantees both attributes land BEFORE this call returns, so the
+  // first DOM query after mount sees a fully-populated state.
   const modeUnsub = live.subscribeMode((mode) => {
     editorHost.setAttribute('data-mode', mode);
     renderBtn.removeAttribute('data-action');
     rawBtn.removeAttribute('data-action');
     const oppositeBtn = mode === 'render' ? rawBtn : renderBtn;
-    // Space-separated token list: new alias + legacy alias.
-    oppositeBtn.setAttribute('data-action', 'toggle-edit toggle-render-raw');
+    oppositeBtn.setAttribute('data-action', 'toggle-edit');
     // Active-mode marker for the spec query at click-and-type.spec.ts:54
     // — `button[aria-pressed="true"]` on the button whose static
     // data-mode matches the current mode.
