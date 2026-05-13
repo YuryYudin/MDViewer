@@ -227,6 +227,25 @@ export function mountCommentsSidebar(
       }
     }
 
+    // A3 (phase-a-finish): the W3C-style quoted text from the thread's
+    // anchor lands as a `<div class="quote">` child of the row. The
+    // comment-from-selection e2e spec asserts on `.quote.getText()` to
+    // confirm the new thread quotes the exact selected phrase. The
+    // orphan-list path at the top of this function already reads
+    // `t.anchor.exact` (line ~122); the main thread render path needs
+    // the same field. Skip the element entirely when `anchor.exact` is
+    // empty so a synthetic / post-relocate thread with no anchored text
+    // doesn't paint an empty italic strip. Inserted before the
+    // header/body so it sits between the thread-level header chips
+    // (pending pill, author avatar) and the first comment, matching
+    // wireframe 08-selection-comment.html.
+    if (t.anchor.exact && t.anchor.exact.length > 0) {
+      const quote = document.createElement('div');
+      quote.className = 'quote';
+      quote.textContent = t.anchor.exact;
+      article.appendChild(quote);
+    }
+
     if (opts.activeTabId) {
       // Production mode: mount ThreadDetail inline. Detail already
       // shows every comment with author + body, so adding our own

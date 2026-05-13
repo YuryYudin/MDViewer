@@ -17,3 +17,20 @@
 mark.cm-comment-anchor.is-drifting {
   display: none;
 }
+
+/*
+ * A3 (phase-a-finish): per-thread anchored-quote element.
+ *
+ * Each `[data-test="thread"]` row in the CommentsSidebar carries a
+ * `<div class="quote">` child whose text is the W3C anchor's `exact`
+ * field — the quoted source text the thread is pinned to. The rule
+ * lives here (not in `decorations.css`) to keep A3 from colliding
+ * with A5's parallel decorations.css edits; comment-thread quotes
+ * are a sidebar concern, not a decoration-pipeline concern. Visual
+ * contract: `wireframes/08-selection-comment.html`.
+ */
+.quote {
+  font-style: italic;
+  border-left: 2px solid var(--accent);
+  padding-left: 6px;
+}
