@@ -151,31 +151,57 @@ function handleNode(
   ) {
     const cls =
       name === 'StrongEmphasis'
-        ? 'cm-md-bold'
+        ? 'lp-bold'
         : name === 'Emphasis'
-          ? 'cm-md-italic'
+          ? 'lp-italic'
           : name === 'Strikethrough'
-            ? 'cm-md-strike'
+            ? 'lp-strike'
             : 'cm-md-code';
     out.push({ from, to, deco: Decoration.mark({ class: cls }) });
 
-    // Sigil-hide unless caret/selection intersects. We compute the
-    // sigil widths from the source bytes rather than walking child
-    // nodes — InlineCode wraps a single backtick (one char), the
-    // others wrap two chars (`**`, `__`/`_`, `~~`). Reading the
-    // literal byte at `from` lets us figure out the right width for
-    // `*` vs `_` emphasis without an extra child traversal.
-    if (!selectionTouches(state, from, to)) {
-      const head = doc.sliceString(from, Math.min(to, from + 2));
-      const isDouble = head.startsWith('**') || head.startsWith('__') || head.startsWith('~~');
-      const isSingle =
-        !isDouble && (head.startsWith('*') || head.startsWith('_') || head.startsWith('`'));
-      const width = isDouble ? 2 : isSingle ? 1 : 0;
-      if (width > 0) {
+    // Sigil widths come from the source bytes rather than the lezer
+    // child cursor — InlineCode wraps a single backtick (one char), the
+    // others wrap two chars (`**`, `__`/`_`, `~~`). Reading the literal
+    // byte at `from` lets us figure out the right width for `*` vs `_`
+    // emphasis without an extra child traversal.
+    const head = doc.sliceString(from, Math.min(to, from + 2));
+    const isDouble = head.startsWith('**') || head.startsWith('__') || head.startsWith('~~');
+    const isSingle =
+      !isDouble && (head.startsWith('*') || head.startsWith('_') || head.startsWith('`'));
+    const width = isDouble ? 2 : isSingle ? 1 : 0;
+    if (width === 0) return;
+
+    const inside = selectionTouches(state, from, to);
+
+    if (name === 'InlineCode') {
+      // InlineCode keeps the original Decoration.replace behaviour: no
+      // spec consumes a `.cm-md-code .sigil` element, and the
+      // class-rename / mark-switch only targets bold/italic/strike per
+      // the Phase A finish design (Decisions §4).
+      if (!inside) {
         out.push(sigil(from, from + width));
         out.push(sigil(to - width, to));
       }
+      return;
     }
+
+    // bold / italic / strike: emit Decoration.mark on the sigil chars
+    // so the source bytes survive in the rendered DOM. The wrapper
+    // class string is `sigil` when the caret intersects the mark, or
+    // `sigil hidden` otherwise. The render-raw-toggle e2e spec keys
+    // on the `.hidden` class membership directly — a CSS-only display
+    // toggle would not flip the spec.
+    const sigilClass = inside ? 'sigil' : 'sigil hidden';
+    out.push({
+      from,
+      to: from + width,
+      deco: Decoration.mark({ class: sigilClass }),
+    });
+    out.push({
+      from: to - width,
+      to,
+      deco: Decoration.mark({ class: sigilClass }),
+    });
     return;
   }
 
