@@ -19,6 +19,14 @@ name = "uniffi-bindgen"
 path = "src/uniffi_bindgen_main.rs"
 required-features = ["uniffi"]
 
+# Tiny stdout-printing render binary shared by Layer 2 (block-tree
+# oracle, B3) and Layer 4 (v0.4.0 baseline audit, D1). Both consume
+# View-mode HTML without spinning up Tauri. No feature flags — it links
+# only against `pulldown-cmark` + `syntect`, which are unconditional deps.
+[[bin]]
+name = "render-cli"
+path = "src/bin/render-cli.rs"
+
 [features]
 # Default empty: desktop builds (src-tauri) link mdviewer-core as a pure
 # rlib with no UniFFI runtime. The Android shim crate (`mdviewer-jni`)
