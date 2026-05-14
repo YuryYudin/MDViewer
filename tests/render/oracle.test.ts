@@ -46,11 +46,15 @@ import { describe, it } from 'vitest';
  * follow-up task a single place to find the documented contract.
  */
 describe('block-tree oracle: View HTML ≡ Edit DOM', () => {
-  if (process.env.MDVIEWER_RENDER_CLI === undefined) {
+  // Gate on the user-facing MDVIEWER_BUILD_ORACLE contract (not the
+  // downstream MDVIEWER_RENDER_CLI side-effect). When unset the
+  // globalSetup skips the cargo build and does not export the bin path.
+  if (process.env.MDVIEWER_BUILD_ORACLE !== '1') {
     it.skip(
       'MDVIEWER_BUILD_ORACLE not set — skipping. Run `MDVIEWER_BUILD_ORACLE=1 npm test` ' +
-        'to build render-cli; the oracle assertions themselves live in the Playwright ' +
-        'spec at e2e-visual/oracle.spec.ts (added by C1/C2 once the gallery page exists).',
+        'to build render-cli; the actual oracle assertions are deferred to a follow-up ' +
+        'Playwright spec at e2e-visual/oracle.spec.ts (the follow-up task is not yet ' +
+        'planned — see the design doc Layer 2 Risk paragraph for the jsdom-fallback rationale).',
       () => {
         /* harness-only skip */
       },
@@ -59,9 +63,10 @@ describe('block-tree oracle: View HTML ≡ Edit DOM', () => {
   }
   it.skip(
     'jsdom cannot host CodeMirror 6 decoration extensions faithfully — the oracle ' +
-      'assertions run as a Playwright spec at e2e-visual/oracle.spec.ts (C1/C2 ' +
-      'milestone). The `render-cli` binary is built by the globalSetup; its absolute ' +
-      'path is exported via MDVIEWER_RENDER_CLI for Playwright to consume.',
+      'assertions are deferred to a follow-up Playwright spec at e2e-visual/oracle.spec.ts ' +
+      '(the follow-up task is not yet planned). The `render-cli` binary is built by the ' +
+      'globalSetup; its absolute path is exported via MDVIEWER_RENDER_CLI for the future ' +
+      'Playwright spec to consume.',
     () => {
       /* harness-only skip */
     },
