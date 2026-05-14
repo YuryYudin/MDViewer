@@ -9,6 +9,7 @@ import { tables } from '../../src/views/decorations/tables';
 import { commentHighlights } from '../../src/views/decorations/commentHighlights';
 import '../../src/views/decorations/decorations.css';
 import '../../src/views/decorations/comment-highlights.css';
+import { extractBlockTree } from '../../src/views/render/blockTree';
 import type { RenderResult, ResolveOutcome, SaveOutcome, Thread } from '../../src/types-generated';
 import { defaultSettings } from './defaultSettings';
 
@@ -146,6 +147,17 @@ async function main() {
   // than the boot level.
   await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
   await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+  // F1 (oracle.spec.ts): expose extractBlockTree on window so the
+  // Playwright oracle spec can call it inside page.evaluate against
+  // both the View-mode HTML (built into a detached <div> from the
+  // render-cli output) and the Edit-mode DOM (#editor-host).
+  // jsdom can't host the full CodeMirror decoration stack faithfully,
+  // which is why B3's vitest oracle stays skipped; the real-browser
+  // Playwright spec is the actual oracle gate.
+  (window as unknown as { __extractBlockTree: typeof extractBlockTree }).__extractBlockTree =
+    extractBlockTree;
+
   document.body.setAttribute('data-ready', 'true');
 }
 
