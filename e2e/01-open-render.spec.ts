@@ -34,5 +34,24 @@ describe('Open a .md and view it rendered', () => {
     expect(
       await browser.$('[data-view="sidebar-comments"] [data-empty="true"]').isExisting(),
     ).toBe(true);
+
+    // Regression (2026-05-14): the rendered doc must NOT introduce a
+    // doc-wide horizontal scrollbar. Pre-fix, the LiveEditor mount
+    // dropped EditorView.lineWrapping, so long lines overflowed and
+    // the scroller's scrollWidth grew well past clientWidth. The
+    // cm-scroller is the element that owns horizontal overflow in a
+    // CodeMirror surface — measure there. A 2 px tolerance covers
+    // sub-pixel rounding on hi-DPI displays.
+    const overflow = await browser.execute(() => {
+      const scroller = document.querySelector('.cm-scroller');
+      if (!scroller) return { found: false };
+      return {
+        found: true,
+        scrollWidth: scroller.scrollWidth,
+        clientWidth: scroller.clientWidth,
+      };
+    });
+    expect(overflow.found).toBe(true);
+    expect(overflow.scrollWidth! - overflow.clientWidth!).toBeLessThanOrEqual(2);
   });
 });

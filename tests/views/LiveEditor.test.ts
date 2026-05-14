@@ -1980,4 +1980,70 @@ describe('LiveEditor', () => {
       view.destroy();
     });
   });
+
+  describe('word_wrap (2026-05-14 regression: horizontal scrollbar)', () => {
+    // Regression: before this fix the LiveEditor's CodeMirror surface
+    // did not wire EditorView.lineWrapping, so long lines overflowed
+    // horizontally and the user got a scrollbar over the whole doc.
+    // Pre-wysiwyg, the Document view used a plain HTML render region
+    // that wrapped via CSS; the A.9 swap to a single CodeMirror surface
+    // dropped the implicit wrapping. settings.editor.word_wrap exists
+    // and has a Settings UI checkbox but was never consumed — this
+    // test pins the consumer.
+    function lineWrappingClassPresent(root: HTMLElement): boolean {
+      // CodeMirror's EditorView.lineWrapping extension is implemented
+      // as contentAttributes.of({class: 'cm-lineWrapping'}). When the
+      // extension is in the config the cm-content element carries
+      // that class. We assert the class because the alternative
+      // (jsdom computedStyle white-space) doesn't behave in tests.
+      return root.querySelector('.cm-content.cm-lineWrapping') !== null;
+    }
+
+    it('cm-content carries the cm-lineWrapping class when editor.word_wrap is true', () => {
+      const root = makeRoot();
+      const ipc = makeIpc();
+      mountLiveEditor(root, ipc as never, {
+        tabId: 't',
+        path: '/p.md',
+        source: 'a very long line '.repeat(80),
+        settings: makeSettings({ word_wrap: true }),
+        threads: [],
+      });
+      expect(lineWrappingClassPresent(root)).toBe(true);
+    });
+
+    it('cm-content does NOT carry cm-lineWrapping when editor.word_wrap is false', () => {
+      const root = makeRoot();
+      const ipc = makeIpc();
+      mountLiveEditor(root, ipc as never, {
+        tabId: 't',
+        path: '/p.md',
+        source: 'a very long line '.repeat(80),
+        settings: makeSettings({ word_wrap: false }),
+        threads: [],
+      });
+      expect(lineWrappingClassPresent(root)).toBe(false);
+    });
+
+    it('defaults to wrapping when settings.editor.word_wrap is missing (matches pre-A.9 behavior)', () => {
+      // Defensive: the legacy code path always wrapped (HTML render
+      // region wrapped via CSS). If a settings shape lands without the
+      // word_wrap field (older sidecar, hand-crafted test fixture),
+      // the editor must NOT suddenly turn off wrapping. Default = true.
+      const root = makeRoot();
+      const ipc = makeIpc();
+      // Cast to delete the field — simulates a settings snapshot from
+      // before the word_wrap key was added to EditorSettings.
+      const settings = makeSettings();
+      delete (settings.editor as unknown as { word_wrap?: boolean }).word_wrap;
+      mountLiveEditor(root, ipc as never, {
+        tabId: 't',
+        path: '/p.md',
+        source: 'short',
+        settings,
+        threads: [],
+      });
+      expect(lineWrappingClassPresent(root)).toBe(true);
+    });
+  });
 });

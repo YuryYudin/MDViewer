@@ -368,11 +368,23 @@ export function mountLiveEditor(
     scheduleIdleReanchor();
   });
 
+  // Word-wrap is on by default (matches pre-A.9 behaviour where the
+  // legacy HTML render region word-wrapped naturally via CSS). The
+  // post-A.9 single-CodeMirror surface needs `EditorView.lineWrapping`
+  // explicitly — CodeMirror's default is no wrap, which surfaced as a
+  // doc-wide horizontal scrollbar after every wysiwyg-touched release.
+  // Older settings snapshots may not carry the field (legacy sidecar,
+  // hand-crafted test fixture) — falling through to `true` keeps those
+  // users on the historical, non-scrolling behaviour.
+  const wordWrapEnabled =
+    (args.settings.editor as unknown as { word_wrap?: boolean }).word_wrap ?? true;
+
   const startState = EditorState.create({
     doc: args.source,
     extensions: [
       modeField,
       editableCompartment.of(editableValueFor(initialMode, renderReadonly)),
+      ...(wordWrapEnabled ? [EditorView.lineWrapping] : []),
       updateListener,
     ],
   });
