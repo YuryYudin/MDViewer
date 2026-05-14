@@ -188,6 +188,33 @@ function normalizeLang(infoString: string): string {
 }
 
 /**
+ * Strip the fence markers from a fenced-code source, returning just
+ * the body. The `source` field of a `BlockSpec` carries the ENTIRE
+ * range from the lezer FencedCode node, including the opening
+ * ` ``` info ` line and the closing ` ``` ` line. View-mode HTML emits
+ * just the body verbatim inside `<pre>`, so for the F2 walker
+ * `data-source` parity we strip the fence wrapping here.
+ *
+ * Examples:
+ *   ```mermaid\ngraph LR\n  A --> B\n```         → "graph LR\n  A --> B"
+ *   ```js\nconst x = 1;\n```                     → "const x = 1;"
+ *   ~~~~\nplain\n~~~~                            → "plain"
+ *
+ * Both backtick and tilde fences are handled. If the input doesn't
+ * look like a fence the full string is trimmed and returned (defensive
+ * fallback — never throws).
+ */
+function stripFenceMarkers(source: string): string {
+  // Match an opening fence (3+ backticks or tildes, optional info
+  // string), the body, and a closing fence of the same character.
+  const m = /^[ \t]*(```+|~~~+)[^\n]*\n([\s\S]*?)\n[ \t]*\1[ \t]*$/.exec(
+    source.replace(/\s+$/, ''),
+  );
+  if (m) return m[2];
+  return source.trim();
+}
+
+/**
  * Returns true when the editor's main selection range intersects [from, to].
  * "Intersects" includes touching either edge — caret AT `from` or AT `to`
  * is treated as caret-in so the user can keep typing without the widget
@@ -340,14 +367,15 @@ class BlockWidget extends WidgetType {
       root.setAttribute('data-testid', 'code-widget');
     } else if (this.kind === 'mermaid') {
       root.setAttribute('data-testid', 'mermaid-widget');
-      // F2 fix: stamp the trimmed mermaid source on the widget root so
-      // the Layer 2 walker can read the canonical body regardless of
-      // whether the mermaid runtime (or the gallery stub) has replaced
-      // the inner SVG. View-mode HTML has the source verbatim in `<pre
-      // class="mermaid">` (with one trailing newline that pulldown-cmark
-      // appends and the walker strips). Trim both ends here so Edit's
-      // data-source matches View's stripped body.
-      root.setAttribute('data-source', this.source.trim());
+      // F2 fix: stamp the FENCE BODY (not the full source) on the
+      // widget root so the Layer 2 walker can read the canonical
+      // mermaid source regardless of whether the mermaid runtime has
+      // replaced the inner SVG. `this.source` is the ENTIRE fenced-
+      // code range including the opening ``` … ``` markers (per
+      // BlockSpec.source: `state.doc.sliceString(node.from, node.to)`).
+      // Use stripFenceMarkers to extract just the body so Edit's
+      // data-source matches View's `<pre class="mermaid">` body exactly.
+      root.setAttribute('data-source', stripFenceMarkers(this.source));
     }
     // Atomic block widgets are non-editable surfaces. CM 6 needs the
     // `contenteditable=false` hint so caret motion via arrow keys skips

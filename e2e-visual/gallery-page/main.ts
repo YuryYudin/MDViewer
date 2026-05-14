@@ -1,4 +1,5 @@
 import { StateEffect, type Extension } from '@codemirror/state';
+import { EditorView } from '@codemirror/view';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { GFM } from '@lezer/markdown';
 
@@ -134,6 +135,18 @@ async function main() {
   live.editorView.dispatch({
     effects: StateEffect.appendConfig.of(decorationExtensions),
   });
+
+  // F2 fix: force CodeMirror to materialize every `.cm-line` in the
+  // document. CM6 virtualizes lines outside the scroller viewport, so
+  // the Layer 2 walker only sees what's in view. The Layer 1 pixel
+  // diff also wants the editor at its full content height (no
+  // scrollbar) so screenshot crops aren't clipped. Set the scroller
+  // to auto height + no max + visible overflow so CM renders the
+  // entire document.
+  const scroller = live.editorView.scrollDOM as HTMLElement;
+  scroller.style.height = 'auto';
+  scroller.style.maxHeight = 'none';
+  scroller.style.overflow = 'visible';
 
   // Flip data-ready AFTER mountLiveEditor returns AND one rAF tick so
   // CSS has had one paint cycle to settle. Playwright awaits this flag

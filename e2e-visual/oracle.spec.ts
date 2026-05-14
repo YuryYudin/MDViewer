@@ -280,6 +280,13 @@ function diffInline(
 }
 
 test('block-tree oracle: View ≡ Edit (snapshot of known diff)', async ({ page }) => {
+  // F2 fix: oracle uses a tall viewport so CodeMirror 6 materializes
+  // every `.cm-line` (CM6 virtualizes lines outside the scroller's
+  // visible region; a 768-pixel viewport leaves the tail of the
+  // gallery off-screen and unparsable by the walker). The pixel-diff
+  // tests in gallery.spec.ts use the pinned 1024×768 viewport for
+  // their crops — this override is scoped to the oracle test only.
+  await page.setViewportSize({ width: 1024, height: 8000 });
   // 1. Boot the gallery host (this is the same page gallery.spec.ts hits).
   await page.goto('/');
   await page.waitForSelector('body[data-ready="true"]');
