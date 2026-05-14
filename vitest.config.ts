@@ -4,6 +4,11 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     include: ['tests/**/*.test.ts'],
+    // B3 (regression-net Layer 2): the oracle test spawns the
+    // `render-cli` Rust bin to obtain View-mode HTML. The build is
+    // gated on the `MDVIEWER_BUILD_ORACLE=1` env var inside the setup
+    // module so a plain `npm test` does not pay the cargo cost.
+    globalSetup: ['./tests/render/oracle.globalSetup.ts'],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'html', 'lcov'],
