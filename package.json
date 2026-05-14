@@ -13,6 +13,10 @@
     "build:e2e": "cd src-tauri && cargo build --features e2e",
     "pretest:e2e": "npm run build:e2e",
     "test:e2e": "wdio run wdio.conf.ts",
+    "build:visual": "vite build --config e2e-visual/gallery-page/vite.config.ts",
+    "preview:visual": "vite preview --config e2e-visual/gallery-page/vite.config.ts",
+    "test:visual": "playwright test --config e2e-visual/playwright.config.ts",
+    "test:visual:update": "playwright test --config e2e-visual/playwright.config.ts --update-snapshots",
     "gen:types": "cd src-tauri && cargo run --bin export_types --quiet",
     "predev": "npm run gen:types",
     "prebuild": "npm run gen:types",
@@ -26,6 +30,7 @@
     "package:skip-tests": "./scripts/build.sh --skip-tests"
   },
   "devDependencies": {
+    "@playwright/test": "1.60.0",
     "@tauri-apps/cli": "^2.0.0",
     "@types/mocha": "^10.0.0",
     "@types/node": "^22.0.0",
