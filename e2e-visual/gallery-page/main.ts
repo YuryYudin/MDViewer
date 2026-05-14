@@ -66,20 +66,12 @@ async function renderMarkdownStub(source: string): Promise<RenderResult> {
     const langClass = lang ? ` class="language-${lang}"` : '';
     return {
       html: `<pre><code${langClass}>${escapeHtml(body)}</code></pre>`,
-      // @ts-expect-error src_map / tasks default to empty in Rust; the
-      // frontend doesn't read either field here, and the typegen
-      // declaration marks them as required.
-      src_map: [],
-      // @ts-expect-error see above
-      tasks: [],
+      text_spans: [],
     };
   }
   return {
     html: `<p>${escapeHtml(source)}</p>`,
-    // @ts-expect-error see above
-    src_map: [],
-    // @ts-expect-error see above
-    tasks: [],
+    text_spans: [],
   };
 }
 
