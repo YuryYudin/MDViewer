@@ -82,3 +82,4 @@ e2e-visual/gallery-page/dist/
 # worktree into `git status`. D1 lands this rule alongside the script so
 # D2's first invocation already has the protection in place.
 .audit-worktrees/
+/test-results/
