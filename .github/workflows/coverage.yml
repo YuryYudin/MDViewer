@@ -26,7 +26,13 @@ jobs:
             libayatana-appindicator3-dev \
             libxdo-dev
       - run: cargo install cargo-llvm-cov --locked
-      - run: cargo llvm-cov --workspace --lcov --output-path coverage.lcov
+      # `--ignore-filename-regex 'bin/'` keeps the render-cli binary
+      # (crates/mdviewer-core/src/bin/render_cli.rs) out of the workspace
+      # line-coverage denominator. The bin has no unit tests by design —
+      # it's exercised end-to-end by tests/render/oracle.test.ts (B3).
+      # The regex is intentionally broad so future tooling bins under
+      # crates/*/src/bin/ get the same exemption.
+      - run: cargo llvm-cov --workspace --ignore-filename-regex 'bin/' --lcov --output-path coverage.lcov
       - name: Self-test the coverage gate script
         run: tests/scripts/check_coverage_test.sh
       - name: Gate mdviewer-core at 80% line coverage
