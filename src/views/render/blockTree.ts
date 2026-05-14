@@ -153,6 +153,55 @@ function mergeAdjacentText(nodes: InlineNode[]): InlineNode[] {
       else filtered[filtered.length - 1] = { kind: 'text', text: trimmed };
     }
   }
+  // F2 fix: normalize inter-mark space placement (trailing-wins).
+  // Edit-mode DOM tends to put a trailing space on the text BEFORE an
+  // inline mark; View-mode HTML tends to put a leading space on the
+  // text AFTER. Walk (text, non-text, text) triples and rewrite so
+  // ONLY the prior text carries the inter-mark space. Both renderers
+  // project to the same canonical pattern.
+  //
+  // GUARD: skip when either text node is just whitespace (already a
+  // pure separator — e.g. the canonical `{strong} {text:' '} {em}`
+  // shape between two adjacent marks). Only rewrite when BOTH sides
+  // have non-whitespace content, so the trimmed-then-padded form has
+  // a real word on each side.
+  for (let i = 0; i < filtered.length - 2; i++) {
+    const before = filtered[i];
+    const middle = filtered[i + 1];
+    const after = filtered[i + 2];
+    if (
+      before.kind !== 'text' ||
+      middle.kind === 'text' ||
+      after.kind !== 'text'
+    ) {
+      continue;
+    }
+    const beforeBase = before.text.replace(/\s+$/, '');
+    const afterBase = after.text.replace(/^\s+/, '');
+    if (beforeBase === '' || afterBase === '') continue; // pure-whitespace separator — leave alone
+    // ALWAYS apply trailing-wins, even when neither side has whitespace
+    // currently. View-mode HTML parses text adjacent to inline marks
+    // differently than Edit-mode DOM lays them out — pulldown-cmark
+    // sometimes drops the inter-mark space onto the prior text node
+    // and other times absorbs it into the document whitespace between
+    // tags. The walker's canonical: prior text gets a trailing space,
+    // next text starts clean. Both surfaces end at the same shape.
+    filtered[i] = { kind: 'text', text: beforeBase + ' ' };
+    filtered[i + 2] = { kind: 'text', text: afterBase };
+  }
+  // Also handle (text, non-text) doublets where the mark is the LAST
+  // node (no third text follows) — same trailing-wins rule: the prior
+  // text gets a trailing space if it has any content. This catches the
+  // case where a paragraph or list-item ends with an inline mark.
+  for (let i = 0; i < filtered.length - 1; i++) {
+    const before = filtered[i];
+    const middle = filtered[i + 1];
+    if (before.kind !== 'text' || middle.kind === 'text') continue;
+    const beforeBase = before.text.replace(/\s+$/, '');
+    if (beforeBase === '') continue;
+    if (before.text === beforeBase + ' ') continue; // already canonical
+    filtered[i] = { kind: 'text', text: beforeBase + ' ' };
+  }
   return filtered;
 }
 
@@ -581,7 +630,14 @@ function recoverEditLinkHref(
   index?: number,
   siblings?: ChildNode[],
 ): string {
-  void el;
+  // F2 fix: prefer the `data-href` attribute that inlineMarks.ts now
+  // stamps on `.cm-md-link` decorations. This is the canonical source
+  // — the URL is read directly from the syntax tree's URL node, so it
+  // works regardless of how CodeMirror lays out the surrounding sigil
+  // spans. Falls back to the sibling-walk recovery for cases where the
+  // attribute is absent (e.g., synthetic test fixtures).
+  const directHref = el.getAttribute('data-href');
+  if (directHref) return directHref;
   if (!siblings || index === undefined) return '';
   let captured = '';
   for (let i = index + 1; i < siblings.length; i++) {
