@@ -79,6 +79,14 @@ function normalMark(threadId: string): Decoration {
 function buildFromThreads(threads: readonly Thread[]): CommentHighlightsValue {
   const ranges: Range<Decoration>[] = [];
   for (const thread of threads) {
+    // Resolved threads are sidebar-only: the user is done with them.
+    // The `<mark>` highlight is reserved for ACTIVE comment threads. The
+    // sidebar's `comments.show_resolved` setting governs whether
+    // resolved threads remain visible in the sidebar list, but the
+    // editor surface always hides them. Without this filter every
+    // thread keeps painting a yellow mark forever — see the 2026-05-14
+    // bug report (resolved threads still highlighted on screenshot).
+    if (thread.resolved) continue;
     const { start, end } = thread.anchor;
     if (end <= start) continue;
     ranges.push(normalMark(thread.id).range(start, end));

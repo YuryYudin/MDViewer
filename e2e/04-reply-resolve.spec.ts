@@ -42,5 +42,20 @@ describe('Reply to and resolve an existing thread', () => {
       },
       { timeout: 5_000, timeoutMsg: 't-1 article never gained resolved class' },
     );
+
+    // Regression (2026-05-14): the live-editor surface must drop the
+    // yellow `<mark data-anchor="t-1">` overlay once the thread is
+    // resolved. Pre-fix, commentHighlights.buildFromThreads painted a
+    // mark for every thread in the sidebar — including resolved ones —
+    // so the doc stayed littered with yellow highlights forever. The
+    // sidebar's `comments.show_resolved` setting governs whether
+    // resolved threads stay LISTED in the sidebar; the editor surface
+    // always hides them.
+    await browser.waitUntil(
+      async () => !(await browser
+        .$('[data-testid="live-editor"] mark[data-anchor="t-1"]')
+        .isExisting()),
+      { timeout: 5_000, timeoutMsg: 't-1 mark still painted in the live editor after resolve' },
+    );
   });
 });

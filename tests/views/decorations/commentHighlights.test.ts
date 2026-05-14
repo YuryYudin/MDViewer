@@ -300,4 +300,37 @@ describe('commentHighlights', () => {
     expect(anchorMarks(view)).toHaveLength(3);
     view.destroy();
   });
+
+  it('does not paint a <mark> for threads whose `resolved` flag is true', () => {
+    // Regression: resolved threads' anchors used to keep painting the
+    // yellow highlight in the editor surface, even though the comments
+    // sidebar correctly hid them. The user-visible artefact was a doc
+    // still littered with `<mark>` highlights after every thread was
+    // resolved. See Screenshot.png in the repo root (2026-05-14).
+    const view = mount('hello cruel world');
+    const resolved: Thread = { ...makeThread('t-resolved', 6, 11, 'cruel'), resolved: true };
+    const active: Thread = makeThread('t-active', 12, 17, 'world');
+    view.dispatch({ effects: refreshAnchors.of([resolved, active]) });
+
+    const marks = anchorMarks(view);
+    // Only the active thread should produce a mark. The resolved
+    // thread is hidden in the editor — the sidebar's `show_resolved`
+    // toggle is the (separate) surface for revisiting resolved threads.
+    expect(marks.map((m) => m.getAttribute('data-anchor'))).toEqual(['t-active']);
+    view.destroy();
+  });
+
+  it('hides every mark when ALL threads passed to refreshAnchors are resolved', () => {
+    // Sister case: the user-visible Screenshot.png scenario — every
+    // thread on the doc is resolved, so the editor should have zero
+    // highlight overlays even though `listThreads` still returns the
+    // resolved records (the sidebar uses them when show_resolved is on).
+    const view = mount('hello world');
+    const t1: Thread = { ...makeThread('t-1', 0, 5, 'hello'), resolved: true };
+    const t2: Thread = { ...makeThread('t-2', 6, 11, 'world'), resolved: true };
+    view.dispatch({ effects: refreshAnchors.of([t1, t2]) });
+
+    expect(anchorMarks(view)).toHaveLength(0);
+    view.destroy();
+  });
 });
