@@ -32,6 +32,18 @@ function placeholderSvg(hash: string): string {
 async function run(opts: { nodes: HTMLElement[] }): Promise<void> {
   for (const node of opts.nodes) {
     const source = node.textContent ?? '';
+    // F2 fix: preserve the original mermaid source on the canonical
+    // widget root BEFORE overwriting innerHTML with the placeholder.
+    // The blockTree walker's mermaid extractor prefers `data-source`
+    // when present; setting it here makes Edit-mode mermaid widgets
+    // expose the raw fence body the same way View-mode HTML does (via
+    // `<pre class="mermaid">` textContent). Without this, Edit-side
+    // source is the placeholder text "MERMAID:<hash>" and View-side
+    // is the original — the oracle deep-equal trips on the body.
+    const widgetRoot = node.closest('[data-testid="mermaid-widget"]') ?? node;
+    if (!widgetRoot.hasAttribute('data-source')) {
+      widgetRoot.setAttribute('data-source', source);
+    }
     const hash = await sha256Hex8(source);
     node.innerHTML = placeholderSvg(hash);
   }

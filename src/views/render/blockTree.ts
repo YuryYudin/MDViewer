@@ -69,6 +69,27 @@ function collapseWs(s: string): string {
 }
 
 /**
+ * F2 fix: strip a leading `#{1,6}\s+` from the first text node of a
+ * heading's inline content. This is belt-and-suspenders for cases where
+ * the Edit-mode heading-sigil decoration in `inlineMarks.ts` did not
+ * emit (the decoration is gated on `!selectionTouches(...)`, so when
+ * the caret lands on the heading line the `# ` markdown marker is left
+ * visible). View-mode HTML has no leading `#`. Both renderers produce
+ * the same canonical heading inline shape after this strip.
+ */
+function stripHeadingSigil(inline: InlineNode[]): InlineNode[] {
+  if (inline.length === 0) return inline;
+  const first = inline[0];
+  if (first.kind !== 'text') return inline;
+  const stripped = first.text.replace(/^#{1,6}\s+/, '');
+  if (stripped === first.text) return inline;
+  if (stripped === '') {
+    return inline.slice(1);
+  }
+  return [{ kind: 'text', text: stripped }, ...inline.slice(1)];
+}
+
+/**
  * Merge adjacent 'text' nodes in a list of InlineNodes, collapsing the
  * combined text. Non-text nodes are kept in source order. A trailing or
  * leading empty 'text' node (after collapse) is dropped to keep the
@@ -132,6 +153,55 @@ function mergeAdjacentText(nodes: InlineNode[]): InlineNode[] {
       else filtered[filtered.length - 1] = { kind: 'text', text: trimmed };
     }
   }
+  // F2 fix: normalize inter-mark space placement (trailing-wins).
+  // Edit-mode DOM tends to put a trailing space on the text BEFORE an
+  // inline mark; View-mode HTML tends to put a leading space on the
+  // text AFTER. Walk (text, non-text, text) triples and rewrite so
+  // ONLY the prior text carries the inter-mark space. Both renderers
+  // project to the same canonical pattern.
+  //
+  // GUARD: skip when either text node is just whitespace (already a
+  // pure separator — e.g. the canonical `{strong} {text:' '} {em}`
+  // shape between two adjacent marks). Only rewrite when BOTH sides
+  // have non-whitespace content, so the trimmed-then-padded form has
+  // a real word on each side.
+  for (let i = 0; i < filtered.length - 2; i++) {
+    const before = filtered[i];
+    const middle = filtered[i + 1];
+    const after = filtered[i + 2];
+    if (
+      before.kind !== 'text' ||
+      middle.kind === 'text' ||
+      after.kind !== 'text'
+    ) {
+      continue;
+    }
+    const beforeBase = before.text.replace(/\s+$/, '');
+    const afterBase = after.text.replace(/^\s+/, '');
+    if (beforeBase === '' || afterBase === '') continue; // pure-whitespace separator — leave alone
+    // ALWAYS apply trailing-wins, even when neither side has whitespace
+    // currently. View-mode HTML parses text adjacent to inline marks
+    // differently than Edit-mode DOM lays them out — pulldown-cmark
+    // sometimes drops the inter-mark space onto the prior text node
+    // and other times absorbs it into the document whitespace between
+    // tags. The walker's canonical: prior text gets a trailing space,
+    // next text starts clean. Both surfaces end at the same shape.
+    filtered[i] = { kind: 'text', text: beforeBase + ' ' };
+    filtered[i + 2] = { kind: 'text', text: afterBase };
+  }
+  // Also handle (text, non-text) doublets where the mark is the LAST
+  // node (no third text follows) — same trailing-wins rule: the prior
+  // text gets a trailing space if it has any content. This catches the
+  // case where a paragraph or list-item ends with an inline mark.
+  for (let i = 0; i < filtered.length - 1; i++) {
+    const before = filtered[i];
+    const middle = filtered[i + 1];
+    if (before.kind !== 'text' || middle.kind === 'text') continue;
+    const beforeBase = before.text.replace(/\s+$/, '');
+    if (beforeBase === '') continue;
+    if (before.text === beforeBase + ' ') continue; // already canonical
+    filtered[i] = { kind: 'text', text: beforeBase + ' ' };
+  }
   return filtered;
 }
 
@@ -184,7 +254,7 @@ function viewBlock(el: Element): BlockNode[] | null {
 
   if (/^h[1-6]$/.test(tag)) {
     const level = Number(tag.slice(1)) as 1 | 2 | 3 | 4 | 5 | 6;
-    return [{ kind: 'heading', level, inline: extractInline(el) }];
+    return [{ kind: 'heading', level, inline: stripHeadingSigil(extractInline(el)) }];
   }
 
   if (tag === 'p') {
@@ -299,10 +369,12 @@ function stripListMarker(inline: InlineNode[]): InlineNode[] {
 }
 
 function extractPre(el: Element): BlockNode {
-  // <pre><code class="language-foo">body</code></pre> is the
-  // pulldown-cmark contract. The body preserves whitespace verbatim
-  // (it's source code), so we read textContent and only trim a single
-  // trailing newline that pulldown-cmark appends.
+  // <pre><code class="language-foo">body</code></pre> is the standard
+  // pulldown-cmark contract for fenced code, BUT mermaid fences are
+  // emitted as `<pre class="mermaid">body</pre>` (no <code> child) by
+  // pulldown-cmark's mermaid extension. Body preserves whitespace
+  // verbatim; trim only the single trailing newline pulldown-cmark
+  // appends.
   const code = el.querySelector('code');
   const target = code ?? el;
   let language = '';
@@ -311,8 +383,23 @@ function extractPre(el: Element): BlockNode {
     const m = /\blanguage-([^\s]+)/.exec(cls);
     if (m) language = m[1];
   }
+  // F2 fix: also check the <pre>'s own class. For mermaid fences,
+  // pulldown-cmark sets `<pre class="mermaid">` directly without a
+  // <code> child, so the language-* sniff above misses it.
+  const preCls = el.getAttribute('class') ?? '';
+  if (!language && /\bmermaid\b/.test(preCls)) {
+    language = 'mermaid';
+  }
   let body = target.textContent ?? '';
   if (body.endsWith('\n')) body = body.slice(0, -1);
+  // F2 fix: when the fence info-string is `mermaid`, View renders it
+  // as a `<pre>` block (with or without a <code> child) but Edit
+  // renders it as a dedicated mermaid widget. Unify both onto
+  // `kind: 'mermaid'` so the oracle deep-equal does not trip on a
+  // kind mismatch.
+  if (language === 'mermaid') {
+    return { kind: 'mermaid', source: body };
+  }
   return { kind: 'code', language, body };
 }
 
@@ -543,7 +630,14 @@ function recoverEditLinkHref(
   index?: number,
   siblings?: ChildNode[],
 ): string {
-  void el;
+  // F2 fix: prefer the `data-href` attribute that inlineMarks.ts now
+  // stamps on `.cm-md-link` decorations. This is the canonical source
+  // — the URL is read directly from the syntax tree's URL node, so it
+  // works regardless of how CodeMirror lays out the surrounding sigil
+  // spans. Falls back to the sibling-walk recovery for cases where the
+  // attribute is absent (e.g., synthetic test fixtures).
+  const directHref = el.getAttribute('data-href');
+  if (directHref) return directHref;
   if (!siblings || index === undefined) return '';
   let captured = '';
   for (let i = index + 1; i < siblings.length; i++) {
@@ -617,7 +711,7 @@ function extractEditMode(root: Element): BlockNode[] {
       out.push({
         kind: 'heading',
         level: kind.level,
-        inline: extractInline(lineEl),
+        inline: stripHeadingSigil(extractInline(lineEl)),
       });
       i++;
       continue;

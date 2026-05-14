@@ -277,10 +277,13 @@ describe('extractBlockTree — normalization contract', () => {
     ]);
   });
 
-  it('merges adjacent text nodes preserving inter-mark spacing', () => {
-    // Adjacent text nodes around an inline mark merge correctly so the
-    // mark stays surrounded by single-space text nodes (rather than
-    // gluing words together).
+  it('merges adjacent text nodes with trailing-wins inter-mark spacing', () => {
+    // F2 fix: trailing-wins canonical for inter-mark whitespace. Edit
+    // and View renderers place the inter-mark space on different sides
+    // (Edit favors trailing on the prior text; View favors leading on
+    // the next). The walker normalizes to "trailing-wins": the prior
+    // text carries the single space, the next text starts clean. This
+    // makes Edit ≡ View for the F1 oracle's deep-equal.
     const root = htmlToRoot('<p>foo <em>bar</em> baz</p>');
     expect(extractBlockTree(root)).toEqual<BlockNode[]>([
       {
@@ -288,7 +291,7 @@ describe('extractBlockTree — normalization contract', () => {
         inline: [
           { kind: 'text', text: 'foo ' },
           { kind: 'em', children: [{ kind: 'text', text: 'bar' }] },
-          { kind: 'text', text: ' baz' },
+          { kind: 'text', text: 'baz' },
         ],
       },
     ]);
@@ -458,7 +461,7 @@ describe('extractBlockTree — inline marks (View ↔ Edit equivalence)', () => 
             href: 'https://example.com',
             children: [{ kind: 'text', text: 'Click' }],
           },
-          { kind: 'text', text: ' now.' },
+          { kind: 'text', text: 'now.' },
         ],
       },
     ];
@@ -743,7 +746,7 @@ describe('extractBlockTree — Edit-mode block walker', () => {
               inline: [
                 { kind: 'text', text: 'before ' },
                 { kind: 'strong', children: [{ kind: 'text', text: 'bold' }] },
-                { kind: 'text', text: ' after' },
+                { kind: 'text', text: 'after' },
               ],
             },
           ],

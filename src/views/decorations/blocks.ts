@@ -340,6 +340,14 @@ class BlockWidget extends WidgetType {
       root.setAttribute('data-testid', 'code-widget');
     } else if (this.kind === 'mermaid') {
       root.setAttribute('data-testid', 'mermaid-widget');
+      // F2 fix: stamp the trimmed mermaid source on the widget root so
+      // the Layer 2 walker can read the canonical body regardless of
+      // whether the mermaid runtime (or the gallery stub) has replaced
+      // the inner SVG. View-mode HTML has the source verbatim in `<pre
+      // class="mermaid">` (with one trailing newline that pulldown-cmark
+      // appends and the walker strips). Trim both ends here so Edit's
+      // data-source matches View's stripped body.
+      root.setAttribute('data-source', this.source.trim());
     }
     // Atomic block widgets are non-editable surfaces. CM 6 needs the
     // `contenteditable=false` hint so caret motion via arrow keys skips

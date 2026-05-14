@@ -316,6 +316,7 @@ function handleLink(
   const cursor = node.node.cursor();
   let textStart = -1;
   let textEnd = -1;
+  let urlText = '';
   const sigilRanges: Array<[number, number]> = [];
   if (cursor.firstChild()) {
     do {
@@ -329,6 +330,17 @@ function handleLink(
         }
       } else if (cursor.name === 'URL' || cursor.name === 'LinkLabel') {
         sigilRanges.push([cursor.from, cursor.to]);
+        if (cursor.name === 'URL') {
+          // F2 fix: capture the URL string for the Layer 2 walker.
+          // The `.cm-md-link` decoration carries the visible text only
+          // (`Click` for `[Click](https://example.com)`), with the URL
+          // hidden behind a sigil. The walker's `recoverEditLinkHref`
+          // sibling-walk is fragile (it depends on the exact sigil
+          // layout in the live DOM). Stamping `data-href` on the mark
+          // gives the walker a direct, robust source of truth that
+          // works regardless of how CodeMirror lays out the sigils.
+          urlText = doc.sliceString(cursor.from, cursor.to);
+        }
       }
     } while (cursor.nextSibling());
   }
@@ -336,7 +348,10 @@ function handleLink(
     out.push({
       from: textStart,
       to: textEnd,
-      deco: Decoration.mark({ class: 'cm-md-link' }),
+      deco: Decoration.mark({
+        class: 'cm-md-link',
+        attributes: urlText ? { 'data-href': urlText } : {},
+      }),
     });
   }
   if (!selectionTouches(state, from, to)) {
