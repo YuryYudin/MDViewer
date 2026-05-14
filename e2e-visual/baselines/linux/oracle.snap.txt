@@ -1,6 +1,5 @@
 $: length view=30 edit=28
-$[0].inline[0].text: view="Render Gallery" edit="# Render Gallery"
-$[17]: kind view=code edit=mermaid
+$[17].source: <mismatch len view=28 edit=16>
 $[21].inline[0].text: view="A paragraph with" edit="A paragraph with "
 $[21].inline[2].text: view="," edit=", "
 $[21].inline[4].text: view="," edit=", "

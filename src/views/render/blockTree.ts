@@ -69,6 +69,27 @@ function collapseWs(s: string): string {
 }
 
 /**
+ * F2 fix: strip a leading `#{1,6}\s+` from the first text node of a
+ * heading's inline content. This is belt-and-suspenders for cases where
+ * the Edit-mode heading-sigil decoration in `inlineMarks.ts` did not
+ * emit (the decoration is gated on `!selectionTouches(...)`, so when
+ * the caret lands on the heading line the `# ` markdown marker is left
+ * visible). View-mode HTML has no leading `#`. Both renderers produce
+ * the same canonical heading inline shape after this strip.
+ */
+function stripHeadingSigil(inline: InlineNode[]): InlineNode[] {
+  if (inline.length === 0) return inline;
+  const first = inline[0];
+  if (first.kind !== 'text') return inline;
+  const stripped = first.text.replace(/^#{1,6}\s+/, '');
+  if (stripped === first.text) return inline;
+  if (stripped === '') {
+    return inline.slice(1);
+  }
+  return [{ kind: 'text', text: stripped }, ...inline.slice(1)];
+}
+
+/**
  * Merge adjacent 'text' nodes in a list of InlineNodes, collapsing the
  * combined text. Non-text nodes are kept in source order. A trailing or
  * leading empty 'text' node (after collapse) is dropped to keep the
@@ -184,7 +205,7 @@ function viewBlock(el: Element): BlockNode[] | null {
 
   if (/^h[1-6]$/.test(tag)) {
     const level = Number(tag.slice(1)) as 1 | 2 | 3 | 4 | 5 | 6;
-    return [{ kind: 'heading', level, inline: extractInline(el) }];
+    return [{ kind: 'heading', level, inline: stripHeadingSigil(extractInline(el)) }];
   }
 
   if (tag === 'p') {
@@ -299,10 +320,12 @@ function stripListMarker(inline: InlineNode[]): InlineNode[] {
 }
 
 function extractPre(el: Element): BlockNode {
-  // <pre><code class="language-foo">body</code></pre> is the
-  // pulldown-cmark contract. The body preserves whitespace verbatim
-  // (it's source code), so we read textContent and only trim a single
-  // trailing newline that pulldown-cmark appends.
+  // <pre><code class="language-foo">body</code></pre> is the standard
+  // pulldown-cmark contract for fenced code, BUT mermaid fences are
+  // emitted as `<pre class="mermaid">body</pre>` (no <code> child) by
+  // pulldown-cmark's mermaid extension. Body preserves whitespace
+  // verbatim; trim only the single trailing newline pulldown-cmark
+  // appends.
   const code = el.querySelector('code');
   const target = code ?? el;
   let language = '';
@@ -311,8 +334,23 @@ function extractPre(el: Element): BlockNode {
     const m = /\blanguage-([^\s]+)/.exec(cls);
     if (m) language = m[1];
   }
+  // F2 fix: also check the <pre>'s own class. For mermaid fences,
+  // pulldown-cmark sets `<pre class="mermaid">` directly without a
+  // <code> child, so the language-* sniff above misses it.
+  const preCls = el.getAttribute('class') ?? '';
+  if (!language && /\bmermaid\b/.test(preCls)) {
+    language = 'mermaid';
+  }
   let body = target.textContent ?? '';
   if (body.endsWith('\n')) body = body.slice(0, -1);
+  // F2 fix: when the fence info-string is `mermaid`, View renders it
+  // as a `<pre>` block (with or without a <code> child) but Edit
+  // renders it as a dedicated mermaid widget. Unify both onto
+  // `kind: 'mermaid'` so the oracle deep-equal does not trip on a
+  // kind mismatch.
+  if (language === 'mermaid') {
+    return { kind: 'mermaid', source: body };
+  }
   return { kind: 'code', language, body };
 }
 
@@ -617,7 +655,7 @@ function extractEditMode(root: Element): BlockNode[] {
       out.push({
         kind: 'heading',
         level: kind.level,
-        inline: extractInline(lineEl),
+        inline: stripHeadingSigil(extractInline(lineEl)),
       });
       i++;
       continue;
