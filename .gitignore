@@ -73,3 +73,12 @@ e2e-visual/test-results/
 # but it lands here too as an explicit, grep-friendly entry so the
 # rationale for the visual layer is co-located with its siblings.
 e2e-visual/gallery-page/dist/
+
+# D1: v0.4.0 audit transient state. `scripts/audit-v040.mjs` materializes
+# the v0.4.0 tag in a dedicated `git worktree add` under
+# `.audit-worktrees/v0.4.0-<pid>/` and runs `cargo build` against it; the
+# script's try/finally cleanup tears the path down on success, but the
+# ignore rule is belt-and-suspenders so a crash mid-run doesn't leak a
+# worktree into `git status`. D1 lands this rule alongside the script so
+# D2's first invocation already has the protection in place.
+.audit-worktrees/
