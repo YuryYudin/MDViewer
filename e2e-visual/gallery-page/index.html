@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Render gallery</title>
+    <style>
+      html, body { margin: 0; padding: 0; }
+      body { background: #ffffff; }
+      /* Pin the font so the diff has a stable baseline across the
+         CI runner image. Fonts-noto-core is installed in the pinned
+         apt-snapshot workflow step. */
+      body, .cm-editor { font-family: 'Noto Sans', monospace; font-size: 14px; }
+      /* Enforce the design's non-sticky rule: any sticky/fixed
+         positioning inside the editor host would distort below-fold
+         locator.screenshot() captures. */
+      #editor-host * { position: static !important; }
+    </style>
+  </head>
+  <body>
+    <div id="editor-host"></div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
