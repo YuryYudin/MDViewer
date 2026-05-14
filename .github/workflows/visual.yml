@@ -1,0 +1,100 @@
+name: Visual regression
+
+# Layer 1 of the render-regression contract: Playwright + Chromium against
+# the Vite-served gallery page (e2e-visual/). This is the *primary* visual
+# gate — failures must block PRs.
+#
+# Pinning rationale (design Decision 5):
+#   * `runs-on: ubuntu-22.04` (NOT ubuntu-latest). The GitHub alias bumps
+#     (22.04 -> 24.04) ship a different `fonts-noto-core`, different system
+#     freetype, different fontconfig defaults — every one of which would
+#     silently rebake every baseline PNG. Pin the runner so the only way
+#     baselines change is a deliberate human PR. Re-pin only when GitHub
+#     retires 22.04 (currently April 2027).
+#   * `fonts-noto-core` from a pinned snapshot.ubuntu.com URL (NOT the
+#     rolling Ubuntu archive). Same reasoning: Ubuntu's archive maintainers
+#     can ship a font respin at any time that would rebake every glyph
+#     advance and re-trip the diff. Pin to a known-good snapshot.
+#
+# When to re-pin:
+#   * The snapshot URL 404s — Launchpad occasionally rotates older
+#     snapshots. The job will fail loud with the maintainer message in
+#     "Install fonts-noto-core" below. Pick a more recent snapshot
+#     timestamp from https://snapshot.ubuntu.com/, refetch the
+#     jammy/main/binary-amd64 Packages.gz, copy the new Filename + version,
+#     and update the FONTS_URL + FONTS_VERSION below.
+#   * `ubuntu-22.04` is retired. Migrate to the next pinned image and
+#     regenerate all baselines in the same PR (see C3 docs for how to
+#     update PNGs).
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: visual-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  visual:
+    name: Playwright visual diff (ubuntu-22.04)
+    # Pinned image — see header. Do not switch to ubuntu-latest.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      # Pinned font install — DO NOT fall back to `apt-get install
+      # fonts-noto-core` from the rolling archive. Snapshot pin verified
+      # 2026-05-14 against jammy main: fonts-noto-core 20201225-1build1 is
+      # the version shipped in the 22.04.0 release pocket (no jammy-updates
+      # SRU as of the pinned snapshot).
+      # SHA256: 653d237d5c4e8fcebb2710129ebbd7bf9bc248d03dfff23fcf261b0372fded69
+      - name: Install fonts-noto-core (pinned snapshot)
+        run: |
+          set -euo pipefail
+          FONTS_TIMESTAMP='20240501T000000Z'
+          FONTS_VERSION='20201225-1build1'
+          FONTS_URL="https://snapshot.ubuntu.com/ubuntu/${FONTS_TIMESTAMP}/pool/main/f/fonts-noto/fonts-noto-core_${FONTS_VERSION}_all.deb"
+          if ! curl -fSL -o /tmp/fonts-noto-core.deb "$FONTS_URL"; then
+            echo "::error::fonts-noto-core snapshot URL 404 ($FONTS_URL). Re-pin in .github/workflows/visual.yml — see header comment for the procedure (design Decision 5)."
+            exit 1
+          fi
+          sudo dpkg -i /tmp/fonts-noto-core.deb || sudo apt-get install -y -f
+          fc-cache -fr
+
+      # Playwright bundles its own Chromium per release. The version is
+      # pinned in package.json (@playwright/test); `npm ci` above installed
+      # the matching JS package, and this step pulls the Chromium binary
+      # plus the system libraries Chromium needs on a minimal runner image.
+      - name: Install Playwright Chromium
+        run: npx playwright install chromium --with-deps
+
+      - name: Build gallery page
+        run: npm run build:visual
+
+      - name: Run visual suite
+        run: npm run test:visual
+
+      # Always upload test-results so first-run / no-baseline scenarios are
+      # diagnosable. `if: always()` (not `if: failure()`) ensures the
+      # artifact is captured even when the job is cancelled mid-run.
+      # `if-no-files-found: ignore` keeps the step quiet on green runs
+      # where Playwright produced nothing under test-results/.
+      - name: Upload Playwright artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-results
+          path: |
+            e2e-visual/test-results/
+            e2e-visual/test-results-html/
+          if-no-files-found: ignore
+          retention-days: 14
