@@ -3,6 +3,12 @@ import { defineConfig, devices } from '@playwright/test';
 export default defineConfig({
   testDir: '.',
   fullyParallel: false, // visual specs share a single Vite preview server
+  // F1 oracle spec: build `render-cli` once before any test runs and
+  // export its absolute path via MDVIEWER_RENDER_CLI. The vitest Layer
+  // 2 oracle (tests/render/oracle.test.ts) stays skipped because jsdom
+  // can't host CodeMirror 6 faithfully — this Playwright spec is the
+  // real SC #3 gate.
+  globalSetup: './oracle.globalSetup.ts',
   timeout: 4_000, // per-shot budget from success criteria
   expect: {
     // Tight tolerance: the v0.5.0 resolved-thread color regression
