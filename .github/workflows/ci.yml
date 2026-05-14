@@ -103,7 +103,10 @@ jobs:
             libayatana-appindicator3-dev \
             libxdo-dev
       - run: npm ci
-      - run: npm test
+      - name: JS unit tests
+        env:
+          MDVIEWER_BUILD_ORACLE: '1'
+        run: npm test
 
   # -- Cross-platform Rust unit/integration tests
   test-rust:
