@@ -170,14 +170,24 @@ impl AuthStrategy {
     {
         match self {
             AuthStrategy::AgentOnly => {
-                // Try ssh-agent via russh-keys (named pipe on Win10+, Pageant fallback).
-                if let Ok(mut agent) = russh_keys::agent::client::AgentClient::connect_env().await {
+                // Try ssh-agent via russh-keys (named pipe on Win10+, Pageant
+                // fallback). russh 0.45 routes agent-held private keys through
+                // `authenticate_future(user, public_key, signer)`: the agent
+                // client itself implements `auth::Signer`, so russh calls back
+                // into the agent for each sign request rather than receiving
+                // the private key material. Each call moves the agent client
+                // (it's consumed and returned in the result tuple) so we
+                // thread it through the loop manually.
+                if let Ok(mut agent) =
+                    russh_keys::agent::client::AgentClient::connect_env().await
+                {
                     if let Ok(ids) = agent.request_identities().await {
+                        let mut signer = agent;
                         for id in ids {
-                            if let Ok(true) = session
-                                .authenticate_publickey(user, std::sync::Arc::new(id.into()))
-                                .await
-                            {
+                            let (returned, result) =
+                                session.authenticate_future(user, id, signer).await;
+                            signer = returned;
+                            if let Ok(true) = result {
                                 return Ok(());
                             }
                         }
