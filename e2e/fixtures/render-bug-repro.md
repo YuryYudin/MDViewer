@@ -148,3 +148,24 @@ This was the local sync server during development. It survived into the release 
 ## Selectable phrases
 
 The first selectable phrase appears here. The second selectable phrase appears here.
+
+## Architecture comparison table
+
+| Aspect | Before | After |
+|--------|--------|-------|
+| Storage | Plain Room DB | SQLCipher with master-derived key |
+| Auth | Password-only | Password + BiometricPrompt with CryptoObject |
+| Sync | Plain HTTP | TLS-only via cleartext-banned manifest |
+| Clipboard | Permanent | EXTRA_IS_SENSITIVE + 30s auto-clear |
+
+## Embedded code listing
+
+```kotlin
+fun encryptPrivateKey(privateKey: ByteArray, password: CharArray): EncryptedBlob {
+    val salt = SecureRandom.getSeed(32)
+    val key = deriveKeyArgon2(password, salt)
+    val iv = SecureRandom.getSeed(12)
+    val ciphertext = AesGcm.encrypt(privateKey, key, iv)
+    return EncryptedBlob(salt, iv, ciphertext)
+}
+```

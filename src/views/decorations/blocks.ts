@@ -1,4 +1,4 @@
-import { syntaxTree } from '@codemirror/language';
+import { ensureSyntaxTree, syntaxTree } from '@codemirror/language';
 import {
   type Extension,
   type EditorState,
@@ -92,7 +92,15 @@ type RenderCache = Map<string, string>;
  */
 function findBlocks(state: EditorState): BlockSpec[] {
   const out: BlockSpec[] = [];
-  const tree = syntaxTree(state);
+  // BUG FIX (block widgets in long docs): lezer parses incrementally,
+  // so `syntaxTree(state)` may return a tree that only covers the
+  // first ~80 lines for long documents. FencedCode / Table / Image
+  // nodes past that frontier wouldn't be in the tree → widgets never
+  // mount → user sees raw ``` … ``` and `|` cells instead of the
+  // wysiwyg surfaces. `ensureSyntaxTree` forces the parser to catch
+  // up to the document end before iterate() runs (markdown grammar
+  // is small; the 200ms budget is generous).
+  const tree = ensureSyntaxTree(state, state.doc.length, 200) ?? syntaxTree(state);
 
   // We capture the most recently-entered Paragraph so the Image-detection
   // branch can compare bounds without walking children. Paragraphs cannot

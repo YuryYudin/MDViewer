@@ -27,7 +27,7 @@
  * the doc, the selection, or carries a `forceRawEffect`.
  */
 
-import { syntaxTree } from '@codemirror/language';
+import { ensureSyntaxTree, syntaxTree } from '@codemirror/language';
 import {
   type Extension,
   type EditorState,
@@ -157,7 +157,14 @@ function collectCells(state: EditorState, row: SyntaxNode): CellSpec[] {
  */
 function findTables(state: EditorState): TableSpec[] {
   const out: TableSpec[] = [];
-  const tree = syntaxTree(state);
+  // BUG FIX (table widgets in long docs): same incremental-parse
+  // gotcha as inlineMarks/blockWidgets — `syntaxTree(state)` only
+  // covers the first ~80 lines for long documents on initial mount.
+  // GFM Table nodes past the parse frontier wouldn't be in the tree
+  // → table widget never mounts → user sees raw `|`-cell markdown
+  // instead of the editable table surface. `ensureSyntaxTree` forces
+  // a full parse with a 200ms budget.
+  const tree = ensureSyntaxTree(state, state.doc.length, 200) ?? syntaxTree(state);
   tree.iterate({
     enter(node) {
       if (node.name === 'Table') {
