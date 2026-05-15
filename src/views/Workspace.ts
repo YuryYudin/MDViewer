@@ -13,7 +13,8 @@ import { mountTabBar } from './TabBar';
 import { mountDocument } from './Document';
 import { mountCommentsSidebar } from './CommentsSidebar';
 import { mountCollabChip } from './CollabChip';
-import { mountConflict, type DriveConflictSource } from './Conflict';
+import { mountConflict, type ConflictSource } from './Conflict';
+import { mountAskpassModal } from './AskpassModal';
 import { mountShareDialog } from './ShareDialog';
 import { mountDriveStatus } from './DriveStatus';
 
@@ -96,6 +97,38 @@ export interface WorkspaceHandle {
  * banner inside the body region — this is the runtime hook for issue #2
  * raised in Phase-B's implementation review.
  */
+/**
+ * A8: open-site dispatcher for path-vs-URL inputs. Local paths and `drive-api://`
+ * synthetic paths fall through to `ipc.openDocument`; `ssh://` URLs route to
+ * `ipc.sshOpenUrl`, which lands the bytes through the SSH transport + cache
+ * mirror and returns a `TabSummary`. The caller then re-enters
+ * `ipc.openDocument(cache_path)` to fetch the rendered body.
+ *
+ * Why a helper at all: the Workspace activation hooks (tab click,
+ * session-restore) take `tab.path` strings. For local + Drive-API tabs the
+ * stored string is a local cache path that `openDocument` can read; for
+ * future SSH tabs the stored string can be the `ssh://` URL (so a session
+ * restore re-fetches the remote bytes rather than reading a stale cache).
+ * Routing through this helper keeps that flexibility without forcing the
+ * call sites to repeat the prefix check.
+ *
+ * The Rust side is the source of truth for the SSH URL grammar
+ * (`mdviewer_core::ssh_url::parse`). This prefix check is a cheap routing
+ * affordance; the strict parse happens server-side and surfaces as a
+ * promise rejection if the URL is malformed.
+ *
+ * On the SSH branch, after `sshOpenUrl` resolves we delegate the OpenOutcome
+ * fetch to `openDocument(tabSummary.path)` — i.e. the cache_path the Rust
+ * side just wrote — so the rest of the activation pipeline stays unchanged.
+ */
+async function openPathOrUrl(ipc: Ipc, input: string): Promise<OpenOutcome> {
+  if (input.startsWith('ssh://')) {
+    const summary = await ipc.sshOpenUrl(input);
+    return ipc.openDocument(summary.path);
+  }
+  return ipc.openDocument(input);
+}
+
 export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<WorkspaceHandle> {
   // Drop any document-level listeners installed by a prior mount before we
   // install fresh ones. In production this is a no-op (mountWorkspace is
@@ -105,6 +138,34 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
   prevMountAbort?.abort();
   const mountAbort = new AbortController();
   prevMountAbort = mountAbort;
+
+  // A8: mount the SSH askpass modal once at app boot. The modal subscribes
+  // to `ssh:askpass-request` Tauri events (A11) and owns its own DOM
+  // overlay; the returned disposer tears the overlay + listener down on
+  // remount (or app shutdown in production where the AbortController fires
+  // on tab close). Mounted before `root.replaceChildren()` so the modal
+  // sits at document-body level — independent of the workspace shell that
+  // gets repainted on every refresh.
+  //
+  // jsdom unit tests don't have `document.body` until a previous test
+  // appended to it; guard defensively so an unmounted root (the common
+  // unit-test shape) still boots without throwing. The IPC stubs without
+  // `onSshAskpassRequest` are tolerated by AskpassModal's own try/catch.
+  try {
+    const disposeAskpass = mountAskpassModal({ root: document.body });
+    mountAbort.signal.addEventListener('abort', () => {
+      try {
+        disposeAskpass();
+      } catch {
+        // best-effort cleanup; never let a stale disposer crash a re-mount.
+      }
+    });
+  } catch {
+    // AskpassModal mount failed (no document.body in some jsdom variants,
+    // or ipc.onSshAskpassRequest missing entirely). Silent fallback — the
+    // SSH path will surface the auth error via the operation's promise
+    // rejection rather than the modal, which is the next-best UX.
+  }
 
   root.replaceChildren();
   const shell = document.createElement('div');
@@ -255,18 +316,18 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
   // to Conflict.ts instead of Document.ts. Cleared when a Document outcome
   // arrives or when the user finishes the merge.
   //
-  // Phase B implementation review fix #2: `driveSource` is the wireframe-07
-  // banner discriminator — preserve it through pendingConflict so the
-  // mountConflict call can pass it on. Local-backend conflicts (open_document
-  // detected divergence on a non-Drive tab) leave it `null`, which Conflict.ts
-  // treats as "omit the Drive banner".
+  // A8 (was Phase B fix #2): `source` is the conflict-source discriminator —
+  // preserve it through pendingConflict so the mountConflict call can pass
+  // it on. Local-backend conflicts (open_document detected divergence on a
+  // non-Drive/non-SSH tab) leave it `null`, which Conflict.ts treats as
+  // "omit the source banner".
   let pendingConflict:
     | {
         tabId: string;
         path: string;
         local: string;
         incoming: string;
-        driveSource?: DriveConflictSource | null;
+        source?: ConflictSource | null;
       }
     | null = null;
   let settings: Settings | null = null;
@@ -489,7 +550,9 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
     mountTabBar(tabbar, ipc, state, {
       onActivate: async (tab) => {
         try {
-          const outcome = await ipc.openDocument(tab.path);
+          // A8: route `ssh://` tab.path strings through ipc.sshOpenUrl;
+          // local + Drive-API tabs continue through ipc.openDocument.
+          const outcome = await openPathOrUrl(ipc, tab.path);
           state.activeId = tab.id;
           setActive(outcome);
         } catch (e) {
@@ -517,9 +580,9 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
         path: conflictArgs.path,
         local: conflictArgs.local,
         incoming: conflictArgs.incoming,
-        // Phase B fix #2: thread the Drive context through so the
-        // wireframe-07 banner picks the right copy.
-        driveSource: conflictArgs.driveSource ?? null,
+        // A8: thread the source context through so the banner picks the
+        // right copy (Drive API / Drive Desktop / SSH / none).
+        source: conflictArgs.source ?? null,
       });
       void handle;
       // Clear the pending state when the user finishes the merge so a
@@ -565,7 +628,9 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
         ?? state.tabs[0];
       if (activeTabRecord.path) {
         try {
-          const outcome = await ipc.openDocument(activeTabRecord.path);
+          // A8: a session-restored `ssh://` URL re-fetches via sshOpenUrl
+          // before falling through to the cache-backed openDocument path.
+          const outcome = await openPathOrUrl(ipc, activeTabRecord.path);
           setActive(outcome);
           // Bug fix (2025-05-01): the session-restore path never evaluated
           // the Drive-detect toast gate, so users with a previously-opened
@@ -785,12 +850,12 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
    * payload (Document) or queue the divergence handoff (Conflict).
    *
    * Accepts an enriched conflict outcome — the show-conflict Tauri event
-   * (Phase B fix #1+#2) carries `driveSource` for save-time conflicts; the
-   * open_document conflict path (Local mtime mismatch) leaves it undefined,
-   * which Conflict.ts treats as "omit the Drive banner".
+   * (A8) carries `source` for save-time conflicts (Drive API / Drive
+   * Desktop / SSH); the open_document conflict path (Local mtime mismatch)
+   * leaves it undefined, which Conflict.ts treats as "omit the banner".
    */
   function setActive(
-    outcome: OpenOutcome | (Extract<OpenOutcome, { kind: 'conflict' }> & { driveSource?: DriveConflictSource | null }),
+    outcome: OpenOutcome | (Extract<OpenOutcome, { kind: 'conflict' }> & { source?: ConflictSource | null }),
   ): void {
     if (outcome.kind === 'document') {
       activeTab.tabId = outcome.tab_id;
@@ -805,8 +870,8 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
         path: outcome.path,
         local: outcome.local,
         incoming: outcome.incoming,
-        driveSource:
-          'driveSource' in outcome ? (outcome.driveSource ?? null) : null,
+        source:
+          'source' in outcome ? (outcome.source ?? null) : null,
       };
     }
   }
@@ -843,15 +908,21 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
   // watcher (B2) fires "external-change" while a tab is already open and
   // the IPC handler re-runs open_document under the covers.
   //
-  // Phase B fix #1+#2: save_document also emits show-conflict for Drive
-  // save conflicts, with `drive_source` populated. Coerce the wire string
-  // ("DriveApiEtag" | "DriveDesktopWatcher") into the TS literal type the
-  // Conflict view expects; an unrecognized string falls back to `null` so
-  // the banner is suppressed rather than silently mislabeling.
-  const COERCE_DRIVE_SOURCE = (
+  // A8: save_document also emits show-conflict for Drive / SSH save
+  // conflicts, with `source` populated. Coerce the wire string ("DriveApiEtag"
+  // | "DriveDesktopWatcher" | "SshHashMismatch") into the TS literal type the
+  // Conflict view expects; an unrecognized string falls back to `null` so the
+  // banner is suppressed rather than silently mislabeling.
+  const COERCE_SOURCE = (
     s: string | null | undefined,
-  ): DriveConflictSource | null => {
-    if (s === 'DriveApiEtag' || s === 'DriveDesktopWatcher') return s;
+  ): ConflictSource | null => {
+    if (
+      s === 'DriveApiEtag' ||
+      s === 'DriveDesktopWatcher' ||
+      s === 'SshHashMismatch'
+    ) {
+      return s;
+    }
     return null;
   };
   try {
@@ -861,7 +932,11 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
       path: string;
       local: string;
       incoming: string;
-      drive_source?: string | null;
+      // A8 wire-format rename: Rust emits `source` (was `drive_source`).
+      // The bring-up `?? ev.payload.drive_source` fallback was dropped in
+      // review-cycle-1 — the Rust side now emits only `source` and the
+      // dead-code fallback hid wire-format drift instead of catching it.
+      source?: string | null;
     }>('show-conflict', (ev) => {
       setActive({
         kind: 'conflict',
@@ -869,7 +944,7 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
         path: ev.payload.path,
         local: ev.payload.local,
         incoming: ev.payload.incoming,
-        driveSource: COERCE_DRIVE_SOURCE(ev.payload.drive_source),
+        source: COERCE_SOURCE(ev.payload.source),
       });
       void refresh();
     });

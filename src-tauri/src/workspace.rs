@@ -26,10 +26,68 @@ use crate::recents::RecentsStore;
 use crate::sidecar::{load_sidecar, sidecar_path};
 use crate::settings::SettingsStore;
 use anyhow::{Context, Result};
+use mdviewer_core::ssh_url::SshUrl;
 use serde::Serialize;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+
+/// A8: tab location discriminator at the open/save dispatch boundary.
+///
+/// Per the design "additive refactor" rule: this enum is exposed at
+/// `open_ssh_url` and the save-dispatch layer only. The internal
+/// `Tab.path: PathBuf` (consumed by the watcher, renderer, autosave pump,
+/// and conflict dialog) continues to be a local-fs path — for `Ssh`
+/// locations it points at the cache mirror under
+/// `<cache>/host_port_user/<remote-path>`.
+///
+/// Why not push `LocationKind` into every field that today carries a
+/// PathBuf: the watcher and renderer have no concept of "the remote
+/// truth"; they observe the on-disk cache file. Widening their argument
+/// types serves no purpose and explodes the diff. The dispatch site is
+/// the natural boundary because that's where we choose Local vs Ssh
+/// transport semantics.
+#[derive(Debug, Clone)]
+pub enum LocationKind {
+    Local(PathBuf),
+    Ssh(SshUrl),
+}
+
+impl LocationKind {
+    /// The local-fs path the watcher / renderer / autosave pump should
+    /// consume. `Local` returns the path verbatim (no allocation); `Ssh`
+    /// computes the cache mirror via `ssh::operations::cache_path_for_url`
+    /// and returns it as `Cow::Owned`. Callers that need a `&Path` can
+    /// `&*` the `Cow`.
+    pub fn local_path<'a>(&'a self, ssh_cache_base: &Path) -> Cow<'a, Path> {
+        match self {
+            LocationKind::Local(p) => Cow::Borrowed(p.as_path()),
+            LocationKind::Ssh(url) => {
+                Cow::Owned(crate::ssh::operations::cache_path_for_url(ssh_cache_base, url))
+            }
+        }
+    }
+
+    /// A8 (Step 7): autosave-dispatch tier picker. Returns
+    /// `(interval_ms, enabled)` for this tab's autosave pump. Local tabs
+    /// keep the legacy `auto_save` + `auto_save_debounce_ms` knobs; SSH
+    /// tabs read the independent `autosave.ssh_interval_ms` +
+    /// `autosave.ssh_enabled` fields (Decision 6 — a metered link must be
+    /// togglable without losing local autosave).
+    ///
+    /// The actual autosave pump lives in the TS frontend (`Edit.ts`); the
+    /// Rust helper exists so the future autosave-dispatch IPC (or a
+    /// per-tab Settings query) has a typed seam that the frontend can
+    /// call into without re-implementing the branching logic on either
+    /// side.
+    pub fn autosave_settings(&self, editor: &crate::settings::EditorSettings) -> (u32, bool) {
+        match self {
+            LocationKind::Local(_) => (editor.auto_save_debounce_ms, editor.auto_save),
+            LocationKind::Ssh(_) => (editor.autosave.ssh_interval_ms, editor.autosave.ssh_enabled),
+        }
+    }
+}
 
 /// Wire-shaped projection of `Tab` for `list_open_documents`. The frontend
 /// needs both the opaque id (for activate/close) and the on-disk path (for
@@ -40,6 +98,27 @@ use std::sync::{Arc, Mutex};
 pub struct TabSummary {
     pub id: String,
     pub path: PathBuf,
+}
+
+/// A8: per-tab SSH state stashed at `open_ssh_url` time. Keyed on the tab id
+/// in `Workspace.ssh_tabs`. Saved separately from `Tab` because the rest of
+/// the workspace (watcher / renderer / autosave / save-dispatch for Local
+/// and Drive backends) is PathBuf-shaped — only the SSH-aware code paths
+/// (save-back, session restore, future A9 IPC commands) need to recover
+/// the original `SshUrl` and the open-time hash.
+///
+/// The previous implementation dropped both values via `let _ = url` /
+/// `let _ = outcome.sha256` to silence dead-code warnings, but those are
+/// exactly the values that:
+///   * save-back needs (the `SshUrl` to push to, the open-time hash to
+///     diff against the remote in the pre-save recheck — see
+///     `Operations::save_back`'s `on_open_sha` argument), and
+///   * conflict detection needs (the open-time hash IS the
+///     `ConflictSource::SshHashMismatch` discriminator's evidence).
+#[derive(Debug, Clone)]
+pub struct SshTabState {
+    pub url: SshUrl,
+    pub last_open_sha256: [u8; 32],
 }
 
 pub struct Tab {
@@ -235,6 +314,14 @@ pub struct Workspace {
     /// channel is initialized with `true` so `*cancel_rx.borrow()` reads as
     /// "still alive" until disconnect drops the sender.
     pub(crate) polling_cancel: Option<tokio::sync::watch::Sender<bool>>,
+    /// A8: per-tab SSH state keyed by tab id. Populated by `open_ssh_url`
+    /// with the parsed `SshUrl` and `OpenOutcome.sha256`; consumed by the
+    /// future B5 save-back path (which needs the URL to push to and the
+    /// open-time hash for the pre-save remote-drift recheck) and by future
+    /// A9 IPC surfaces (per-tab SSH metadata queries, session restore).
+    /// Cleared in `close_tab` so a closed-and-reopened SSH tab doesn't
+    /// pick up stale state. See `SshTabState` for the rationale.
+    pub(crate) ssh_tabs: HashMap<String, SshTabState>,
 }
 
 impl Workspace {
@@ -261,6 +348,8 @@ impl Workspace {
             // D2: no polling task exists until drive_connect spawns one;
             // drive_disconnect takes() this back to None.
             polling_cancel: None,
+            // A8: no SSH tabs at construction time; populated by open_ssh_url.
+            ssh_tabs: HashMap::new(),
         })
     }
 
@@ -486,9 +575,114 @@ impl Workspace {
         Ok(summary)
     }
 
+    /// A8: open an `ssh://` markdown document by URL.
+    ///
+    /// Mirrors `drive_open_url` for the SSH transport: fetch the remote
+    /// bytes via `Operations::open_url` (which hashes them + mirrors them
+    /// to the cache mirror under `<cache>/host_port_user/<path>`), then
+    /// register a new tab whose `Tab.path` points at the cache mirror.
+    /// The watcher, renderer, autosave pump, and conflict dialog continue
+    /// to consume the cache PathBuf — the `LocationKind::Ssh(url)`
+    /// discriminator lives at the save-dispatch boundary (see Decision 6).
+    ///
+    /// The open-time `sha256` is what `Operations::save_back` later
+    /// compares against to detect remote drift and surface a
+    /// `ConflictSource::SshHashMismatch`. Phase-3 keeps that hash on the
+    /// tab via a separate `ssh_state` map keyed by tab id (B5's wiring);
+    /// this method itself just gets the tab onto the cache mirror.
+    pub async fn open_ssh_url(
+        &mut self,
+        url: SshUrl,
+        ops: &crate::ssh::operations::Operations,
+    ) -> Result<TabSummary, crate::ssh::transport::TransportError> {
+        let outcome = ops.open_url(&url).await?;
+
+        // De-dupe against an already-open tab on the same cache path. The
+        // cache mirror is deterministic for a given (host, port, user,
+        // path) tuple so two `open_ssh_url` calls for the same URL collapse
+        // onto a single tab — matching `drive_open_url`'s file_id de-dupe.
+        if let Some(existing) = self
+            .tabs
+            .values()
+            .find(|t| t.path == outcome.cache_path)
+        {
+            return Ok(existing.summary());
+        }
+
+        let source = String::from_utf8_lossy(&outcome.bytes).into_owned();
+        let s = self.settings.get();
+        let opts = RenderOptions {
+            syntax_highlighting: s.editor.syntax_highlighting,
+            mermaid_enabled: s.editor.mermaid_enabled,
+        };
+        let render = render_markdown(&source, &opts);
+
+        // Sidecar load: comments live alongside the source in the cache
+        // mirror (the canonical sidecar resolver runs on the cache path
+        // exactly as for local files). Phase-3's CRDT-merge push runs at
+        // save time via `Operations::save_sidecar` against the remote.
+        let sc_path = sidecar_path(&outcome.cache_path, &s.comments.sidecar_pattern);
+        let comments = load_sidecar(&sc_path).unwrap_or_else(|_| CommentsStore::new());
+
+        let id = format!(
+            "tab-{:x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        let tab = Tab {
+            id: id.clone(),
+            path: outcome.cache_path.clone(),
+            source: source.clone(),
+            render,
+            comments,
+            last_saved_snapshot: Some(source),
+            // SSH tabs do NOT route through any Drive backend — pin them to
+            // Local so the existing save dispatch's Drive paths short-circuit.
+            // The LocationKind enum at the IPC save boundary is what selects
+            // the SSH save path (`Operations::save_back`); Tab.backend is the
+            // legacy Drive discriminator and Local is the right default here.
+            backend: TabBackend::Local,
+            file_id: None,
+            etag: None,
+        };
+        let summary = tab.summary();
+        self.tabs.insert(id.clone(), tab);
+        self.order.push(id.clone());
+        self.active = Some(id.clone());
+        // A8 review-cycle-1 fix: stash the `SshUrl` and the open-time
+        // `OpenOutcome.sha256` per tab so the future B5 save-back path can
+        // recover both. The previous `let _ = url; let _ = outcome.sha256;`
+        // dropped exactly the values save-back, conflict detection, and
+        // session restore need.
+        self.ssh_tabs.insert(
+            id,
+            SshTabState {
+                url,
+                last_open_sha256: outcome.sha256,
+            },
+        );
+        // Suppress the cache-path entry from the recents list — surfacing
+        // the local mirror would mislead the user; they pasted an ssh:// URL,
+        // not a local path. A future task can teach Recents about SshUrl
+        // entries; for now the URL-paste flow is the only entry point.
+        self.persist_session();
+        Ok(summary)
+    }
+
+    /// A8 review-cycle-1: read-only accessor for the per-tab SSH state
+    /// stashed by `open_ssh_url`. Returns `None` for non-SSH tabs (Local /
+    /// DriveDesktop / DriveApi) and for unknown tab ids. The future A9 IPC
+    /// commands and B5 save-back path both call through here so they don't
+    /// have to know the field name.
+    pub fn ssh_state(&self, tab_id: &str) -> Option<&SshTabState> {
+        self.ssh_tabs.get(tab_id)
+    }
+
     /// B5 dispatch path — uploads `local` to Drive with `If-Match: etag`.
     /// On a 412 (PreconditionFailed) the helper fetches the remote bytes
-    /// and surfaces a `SaveError::DriveConflict { local, remote, source: DriveApiEtag }`
+    /// and surfaces a `SaveError::Conflict { local, remote, source: DriveApiEtag }`
     /// so the IPC layer can route it into the existing diff-merge view.
     /// On success the new ETag is returned (the IPC handler then refreshes
     /// the tab's `etag` field so the next round picks up the latest value).
@@ -518,7 +712,7 @@ impl Workspace {
                     .bytes()
                     .map_err(|e| SaveError::Drive(crate::drive::DriveError::Network(e.to_string())))?
                     .to_vec();
-                Err(SaveError::DriveConflict {
+                Err(SaveError::Conflict {
                     local: local.to_vec(),
                     remote,
                     source: ConflictSource::DriveApiEtag,
@@ -533,7 +727,7 @@ impl Workspace {
     /// diverged from the open-time snapshot. On `Unchanged` we write the
     /// new bytes locally (atomic-ish via `std::fs::write`) and re-prime
     /// the watcher's snapshot for the next save. On `Changed` we surface
-    /// `SaveError::DriveConflict { source: DriveDesktopWatcher }` carrying
+    /// `SaveError::Conflict { source: DriveDesktopWatcher }` carrying
     /// both the user's local bytes and the freshly-read remote bytes so
     /// the existing diff-merge view can render them.
     ///
@@ -576,7 +770,7 @@ impl Workspace {
             }
             crate::watcher::CompareForSave::Changed { .. } => {
                 let remote = std::fs::read(&path).map_err(SaveError::Io)?;
-                Err(SaveError::DriveConflict {
+                Err(SaveError::Conflict {
                     local: local.to_vec(),
                     remote,
                     source: ConflictSource::DriveDesktopWatcher,
@@ -1044,6 +1238,9 @@ impl Workspace {
                 self.closed_snapshots.insert(tab.path, snap);
             }
         }
+        // A8 review-cycle-1: clear the per-tab SSH state. Non-SSH tabs
+        // never seeded the map so this is a no-op for them.
+        self.ssh_tabs.remove(id);
         self.order.retain(|x| x != id);
         if self.active.as_deref() == Some(id) {
             self.active = self.order.last().cloned();
@@ -1281,18 +1478,23 @@ pub(crate) fn make_test_opener(
 }
 
 /// B2 (groundwork for B5): typed save-path error. The dispatch in main.rs
-/// matches on this and turns `DriveConflict` into a `SaveOutcome::Conflict`
+/// matches on this and turns `Conflict` into a `SaveOutcome::Conflict`
 /// payload that the existing diff-merge view can render. `Io` and `Drive`
 /// surface as plain `Err(String)` so the existing toast path picks them up.
+///
+/// A8 rename: was `SaveError::DriveConflict`. The variant gained SSH callers
+/// in A8 — the "Drive" prefix is now misleading. The `source` field
+/// disambiguates which transport flagged the conflict (DriveApi 412,
+/// DriveDesktop watcher mismatch, SSH hash mismatch) so wireframe 07's
+/// banner copy can be picked accordingly.
 #[derive(Debug)]
 pub enum SaveError {
     Io(std::io::Error),
     Drive(crate::drive::DriveError),
     /// Both the user's local bytes and the freshly-fetched remote bytes
-    /// the conflict diff needs. `source` disambiguates the two Drive code
-    /// paths (DriveApi 412 vs DriveDesktop watcher mismatch) so wireframe
-    /// 07's banner copy can be picked accordingly.
-    DriveConflict {
+    /// the conflict diff needs. `source` disambiguates the transport that
+    /// detected the divergence so the frontend banner picks the right copy.
+    Conflict {
         local: Vec<u8>,
         remote: Vec<u8>,
         source: ConflictSource,
@@ -1303,11 +1505,15 @@ pub enum SaveError {
 pub enum ConflictSource {
     DriveApiEtag,
     DriveDesktopWatcher,
+    /// A8: SSH save-back detected the remote bytes changed since open
+    /// (the open-time `sha256` no longer matches the freshly-fetched
+    /// remote bytes). The Conflict view shows an "ssh://" banner copy.
+    SshHashMismatch,
 }
 
 impl ConflictSource {
-    /// Canonical wire-format string for the Drive conflict source. The frontend
-    /// `Conflict.ts` view's `DriveConflictSource` TS literal type matches these
+    /// Canonical wire-format string for the conflict source. The frontend
+    /// `Conflict.ts` view's `ConflictSource` TS literal type matches these
     /// strings exactly — the diff-merge banner copy switch keys off them.
     ///
     /// We deliberately avoid `format!("{:?}", source)` (which Phase B's first
@@ -1318,6 +1524,7 @@ impl ConflictSource {
         match self {
             Self::DriveApiEtag => "DriveApiEtag",
             Self::DriveDesktopWatcher => "DriveDesktopWatcher",
+            Self::SshHashMismatch => "SshHashMismatch",
         }
     }
 }
@@ -1666,7 +1873,34 @@ pub async fn run_polling_loop_with_cancel(
 
 #[cfg(test)]
 mod tests {
-    use super::ConflictSource;
+    use super::{ConflictSource, LocationKind, SaveError};
+    use mdviewer_core::ssh_url::SshUrl;
+    use std::path::{Path, PathBuf};
+
+    /// A8: a `SaveError::Conflict { source: SshHashMismatch, .. }` constructed
+    /// by the (future) SSH save dispatch must surface the wire string
+    /// `"SshHashMismatch"` through `source.to_wire()` so the IPC layer's
+    /// `emit_drive_conflict` and the `SaveOutcome::Conflict` payload both
+    /// carry the same discriminator the Conflict.ts banner-copy switch keys
+    /// off. This pins the variant→wire contract for the SSH branch the way
+    /// `conflict_source_wire_format_is_stable` does for the Drive branches.
+    #[test]
+    fn save_error_conflict_with_ssh_source_emits_ssh_wire_string() {
+        let err = SaveError::Conflict {
+            local: b"hello local".to_vec(),
+            remote: b"hello remote".to_vec(),
+            source: ConflictSource::SshHashMismatch,
+        };
+        // Destructure rather than `if let` so a future variant rename (e.g.
+        // a second renaming of `Conflict`) fails the test loudly instead of
+        // silently falling through to the no-op branch.
+        let SaveError::Conflict { source, local, remote } = err else {
+            panic!("constructed SaveError::Conflict must match the Conflict variant");
+        };
+        assert_eq!(source.to_wire(), "SshHashMismatch");
+        assert_eq!(local, b"hello local");
+        assert_eq!(remote, b"hello remote");
+    }
 
     /// Phase B integration review fix #5: the diff-merge view's banner-copy
     /// switch keys off these literal strings. A future variant rename or a
@@ -1679,11 +1913,269 @@ mod tests {
             ConflictSource::DriveDesktopWatcher.to_wire(),
             "DriveDesktopWatcher"
         );
+        // A8: SSH adds a third variant — keep this assertion adjacent so a
+        // future contributor adding another ConflictSource value is forced
+        // to also extend the wire-format contract.
+        assert_eq!(
+            ConflictSource::SshHashMismatch.to_wire(),
+            "SshHashMismatch"
+        );
         // Display impl must agree with to_wire so callers can use either spelling.
         assert_eq!(format!("{}", ConflictSource::DriveApiEtag), "DriveApiEtag");
         assert_eq!(
             format!("{}", ConflictSource::DriveDesktopWatcher),
             "DriveDesktopWatcher"
+        );
+        assert_eq!(
+            format!("{}", ConflictSource::SshHashMismatch),
+            "SshHashMismatch"
+        );
+    }
+
+    /// A8: `LocationKind::Local` exposes its PathBuf verbatim — the
+    /// watcher/renderer/autosave pump all consume the borrowed `&Path` for
+    /// local tabs without an allocation. The `ssh_cache_base` argument is
+    /// unused on this branch.
+    #[test]
+    fn location_kind_local_returns_path_verbatim() {
+        let p = PathBuf::from("/tmp/notes.md");
+        let loc = LocationKind::Local(p.clone());
+        let resolved = loc.local_path(Path::new("/should/not/matter"));
+        assert_eq!(&*resolved, p.as_path());
+    }
+
+    /// A8: `LocationKind::Ssh` resolves to the cache mirror computed by
+    /// `ssh::operations::cache_path_for_url`. This is what the watcher /
+    /// renderer / autosave pump consume — they never see the `SshUrl`
+    /// directly. Per the design "additive refactor" note: keeping the cache
+    /// path as the only `&Path` consumers see is what lets the rest of the
+    /// Workspace stay PathBuf-shaped.
+    #[test]
+    fn location_kind_ssh_resolves_via_cache_path() {
+        let url = SshUrl {
+            user: Some("alice".into()),
+            host: "host.example".into(),
+            port: 22,
+            path: "/notes/file.md".into(),
+        };
+        let loc = LocationKind::Ssh(url.clone());
+        let base = Path::new("/cache/base");
+        let resolved = loc.local_path(base);
+        // Must match `cache_path_for_url` exactly — it's the watcher's
+        // local-fs cursor for the remote file.
+        let expected = crate::ssh::operations::cache_path_for_url(base, &url);
+        assert_eq!(&*resolved, expected.as_path());
+    }
+
+    /// A8 (Step 7): the autosave dispatch picks the SSH tier knobs for
+    /// `LocationKind::Ssh` and the legacy local knobs for `LocationKind::Local`.
+    /// The Decision-6 invariant: SSH-tier autosave is independently toggleable
+    /// (a metered link should be turn-off-able without losing local autosave).
+    #[test]
+    fn location_kind_autosave_settings_branch_by_kind() {
+        let settings = crate::settings::EditorSettings {
+            default_open_mode: "viewer".into(),
+            auto_save: true,
+            auto_save_debounce_ms: 750,
+            external_change_behavior: crate::settings::ExternalChangeBehavior::Ask,
+            syntax_highlighting: true,
+            mermaid_enabled: false,
+            show_whitespace: false,
+            word_wrap: true,
+            autosave: crate::settings::AutosaveSettings {
+                ssh_interval_ms: 30_000,
+                ssh_enabled: false,
+            },
+        };
+
+        let local = LocationKind::Local(PathBuf::from("/tmp/x.md"));
+        let (interval, enabled) = local.autosave_settings(&settings);
+        assert_eq!(interval, 750);
+        assert!(enabled);
+
+        let ssh = LocationKind::Ssh(SshUrl {
+            user: None,
+            host: "h".into(),
+            port: 22,
+            path: "/x.md".into(),
+        });
+        let (interval_s, enabled_s) = ssh.autosave_settings(&settings);
+        assert_eq!(interval_s, 30_000);
+        assert!(!enabled_s, "SSH-tier autosave honors its independent toggle");
+    }
+
+    // === A8 review-cycle-1 fix #1: open_ssh_url unit coverage ===
+    //
+    // The fake transport here is a deterministic stand-in for the real
+    // `SshTransport` impl — fetch returns canned bytes (and a deterministic
+    // hash via the default `sha256` impl); push records the bytes for
+    // assertion but is not exercised by `open_url`. Same shape as the
+    // FakeTransport in ssh::operations::tests, redefined locally because
+    // that one lives behind a `mod tests` boundary.
+    //
+    // Each test gets its own tempdir so the cache mirror writes don't
+    // collide and the on-disk path stays under our control (no real
+    // network, no real filesystem outside the tempdir).
+
+    use crate::ssh::operations::Operations;
+    use crate::ssh::transport::{DirEntry, SshStat, SshTransport, TransportError};
+    use sha2::{Digest, Sha256};
+    use std::sync::{Arc, Mutex as StdMutex};
+
+    struct OpenUrlFake {
+        bytes: Vec<u8>,
+        push_calls: StdMutex<u32>,
+    }
+
+    impl OpenUrlFake {
+        fn new(bytes: Vec<u8>) -> Arc<Self> {
+            Arc::new(Self {
+                bytes,
+                push_calls: StdMutex::new(0),
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SshTransport for OpenUrlFake {
+        async fn fetch(&self, _url: &SshUrl) -> Result<Vec<u8>, TransportError> {
+            Ok(self.bytes.clone())
+        }
+        async fn push(&self, _url: &SshUrl, _bytes: &[u8]) -> Result<(), TransportError> {
+            *self.push_calls.lock().unwrap() += 1;
+            Ok(())
+        }
+        async fn list_dir(&self, _url: &SshUrl) -> Result<Vec<DirEntry>, TransportError> {
+            Ok(vec![])
+        }
+        async fn stat(&self, _url: &SshUrl) -> Result<SshStat, TransportError> {
+            Ok(SshStat {
+                size: 0,
+                is_dir: false,
+                mtime: None,
+            })
+        }
+    }
+
+    fn sample_ssh_url() -> SshUrl {
+        SshUrl {
+            user: Some("alice".into()),
+            host: "host.example".into(),
+            port: 22,
+            path: "/notes/file.md".into(),
+        }
+    }
+
+    fn sha256_of(bytes: &[u8]) -> [u8; 32] {
+        let mut h = Sha256::new();
+        h.update(bytes);
+        h.finalize().into()
+    }
+
+    /// `open_ssh_url` must wire the cache-mirror PathBuf onto the new tab's
+    /// summary (so the watcher / renderer / autosave pump see the right
+    /// on-disk cursor) AND stash the parsed `SshUrl` in `ssh_state(tab_id)`
+    /// so save-back can recover it. This is the central regression test
+    /// for the review-cycle-1 fix: the previous `let _ = url` dropped the
+    /// URL on the floor.
+    #[tokio::test]
+    async fn open_ssh_url_stamps_location_kind_on_tab() {
+        let data_dir = tempfile::tempdir().expect("workspace data dir");
+        let cache_dir = tempfile::tempdir().expect("ssh cache dir");
+        let mut ws = super::Workspace::new(data_dir.path()).expect("new workspace");
+        let url = sample_ssh_url();
+        let bytes = b"# remote\n".to_vec();
+        let fake = OpenUrlFake::new(bytes.clone());
+        let ops = Operations::new(fake.clone(), cache_dir.path().to_path_buf());
+
+        let summary = ws
+            .open_ssh_url(url.clone(), &ops)
+            .await
+            .expect("open_ssh_url ok");
+
+        // Tab summary path points at the cache mirror — same shape the
+        // watcher/renderer/autosave layer expects.
+        let expected_cache =
+            crate::ssh::operations::cache_path_for_url(cache_dir.path(), &url);
+        assert_eq!(summary.path, expected_cache);
+        // And the SshUrl is recoverable via the per-tab state map.
+        let state = ws
+            .ssh_state(&summary.id)
+            .expect("ssh_state populated for an SSH tab");
+        assert_eq!(state.url, url);
+    }
+
+    /// Two `open_ssh_url` calls for the same URL must return the same tab
+    /// id (cache-path de-dupe) and must leave the existing per-tab SSH
+    /// state untouched. Mirrors `drive_open_url`'s file_id de-dupe.
+    #[tokio::test]
+    async fn open_ssh_url_dedupes_by_url_when_called_twice() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let cache_dir = tempfile::tempdir().unwrap();
+        let mut ws = super::Workspace::new(data_dir.path()).unwrap();
+        let url = sample_ssh_url();
+        let fake = OpenUrlFake::new(b"# remote\n".to_vec());
+        let ops = Operations::new(fake.clone(), cache_dir.path().to_path_buf());
+
+        let first = ws.open_ssh_url(url.clone(), &ops).await.unwrap();
+        let original_state = ws.ssh_state(&first.id).cloned().expect("first stash");
+        let second = ws.open_ssh_url(url.clone(), &ops).await.unwrap();
+
+        assert_eq!(first.id, second.id, "same URL must collapse onto one tab");
+        let post_state = ws.ssh_state(&first.id).expect("state preserved");
+        assert_eq!(
+            post_state.url, original_state.url,
+            "de-dupe must not overwrite the stashed URL",
+        );
+        assert_eq!(
+            post_state.last_open_sha256, original_state.last_open_sha256,
+            "de-dupe must not overwrite the stashed open-time hash",
+        );
+    }
+
+    /// The open-time `sha256` is what `Operations::save_back` later
+    /// compares against to detect remote drift (its `on_open_sha` argument).
+    /// `open_ssh_url` must stash it verbatim. Asserting against
+    /// `sha256_of(bytes)` pins the contract: the hash the transport hands
+    /// back IS the hash that lands in `ssh_state(...)`.
+    #[tokio::test]
+    async fn open_ssh_url_stashes_sha256_for_conflict_detection() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let cache_dir = tempfile::tempdir().unwrap();
+        let mut ws = super::Workspace::new(data_dir.path()).unwrap();
+        let url = sample_ssh_url();
+        let bytes = b"original-bytes".to_vec();
+        let fake = OpenUrlFake::new(bytes.clone());
+        let ops = Operations::new(fake.clone(), cache_dir.path().to_path_buf());
+
+        let summary = ws.open_ssh_url(url, &ops).await.unwrap();
+        let state = ws.ssh_state(&summary.id).expect("stash present");
+        assert_eq!(
+            state.last_open_sha256,
+            sha256_of(&bytes),
+            "stashed hash must match the transport-reported open-time hash",
+        );
+    }
+
+    /// `close_tab` must clear the per-tab SSH state. Without this, a
+    /// closed-and-reopened SSH tab could pick up stale state from the
+    /// previous open (different URL, different open-time hash) and the
+    /// save-back path would diff against the wrong baseline.
+    #[tokio::test]
+    async fn close_tab_clears_ssh_state() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let cache_dir = tempfile::tempdir().unwrap();
+        let mut ws = super::Workspace::new(data_dir.path()).unwrap();
+        let url = sample_ssh_url();
+        let fake = OpenUrlFake::new(b"# remote\n".to_vec());
+        let ops = Operations::new(fake.clone(), cache_dir.path().to_path_buf());
+
+        let summary = ws.open_ssh_url(url, &ops).await.unwrap();
+        assert!(ws.ssh_state(&summary.id).is_some(), "open stashes state");
+        ws.close_tab(&summary.id).expect("close_tab ok");
+        assert!(
+            ws.ssh_state(&summary.id).is_none(),
+            "close_tab must clear the per-tab SSH state",
         );
     }
 }

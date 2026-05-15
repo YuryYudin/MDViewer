@@ -169,9 +169,9 @@ describe('Conflict', () => {
       path: 'drive-api://FID',
       local: 'left',
       incoming: 'right',
-      driveSource: 'DriveApiEtag',
+      source: 'DriveApiEtag',
     });
-    const banner = root.querySelector('.drive-banner');
+    const banner = root.querySelector('.conflict-banner');
     expect(banner).toBeTruthy();
     // Wireframe-07: the API copy talks about "someone else updated" — not
     // the disk/sync wording reserved for the DriveDesktop branch.
@@ -195,9 +195,9 @@ describe('Conflict', () => {
       path: '/Users/me/Drive/notes.md',
       local: 'left',
       incoming: 'right',
-      driveSource: 'DriveDesktopWatcher',
+      source: 'DriveDesktopWatcher',
     });
-    const banner = root.querySelector('.drive-banner');
+    const banner = root.querySelector('.conflict-banner');
     expect(banner).toBeTruthy();
     // The DriveDesktop copy must reference the on-disk / sync source so a
     // user with both flavors knows which client touched the file.
@@ -205,7 +205,11 @@ describe('Conflict', () => {
     expect(banner?.textContent).toMatch(/disk/i);
   });
 
-  it('omits the Drive banner for plain local conflicts', async () => {
+  // A8: SSH adds a third ConflictSource. The same diff-merge view serves
+  // remote-edited-while-you-edited mismatches over `ssh://` — the banner
+  // copy must reference the remote (host or "the remote file") so a user
+  // can tell which protocol triggered the diff.
+  it('shows the SSH banner when the remote bytes diverged since open', async () => {
     const root = document.createElement('div');
     const ipc = ipcStub([
       {
@@ -216,14 +220,38 @@ describe('Conflict', () => {
         incoming_range: [0, 1],
       },
     ]);
-    // No driveSource → Local-backend conflict, no Drive-specific banner.
+    await mountConflict(root, ipc, {
+      tabId: 't',
+      path: 'ssh://host/notes.md',
+      local: 'left',
+      incoming: 'right',
+      source: 'SshHashMismatch',
+    });
+    const banner = root.querySelector('.conflict-banner');
+    expect(banner).toBeTruthy();
+    expect(banner?.textContent).toMatch(/remote/i);
+    expect(banner?.getAttribute('data-source')).toBe('SshHashMismatch');
+  });
+
+  it('omits the conflict banner for plain local conflicts', async () => {
+    const root = document.createElement('div');
+    const ipc = ipcStub([
+      {
+        kind: 'conflicting',
+        local_text: 'left',
+        incoming_text: 'right',
+        local_range: [0, 1],
+        incoming_range: [0, 1],
+      },
+    ]);
+    // No source → Local-backend conflict, no Drive/SSH-specific banner.
     await mountConflict(root, ipc, {
       tabId: 't',
       path: '/tmp/a.md',
       local: 'left',
       incoming: 'right',
     });
-    expect(root.querySelector('.drive-banner')).toBeFalsy();
+    expect(root.querySelector('.conflict-banner')).toBeFalsy();
   });
 });
 
