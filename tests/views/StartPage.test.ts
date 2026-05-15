@@ -4,8 +4,14 @@ import type { Ipc } from '../../src/ipc';
 
 function fakeIpc(recentPaths: string[] = ['/docs/a.md', '/docs/b.md']): Ipc {
   // listRecents now returns RecentEntry[] with optional mtime; tests
-  // exercising path rendering supply just the path component.
-  const recents = recentPaths.map((p) => ({ path: p, mtime: null }));
+  // exercising path rendering supply just the path component. A10 added
+  // `kind` so each entry is tagged Local / Ssh — the helper defaults to
+  // 'local' because most callers don't care about the badge surface.
+  const recents = recentPaths.map((p) => ({
+    path: p,
+    mtime: null,
+    kind: p.startsWith('ssh://') ? 'ssh' : 'local',
+  }));
   return {
     listRecents: vi.fn().mockResolvedValue(recents),
     openDocument: vi
@@ -255,6 +261,30 @@ describe('StartPage — relativeTime branches (C5 branch coverage)', () => {
     expect(timeOf(items[5])).toMatch(/^(?:[A-Z][a-z]{2,} \d{1,2}|\d{1,2} [A-Z][a-z]{2,})$/);
 
     vi.useRealTimers();
+  });
+
+  it('renders an SSH badge on Recents entries whose kind is "ssh"', async () => {
+    // A11: wireframe-01 specifies a small "SSH" text pill on remote recent
+    // entries so the user can tell at a glance which row will trigger an
+    // SSH auth round-trip. The predicate is the RecentEntry.kind field
+    // (added by A10), NOT a string startswith check on the path — that
+    // way a future tweak to how SSH paths are stringified can't drift the
+    // UI without also drifting the badge.
+    const entries = [
+      { path: '/local/notes.md', mtime: null, kind: 'local' as const },
+      { path: 'ssh://server/path/remote.md', mtime: null, kind: 'ssh' as const },
+    ];
+    const root = document.createElement('div');
+    await mountStartPage(root, fakeIpcWithMtimes(entries));
+    const items = root.querySelectorAll('[data-test="recent-item"]');
+    expect(items.length).toBe(2);
+    // Local entry: NO badge.
+    expect(items[0].querySelector('.recents-badge--ssh')).toBeNull();
+    // SSH entry: badge present with the literal text "SSH".
+    const badge = items[1].querySelector('.recents-badge--ssh') as HTMLElement;
+    expect(badge).toBeTruthy();
+    expect(badge.textContent).toBe('SSH');
+    expect(badge.getAttribute('aria-label')).toBe('Remote file');
   });
 
   it('uses singular forms ("1 minute ago") for the boundary deltas', async () => {

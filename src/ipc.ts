@@ -179,6 +179,56 @@ export interface Ipc {
    * Rejects non-http(s) schemes (file://, javascript:, custom schemes).
    */
   openExternalUrl(url: string): Promise<void>;
+  /**
+   * Open a markdown document over SSH. The Rust handler parses the URL
+   * (canonical parser: `mdviewer_core::ssh_url::parse`), opens an SSH
+   * channel via `russh`, and returns a `TabSummary` for the resulting
+   * tab. Authentication that requires interactive input fires
+   * `ssh:askpass-request` events the AskpassModal subscribes to.
+   */
+  sshOpenUrl(url: string): Promise<TabSummary>;
+  /**
+   * Reply to a pending `ssh:askpass-request` with either the user-typed
+   * value or `null` (cancel). Passing `null` lets the Rust side
+   * distinguish "user aborted" from "user entered no characters" — the
+   * latter is sometimes a legitimate empty passphrase.
+   */
+  sshPasswordResponse(reqId: string, value: string | null): Promise<void>;
+  /**
+   * Subscribe to `ssh:askpass-request` events. Returns an unsubscribe
+   * function. The handler receives the payload directly; the Tauri
+   * `Event<T>` wrapper is unwrapped by the implementation so view code
+   * never has to know about it.
+   */
+  onSshAskpassRequest(handler: (req: SshAskpassRequest) => void): () => void;
+}
+
+/**
+ * Payload of the `ssh:askpass-request` Tauri event. The Rust side fires
+ * one of these whenever an SSH auth method needs interactive input. The
+ * frontend AskpassModal renders variant A (passphrase) or variant B
+ * (password) based on `isPassword` — it does NOT pattern-match the
+ * `prompt` string to pick a variant.
+ */
+export interface SshAskpassRequest {
+  reqId: string;
+  prompt: string;
+  isPassword: boolean;
+}
+
+/**
+ * Client-side validator for the OpenRemoteDialog host-entry field. This
+ * is purely an input affordance — the authoritative parser lives in
+ * `mdviewer_core::ssh_url::parse` on the Rust side and runs inside
+ * `ssh_open_url`. Matches `[user@]host[:port]` with conservative host
+ * char classes.
+ *
+ * Note: this regex is intentionally permissive (any alnum-with-dots-and-
+ * dashes host); rejecting URLs the Rust side could actually parse would
+ * surface as a dead Open button. The Rust side is the source of truth.
+ */
+export function looksLikeSshHost(input: string): boolean {
+  return /^([\w.-]+@)?[\w.-]+(:\d+)?$/.test(input.trim());
 }
 
 /**
@@ -231,7 +281,50 @@ export const tauriIpc: Ipc = {
   setDocPref: (path, pref) => invoke<void>('set_doc_pref', { path, pref }),
   deleteDocPref: (path) => invoke<void>('delete_doc_pref', { path }),
   openExternalUrl: (url) => invoke<void>('open_external_url', { url }),
+  sshOpenUrl: (url) => invoke<TabSummary>('ssh_open_url', { url }),
+  sshPasswordResponse: (reqId, value) =>
+    invoke<void>('ssh_password_response', { reqId, value }),
+  // Subscribe to `ssh:askpass-request`. `listen` is async (it round-trips
+  // through Tauri's event API) so the unlisten handle isn't available
+  // synchronously — capture it asynchronously and have the returned
+  // disposer fire it when ready. If the caller disposes before listen
+  // resolves, set a flag and fire the unlisten as soon as we have it.
+  onSshAskpassRequest: (handler) => {
+    let unlisten: (() => void) | null = null;
+    let disposed = false;
+    void (async () => {
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+        if (disposed) return;
+        const u = await listen<SshAskpassRequest>('ssh:askpass-request', (evt) =>
+          handler(evt.payload),
+        );
+        if (disposed) {
+          u();
+          return;
+        }
+        unlisten = u;
+      } catch {
+        // jsdom / unit tests without the Tauri runtime — fall through.
+      }
+    })();
+    return () => {
+      disposed = true;
+      if (unlisten) unlisten();
+    };
+  },
 };
+
+/**
+ * Canonical singleton view of the IPC adapter. The mounted AskpassModal
+ * imports this directly (it's mounted once at app boot rather than threaded
+ * through every view), and new view modules can choose to consume the
+ * singleton rather than wire the `Ipc` prop down through their callers.
+ *
+ * Old views still take `Ipc` as a prop — both styles are intentional and
+ * coexist.
+ */
+export const ipc: Ipc = tauriIpc;
 
 /**
  * A8: typed wrappers around the Drive IPC commands registered in A7.

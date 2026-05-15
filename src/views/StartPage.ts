@@ -103,6 +103,20 @@ export async function mountStartPage(
       path.textContent = withTilde(entry.path);
       left.append(name, path);
 
+      // A11: SSH badge — wireframe-01 specifies a small "SSH" text pill on
+      // remote entries so the user can tell at a glance which row will
+      // trigger an SSH auth round-trip. The predicate is the RecentEntry
+      // .kind field (added by A10), NOT a startswith on entry.path — a
+      // future tweak to how SSH paths are stringified can't drift the UI
+      // without also drifting the badge.
+      if (entry.kind === 'ssh') {
+        const badge = document.createElement('span');
+        badge.className = 'recents-badge recents-badge--ssh';
+        badge.setAttribute('aria-label', 'Remote file');
+        badge.textContent = 'SSH';
+        left.appendChild(badge);
+      }
+
       const when = document.createElement('div');
       when.className = 'when';
       when.setAttribute('data-test', 'recent-when');

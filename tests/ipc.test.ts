@@ -305,10 +305,267 @@ describe('tauriIpc', () => {
       'deleteDocPref',
       'importComments',
       'openExternalUrl',
+      // A11: SSH IPC surface.
+      'sshOpenUrl',
+      'sshPasswordResponse',
+      'onSshAskpassRequest',
     ];
     for (const m of required) {
       expect(typeof tauriIpc[m]).toBe('function');
     }
-    expect(required.length).toBe(25);
+    expect(required.length).toBe(28);
+  });
+
+  // ---------------------------------------------------------------------
+  // A11: SSH IPC surface.
+  // ---------------------------------------------------------------------
+
+  it('sshOpenUrl invokes ssh_open_url with { url }', async () => {
+    await tauriIpc.sshOpenUrl('ssh://user@host/path/file.md');
+    expect(invoke).toHaveBeenCalledWith('ssh_open_url', {
+      url: 'ssh://user@host/path/file.md',
+    });
+  });
+
+  it('sshPasswordResponse invokes ssh_password_response with { reqId, value }', async () => {
+    await tauriIpc.sshPasswordResponse('req-1', 'hunter2');
+    expect(invoke).toHaveBeenCalledWith('ssh_password_response', {
+      reqId: 'req-1',
+      value: 'hunter2',
+    });
+  });
+
+  it('sshPasswordResponse forwards null as a cancel signal', async () => {
+    // The Rust side distinguishes `null` (user aborted) from empty string
+    // (user entered no chars but pressed Submit) — verify both wire cleanly.
+    await tauriIpc.sshPasswordResponse('req-2', null);
+    expect(invoke).toHaveBeenCalledWith('ssh_password_response', {
+      reqId: 'req-2',
+      value: null,
+    });
+  });
+
+  it('onSshAskpassRequest returns a synchronous disposer even before listen resolves', async () => {
+    // The Tauri `listen` import is dynamic; the disposer must work
+    // regardless of whether the async resolve has happened yet. In jsdom
+    // (no Tauri runtime) the dynamic import rejects and the listener
+    // never installs — the disposer must still be a no-op-safe callable.
+    const dispose = tauriIpc.onSshAskpassRequest(() => {});
+    expect(typeof dispose).toBe('function');
+    // Calling it before resolution must not throw.
+    expect(() => dispose()).not.toThrow();
+    // Allow the rejected dynamic import to flush so unhandled-rejection
+    // tracking sees the catch block.
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A11: `onSshAskpassRequest` happy-path branch coverage.
+//
+// The bare adapter test above only exercises the dynamic-import-rejects
+// branch (jsdom has no Tauri runtime). Mocking `@tauri-apps/api/event`
+// at module-resolution time lets us exercise:
+//   - the success path (listen resolves before dispose)
+//   - the dispose-before-listen-resolves path (must fire u() when it lands)
+//   - the unwrap that forwards `evt.payload` to the handler (not the full
+//     Event<T> wrapper)
+// ---------------------------------------------------------------------------
+/**
+ * Polls until `predicate()` returns true or the timeout elapses. Used to
+ * synchronize with the adapter's dynamic-import → listen() chain across
+ * an unknown number of microtask ticks. v8 coverage instrumentation
+ * lengthens the microtask chain unpredictably, so a fixed two-tick flush
+ * is brittle — polling is the robust alternative.
+ */
+async function waitForCondition(
+  predicate: () => boolean,
+  timeoutMs = 2000,
+): Promise<void> {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > timeoutMs) {
+      throw new Error('waitForCondition timed out');
+    }
+    await new Promise((r) => setTimeout(r, 0));
+  }
+}
+
+describe('onSshAskpassRequest (mocked listen)', () => {
+  it('forwards evt.payload to the handler and fires unlisten on dispose', async () => {
+    // Build a deferred so we can capture the listener Tauri's `listen`
+    // would install and emit a synthetic event into it.
+    const unlistenMock = vi.fn();
+    let captured: ((evt: { payload: unknown }) => void) | null = null;
+    const listenMock = vi.fn(async (_name: string, cb: (evt: { payload: unknown }) => void) => {
+      captured = cb;
+      return unlistenMock;
+    });
+    vi.doMock('@tauri-apps/api/event', () => ({ listen: listenMock }));
+
+    try {
+      const handler = vi.fn();
+      const dispose = tauriIpc.onSshAskpassRequest(handler);
+      // Wait for the adapter's dynamic-import chain to land. The number
+      // of microtasks varies (esp. under v8 coverage instrumentation), so
+      // poll instead of flushing a fixed count.
+      await waitForCondition(() => listenMock.mock.calls.length > 0);
+      expect(listenMock).toHaveBeenCalledWith('ssh:askpass-request', expect.any(Function));
+      await waitForCondition(() => captured !== null);
+
+      // Emit a synthetic event — handler must receive the unwrapped payload
+      // (NOT the full Event<T> shape).
+      const payload = { reqId: 'r', prompt: 'P:', isPassword: true };
+      captured!({ payload });
+      expect(handler).toHaveBeenCalledWith(payload);
+
+      // Dispose after resolution → fires the captured unlisten exactly once.
+      dispose();
+      expect(unlistenMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.doUnmock('@tauri-apps/api/event');
+    }
+  });
+
+  it('disposing after listen is issued but before it resolves still fires the unlisten exactly once', async () => {
+    // Race condition: caller disposes after listen() is in-flight but
+    // before its promise resolves. The implementation's post-await
+    // `if (disposed) { u(); return; }` arm must call u() so the
+    // subscription never leaks.
+    const unlistenMock = vi.fn();
+    let resolveListen: ((u: () => void) => void) = () => undefined;
+    const listenMock = vi.fn(
+      () =>
+        new Promise<() => void>((res) => {
+          resolveListen = res;
+        }),
+    );
+    vi.doMock('@tauri-apps/api/event', () => ({ listen: listenMock }));
+
+    try {
+      const dispose = tauriIpc.onSshAskpassRequest(() => {});
+      // Wait until listen() has been called (and the adapter is suspended
+      // on the await). Polling beats a fixed flush for the reason
+      // explained on waitForCondition.
+      await waitForCondition(() => listenMock.mock.calls.length > 0);
+      // Dispose BEFORE letting listen resolve. The dispose has nothing
+      // to call yet (unlisten still null), but flags disposed=true.
+      dispose();
+      // Resolve listen — the post-await `if (disposed)` arm must fire u().
+      resolveListen(unlistenMock);
+      await waitForCondition(() => unlistenMock.mock.calls.length > 0);
+      expect(unlistenMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.doUnmock('@tauri-apps/api/event');
+    }
+  });
+
+  it('swallows a listen() rejection without throwing out of the dispatch', async () => {
+    // The Tauri event API can reject (e.g. no listener registered yet on
+    // Rust side, or a transient ipc-not-ready window during boot). The
+    // adapter MUST swallow this — throwing would surface as an unhandled
+    // rejection that kills the WebView in production. The catch block in
+    // src/ipc.ts is the safety net.
+    const listenMock = vi.fn(() => Promise.reject(new Error('listen failed')));
+    vi.doMock('@tauri-apps/api/event', () => ({ listen: listenMock }));
+    try {
+      const handler = vi.fn();
+      const dispose = tauriIpc.onSshAskpassRequest(handler);
+      // Wait until the rejected listen() has been issued and the catch
+      // block has had a chance to run.
+      await waitForCondition(() => listenMock.mock.calls.length > 0);
+      // Give the catch arm an extra tick to settle.
+      await new Promise((r) => setTimeout(r, 0));
+      // No throw, dispose still callable.
+      expect(() => dispose()).not.toThrow();
+      // Handler was never called because listen never resolved.
+      expect(handler).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock('@tauri-apps/api/event');
+    }
+  });
+
+  it('disposing before listen is even issued never invokes listen', async () => {
+    // Earlier-race variant: dispose runs while the dynamic
+    // `import('@tauri-apps/api/event')` itself is still pending. The
+    // implementation's first `if (disposed) return` arm guards this —
+    // listen() should NEVER be called because we know it'll just leak.
+    const listenMock = vi.fn(async () => () => undefined);
+    vi.doMock('@tauri-apps/api/event', () => ({ listen: listenMock }));
+
+    try {
+      const dispose = tauriIpc.onSshAskpassRequest(() => {});
+      // Dispose synchronously, before any microtask runs.
+      dispose();
+      // Now let the dynamic import resolve. Give it generous time so
+      // the test does the equivalent of "wait until any reasonable
+      // dispatcher would have called listen()". listen() must still
+      // have been skipped because disposed was true when the import
+      // resolved.
+      await new Promise((r) => setTimeout(r, 50));
+      expect(listenMock).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock('@tauri-apps/api/event');
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A11: looksLikeSshHost — client-side input-affordance regex. NOT the
+// authoritative parser (that lives in Rust); this is what the
+// OpenRemoteDialog uses to enable/disable the Open button.
+// ---------------------------------------------------------------------------
+describe('looksLikeSshHost', () => {
+  it('accepts a bare hostname', async () => {
+    const { looksLikeSshHost } = await import('../src/ipc');
+    expect(looksLikeSshHost('server.example.com')).toBe(true);
+  });
+
+  it('accepts user@host', async () => {
+    const { looksLikeSshHost } = await import('../src/ipc');
+    expect(looksLikeSshHost('alice@server.example.com')).toBe(true);
+  });
+
+  it('accepts host:port', async () => {
+    const { looksLikeSshHost } = await import('../src/ipc');
+    expect(looksLikeSshHost('server.example.com:2222')).toBe(true);
+  });
+
+  it('accepts user@host:port', async () => {
+    const { looksLikeSshHost } = await import('../src/ipc');
+    expect(looksLikeSshHost('alice@server.example.com:2222')).toBe(true);
+  });
+
+  it('trims surrounding whitespace before validating', async () => {
+    const { looksLikeSshHost } = await import('../src/ipc');
+    expect(looksLikeSshHost('  alice@server  ')).toBe(true);
+  });
+
+  it('rejects an empty string', async () => {
+    const { looksLikeSshHost } = await import('../src/ipc');
+    expect(looksLikeSshHost('')).toBe(false);
+    expect(looksLikeSshHost('   ')).toBe(false);
+  });
+
+  it('rejects an entry that contains a path or scheme', async () => {
+    // The OpenRemoteDialog has separate fields for host vs path; the host
+    // field's validator must reject anything that contains a slash or a
+    // scheme prefix so the user can't paste a full URL into the wrong field.
+    const { looksLikeSshHost } = await import('../src/ipc');
+    expect(looksLikeSshHost('ssh://server')).toBe(false);
+    expect(looksLikeSshHost('server/path')).toBe(false);
+    expect(looksLikeSshHost('a b')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A11: `ipc` singleton alias — kept identical to `tauriIpc` so views that
+// import the singleton get the same wire-shape verified above.
+// ---------------------------------------------------------------------------
+describe('ipc singleton alias', () => {
+  it('is the same instance as tauriIpc', async () => {
+    const mod = await import('../src/ipc');
+    expect(mod.ipc).toBe(mod.tauriIpc);
   });
 });
