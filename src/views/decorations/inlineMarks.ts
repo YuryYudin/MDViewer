@@ -20,7 +20,7 @@
  * away and hide" experience feel instant.
  */
 
-import { syntaxTree } from '@codemirror/language';
+import { ensureSyntaxTree, syntaxTree } from '@codemirror/language';
 import type { EditorState, Extension } from '@codemirror/state';
 import { EditorSelection, RangeSetBuilder } from '@codemirror/state';
 import {
@@ -108,7 +108,18 @@ function buildDecorations(state: EditorState): DecorationSet {
     deco: Decoration.replace({}),
   });
 
-  const tree = syntaxTree(state);
+  // BUG FIX (render-bug-repro): lezer parses incrementally and
+  // `syntaxTree(state)` returns ONLY whatever's been parsed in the
+  // initial idle window. For documents longer than ~80 lines the
+  // parser doesn't finish before the first decoration build, so
+  // nodes past the parse frontier never get their sigils decorated —
+  // the user sees raw `#`, `**`, `~~` markers on the tail of the
+  // document. `ensureSyntaxTree` forces parsing up to a position
+  // with a time budget. Use the whole document length so the entire
+  // tree is available before iterate(); the 200ms timeout caps the
+  // blocking cost on truly enormous documents (the parser is already
+  // fast — markdown is a tiny grammar).
+  const tree = ensureSyntaxTree(state, state.doc.length, 200) ?? syntaxTree(state);
   tree.iterate({
     enter(node: SyntaxNodeRef) {
       handleNode(node, state, out, sigil);

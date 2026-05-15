@@ -17,8 +17,19 @@ import { defaultSettings } from './defaultSettings';
 // Path inside the served publicDir. We co-located the gallery sidecar
 // in e2e/fixtures/ so both the .md and the .comments.json sit one
 // fetch hop away.
-const GALLERY_URL = '/render-gallery.md';
-const SIDECAR_URL = '/render-gallery.md.comments.json';
+//
+// The fixture URLs are overridable via `?fixture=<name>` so a single
+// gallery bundle can be reused by additional test specs (e.g. the
+// bug-repro spec that loads render-bug-repro.md). When the query
+// param is absent we default to render-gallery.md — every existing
+// test continues to use that path.
+const fixtureParam =
+  typeof window !== 'undefined'
+    ? new URLSearchParams(window.location.search).get('fixture')
+    : null;
+const FIXTURE_BASE = fixtureParam ?? 'render-gallery';
+const GALLERY_URL = `/${FIXTURE_BASE}.md`;
+const SIDECAR_URL = `/${FIXTURE_BASE}.md.comments.json`;
 
 async function fetchText(url: string): Promise<string> {
   const r = await fetch(url);
@@ -77,12 +88,33 @@ async function renderMarkdownStub(source: string): Promise<RenderResult> {
   };
 }
 
+async function fetchOptional(url: string): Promise<string | null> {
+  try {
+    const r = await fetch(url);
+    return r.ok ? r.text() : null;
+  } catch {
+    return null;
+  }
+}
+
 async function main() {
-  const [source, sidecarText] = await Promise.all([
-    fetchText(GALLERY_URL),
-    fetchText(SIDECAR_URL),
-  ]);
-  const sidecar = JSON.parse(sidecarText) as { threads: Thread[] };
+  const source = await fetchText(GALLERY_URL);
+  // Sidecar is optional — alternate fixtures (e.g. render-bug-repro)
+  // don't ship a sidecar. Vite preview falls back to index.html (HTTP
+  // 200 with HTML body) for missing files instead of 404'ing, so we
+  // sniff for a leading `{` before attempting JSON.parse — otherwise
+  // we fall back to an empty thread list.
+  const sidecarText = await fetchOptional(SIDECAR_URL);
+  let sidecar: { threads: Thread[] } = { threads: [] };
+  if (sidecarText && sidecarText.trimStart().startsWith('{')) {
+    try {
+      sidecar = JSON.parse(sidecarText) as { threads: Thread[] };
+    } catch {
+      // Malformed JSON — degrade to empty threads rather than
+      // failing the whole boot.
+      sidecar = { threads: [] };
+    }
+  }
 
   const ipc = {
     async saveDocument(_tabId: string, _contents: string): Promise<SaveOutcome> {
