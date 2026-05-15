@@ -30,7 +30,7 @@
 //! `anchor::resolve_anchor`.
 
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager, State};
 
 use mdviewer_lib::{
@@ -862,6 +862,140 @@ async fn is_drive_desktop_path(path: String) -> bool {
     .is_some()
 }
 
+// ----------------------------------------------------------------------------
+// A9: SSH IPC commands.
+//
+// `ssh_open_url` parallels `drive_open_url`: parse the URL, fetch + cache the
+// remote bytes, register a tab. `ssh_password_response` is the frontend's reply
+// channel for askpass prompts — it forwards the user's value (or `None` for
+// cancel) into the shared `AskpassInbox`, which the Unix askpass server (A6)
+// and the Windows russh auth callback (A5) both await on.
+//
+// Both handlers go through the `SshAppState` managed state, which holds:
+//   * `ops`   — `Arc<Operations>` with the per-platform transport baked in
+//   * `inbox` — `Arc<AskpassInbox>` shared with the askpass listener / russh
+// ----------------------------------------------------------------------------
+
+/// Shared SSH state stashed in Tauri's managed-state container at startup.
+/// One instance is constructed in `setup()` and reused for every SSH IPC
+/// invocation. The transport baked into `ops` differs per platform; both
+/// platforms route askpass replies through the same `inbox`.
+pub struct SshAppState {
+    pub ops: Arc<mdviewer_lib::ssh::operations::Operations>,
+    pub inbox: Arc<mdviewer_lib::ssh::auth::AskpassInbox>,
+}
+
+#[tauri::command]
+async fn ssh_open_url(
+    state: State<'_, Ws>,
+    ssh: State<'_, SshAppState>,
+    app: tauri::AppHandle,
+    url: String,
+) -> Result<mdviewer_lib::workspace::TabSummary, String> {
+    let parsed = mdviewer_core::ssh_url::parse(&url).map_err(|e| e.to_string())?;
+    // Async fetch FIRST without holding the workspace mutex. The IPC
+    // handler runs on a Tauri worker; holding a `std::sync::MutexGuard`
+    // across `.await` would fail the Send bound. Mirrors the three-phase
+    // pattern used by `drive_connect` (snapshot → IO → apply).
+    let outcome = ssh
+        .ops
+        .open_url(&parsed)
+        .await
+        .map_err(|e| e.to_string())?;
+    // Sync registration: re-acquire the lock and stash the tab.
+    let summary = {
+        let mut ws = state.lock().map_err(|e| e.to_string())?;
+        ws.register_ssh_tab_from_outcome(parsed, outcome)
+    };
+    // Mirror `drive_open_url`'s frontend nudge so main.ts repaints the tab
+    // strip + active document once the new tab lands.
+    let _ = app.emit("workspace-changed", ());
+    Ok(summary)
+}
+
+#[tauri::command]
+async fn ssh_password_response(
+    ssh: State<'_, SshAppState>,
+    req_id: String,
+    value: Option<String>,
+) -> Result<(), String> {
+    // `AskpassInbox::respond` is synchronous (oneshot::Sender::send doesn't
+    // await). Unknown req_ids silently no-op — see the auth.rs unit suite.
+    ssh.inbox.respond(&req_id, value);
+    Ok(())
+}
+
+/// Dispatch a heterogeneous list of CLI targets onto the workspace. Used by
+/// (a) the single-instance plugin callback and (b) macOS's
+/// `RunEvent::Opened` hook — both sync contexts that may receive a mix of
+/// `Local` paths and `Ssh` URLs.
+///
+/// Local targets open through `Workspace::open_document` under a brief
+/// workspace lock; SSH targets spawn an async task that fetches via
+/// `Operations::open_url` lock-free, then re-acquires the lock to register
+/// the tab. The two paths are independent: an SSH fetch failure for one
+/// URL doesn't block another URL from succeeding.
+fn dispatch_cli_targets(
+    app: tauri::AppHandle,
+    targets: Vec<cli::OpenTarget>,
+    source_label: &'static str,
+) {
+    // First pass: open Local tabs synchronously under a single workspace
+    // lock acquisition. We deliberately don't .await inside this scope.
+    let mut deferred_ssh: Vec<mdviewer_core::ssh_url::SshUrl> = Vec::new();
+    let ws_state = app.state::<Mutex<Workspace>>();
+    if let Ok(mut ws) = ws_state.lock() {
+        for target in targets {
+            match target {
+                cli::OpenTarget::Local(path) => {
+                    match ws.open_document(&path, OpenOpts::default()) {
+                        Ok(_) => tracing::info!(
+                            "opened from {}: {}",
+                            source_label,
+                            path.display()
+                        ),
+                        Err(e) => tracing::warn!(
+                            "{} open failed for {}: {e:?}",
+                            source_label,
+                            path.display()
+                        ),
+                    }
+                }
+                cli::OpenTarget::Ssh(url) => deferred_ssh.push(url),
+            }
+        }
+    }
+
+    // Second pass: each SSH target spawns a Tauri-runtime task so the
+    // synchronous caller (the single-instance plugin callback, the
+    // RunEvent::Opened branch) returns immediately and the async fetch
+    // happens off the event loop.
+    for url in deferred_ssh {
+        let app_handle = app.clone();
+        let url_label = format_ssh_label(&url);
+        tauri::async_runtime::spawn(async move {
+            let ssh_state = app_handle.state::<SshAppState>();
+            let outcome = match ssh_state.ops.open_url(&url).await {
+                Ok(o) => o,
+                Err(e) => {
+                    tracing::warn!(
+                        "{} SSH open failed for {}: {e:?}",
+                        source_label,
+                        url_label
+                    );
+                    return;
+                }
+            };
+            let ws_state = app_handle.state::<Mutex<Workspace>>();
+            if let Ok(mut ws) = ws_state.lock() {
+                let _ = ws.register_ssh_tab_from_outcome(url, outcome);
+                tracing::info!("opened SSH from {}: {}", source_label, url_label);
+            }
+            let _ = app_handle.emit("workspace-changed", ());
+        });
+    }
+}
+
 /// macOS-only: shell out to `osascript` to install or remove the
 /// `/usr/local/bin/mdviewer` symlink, then surface a native dialog with the
 /// result. Cancellations stay silent so a user who clicks Cancel on the
@@ -1060,23 +1194,13 @@ fn main() {
         // running spawns a duplicate window on Win/Linux and bounces
         // the Dock icon on macOS without doing anything useful.
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            let paths = cli::parse_positional_args(&argv);
-            if !paths.is_empty() {
-                let ws_state = app.state::<Mutex<Workspace>>();
-                if let Ok(mut ws) = ws_state.lock() {
-                    for path in &paths {
-                        match ws.open_document(path, OpenOpts::default()) {
-                            Ok(_) => tracing::info!(
-                                "opened from second invocation: {}",
-                                path.display()
-                            ),
-                            Err(e) => tracing::warn!(
-                                "second-instance open failed for {}: {e:?}",
-                                path.display()
-                            ),
-                        }
-                    }
-                }
+            let targets = cli::parse_positional_args(&argv);
+            if !targets.is_empty() {
+                dispatch_cli_targets(
+                    app.clone(),
+                    targets,
+                    "second invocation",
+                );
                 let _ = app.emit("workspace-changed", ());
             }
             // Bring the main window forward so the user sees the new tab
@@ -1173,17 +1297,60 @@ fn main() {
             let dir = env_override.map(PathBuf::from).unwrap_or(data_dir);
             let mut ws = Workspace::new(&dir)?;
 
+            // A9: SSH state — `Operations` + `AskpassInbox`. The Operations
+            // handle is shared (Arc) across IPC handlers + the CLI-dispatch
+            // path; the inbox is shared with the askpass listener (Unix) /
+            // russh auth callback (Windows). Constructed before any CLI
+            // SSH opens fire below so `ws.open_ssh_url(...)` can reach the
+            // same Operations the later IPC handlers will use.
+            let ssh_state = build_ssh_app_state(app, &dir)?;
+            let ssh_ops = ssh_state.ops.clone();
+
             // CLI positional args take precedence over the saved session —
             // a user invoking `mdviewer notes.md` is expressing intent for
             // *this* launch and shouldn't have the saved tabs loaded too.
             // The session restore branch only runs when argv brought no
             // paths AND the user has opted into restore mode.
-            let cli_paths = cli::parse_positional_args(&std::env::args().collect::<Vec<_>>());
-            if !cli_paths.is_empty() {
-                for path in cli_paths {
-                    match ws.open_document(&path, OpenOpts::default()) {
-                        Ok(_) => tracing::info!("opened from CLI: {}", path.display()),
-                        Err(e) => tracing::warn!("CLI arg open failed for {}: {e:?}", path.display()),
+            let cli_targets =
+                cli::parse_positional_args(&std::env::args().collect::<Vec<_>>());
+            // A9: argv now contains a mix of `OpenTarget::Local(path)` and
+            // `OpenTarget::Ssh(url)`. Local opens go through `open_document`
+            // synchronously; SSH opens drive `open_ssh_url(url, &ops)` via
+            // `block_on` because `ws` is still owned directly here (the
+            // managed-state hand-off via `app.manage(...)` lives further
+            // down). Each target's failure is logged and the rest still
+            // load — same UX as the prior single-variant loop.
+            if !cli_targets.is_empty() {
+                for target in cli_targets {
+                    match target {
+                        cli::OpenTarget::Local(path) => {
+                            match ws.open_document(&path, OpenOpts::default()) {
+                                Ok(_) => tracing::info!(
+                                    "opened from CLI: {}",
+                                    path.display()
+                                ),
+                                Err(e) => tracing::warn!(
+                                    "CLI arg open failed for {}: {e:?}",
+                                    path.display()
+                                ),
+                            }
+                        }
+                        cli::OpenTarget::Ssh(url) => {
+                            let url_label = format_ssh_label(&url);
+                            let res = tauri::async_runtime::block_on(
+                                ws.open_ssh_url(url.clone(), &ssh_ops),
+                            );
+                            match res {
+                                Ok(_) => tracing::info!(
+                                    "opened SSH from CLI: {}",
+                                    url_label
+                                ),
+                                Err(e) => tracing::warn!(
+                                    "CLI SSH open failed for {}: {e:?}",
+                                    url_label
+                                ),
+                            }
+                        }
                     }
                 }
             } else if matches!(
@@ -1240,6 +1407,11 @@ fn main() {
             let initial_behavior = ws.settings_store().get().editor.external_change_behavior;
             let settings_rx = ws.settings_store().subscribe();
             app.manage(Mutex::new(ws));
+            // SSH managed state goes in alongside the workspace so any IPC
+            // handler that takes `State<'_, SshAppState>` finds it. The
+            // Operations Arc carried inside `ssh_state` is the same one
+            // `ssh_ops` cloned earlier for the CLI-dispatch path.
+            app.manage(ssh_state);
 
             // macOS-only: first-launch CLI-install nudge. Spawned on a
             // worker so neither the Tauri event loop nor app startup
@@ -1338,6 +1510,9 @@ fn main() {
             drive_resolve_path,
             drive_get_collaborators,
             is_drive_desktop_path,
+            // A9: SSH IPC surface.
+            ssh_open_url,
+            ssh_password_response,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -1353,22 +1528,11 @@ fn main() {
             // there for the first invocation.
             #[cfg(any(target_os = "macos", target_os = "ios"))]
             if let tauri::RunEvent::Opened { urls } = event {
-                let paths = cli::urls_to_paths(&urls);
-                if paths.is_empty() {
+                let targets = cli::urls_to_paths(&urls);
+                if targets.is_empty() {
                     return;
                 }
-                let ws_state = app.state::<Mutex<Workspace>>();
-                if let Ok(mut ws) = ws_state.lock() {
-                    for path in &paths {
-                        match ws.open_document(path, OpenOpts::default()) {
-                            Ok(_) => tracing::info!("opened from RunEvent::Opened: {}", path.display()),
-                            Err(e) => tracing::warn!(
-                                "RunEvent::Opened failed for {}: {e:?}",
-                                path.display()
-                            ),
-                        }
-                    }
-                }
+                dispatch_cli_targets(app.clone(), targets, "RunEvent::Opened");
                 // Tell the WebView to re-fetch the open-doc list and re-paint
                 // its tab strip. main.ts listens for this event and calls
                 // workspace.refresh().
@@ -1378,4 +1542,111 @@ fn main() {
             #[cfg(not(any(target_os = "macos", target_os = "ios")))]
             { let _ = (app, event); }
         });
+}
+
+/// A9: render a user-friendly "ssh://user@host:port/path" label for
+/// logging. Mirrors what the user typed at the prompt so log scraping
+/// can correlate a CLI argv entry to the resulting Workspace open.
+fn format_ssh_label(url: &mdviewer_core::ssh_url::SshUrl) -> String {
+    let (user, sep) = match &url.user {
+        Some(u) => (u.as_str(), "@"),
+        None => ("", ""),
+    };
+    format!(
+        "ssh://{}{}{}:{}{}",
+        user, sep, url.host, url.port, url.path
+    )
+}
+
+/// A9: assemble the shared `SshAppState`.
+///
+/// `Operations` wraps a per-platform `SshTransport` impl plus the on-disk
+/// cache base for fetched bytes. `AskpassInbox` mediates between askpass
+/// producers (Unix listener / Windows russh callback) and the frontend
+/// modal that resolves each prompt via the `ssh_password_response` IPC
+/// command.
+///
+/// Cache base: honors the `MDVIEWER_REMOTE_CACHE_DIR` env override (used
+/// by the e2e suite) and otherwise falls back to the Tauri-provided
+/// cache directory. Mirrors the same env-override pattern `MDVIEWER_DATA_DIR`
+/// uses for the workspace data dir.
+///
+/// Unix path: starts the askpass socket listener so the helper bin can
+/// connect back when `ssh` invokes it via `SSH_ASKPASS`. The socket path
+/// returned by the listener is stashed in the `AuthContext` consulted at
+/// per-command env-installation time (B5 will thread that context into
+/// the per-command transport call); the inbox is also stashed in the
+/// returned `SshAppState` so the frontend modal can resolve pending
+/// prompts.
+///
+/// Windows path: no socket — `russh` calls back into the inbox directly
+/// from the auth dance (see `AuthStrategy::WindowsCallback`). The
+/// `AuthStrategy` is computed once via the auth `probe` and baked into
+/// the `WindowsTransport` constructor.
+fn build_ssh_app_state(
+    app: &tauri::App,
+    data_dir: &std::path::Path,
+) -> Result<SshAppState, Box<dyn std::error::Error>> {
+    use mdviewer_lib::ssh::auth::AskpassInbox;
+    use mdviewer_lib::ssh::operations::Operations;
+
+    let cache_base = {
+        let cache_dir = app
+            .path()
+            .app_cache_dir()
+            .unwrap_or_else(|_| data_dir.to_path_buf());
+        Operations::resolve_cache_base(cache_dir)
+    };
+
+    let inbox = Arc::new(AskpassInbox::new());
+
+    // Per-platform transport construction. The Unix branch starts the
+    // askpass listener whose socket path the per-command transport call
+    // bakes into `SSH_ASKPASS` + `MDVIEWER_ASKPASS_SOCKET` env vars; the
+    // Windows branch hands the inbox to the russh auth callback. The
+    // `tauri::async_runtime::block_on` call below starts the listener on
+    // the runtime that backs every other async IPC handler, so the
+    // socket survives the `setup()` return.
+    let transport: Arc<dyn mdviewer_lib::ssh::transport::SshTransport> = {
+        #[cfg(unix)]
+        {
+            // Start the listener so per-command transport invocations have
+            // a socket to thread into the spawned ssh process. The returned
+            // server is leaked into a static so its TempDir guard isn't
+            // dropped (matching `start_listener`'s own internal leak of
+            // the tempdir handle). We ignore the `requests` receiver here —
+            // each helper connection already calls `inbox.register(...)`
+            // and the receiver isn't consumed by A9; future tasks will
+            // forward those events to the frontend modal.
+            let _server = tauri::async_runtime::block_on(
+                mdviewer_lib::ssh::askpass::start_listener(inbox.clone()),
+            )?;
+            // Leak the server so the socket + tempdir survive until process
+            // exit. The listener's accept loop is already spawned on the
+            // runtime; only the `AskpassServer` handle wrapping it needs
+            // to stay alive.
+            let _: &'static mdviewer_lib::ssh::askpass::AskpassServer =
+                Box::leak(Box::new(_server));
+            Arc::new(mdviewer_lib::ssh::transport_unix::UnixTransport::new())
+        }
+        #[cfg(windows)]
+        {
+            // Build an AuthContext + probe upfront — Windows bakes the
+            // resulting AuthStrategy into the transport at construction.
+            let (tx, _rx) = tokio::sync::mpsc::channel(8);
+            let ctx = mdviewer_lib::ssh::auth::AuthContext {
+                askpass_helper_path: std::path::PathBuf::new(),
+                askpass_socket: std::path::PathBuf::new(),
+                askpass_tx: tx,
+                inbox: inbox.clone(),
+            };
+            let strategy = mdviewer_lib::ssh::auth::probe(&ctx);
+            Arc::new(mdviewer_lib::ssh::transport_windows::WindowsTransport::new(
+                strategy,
+            ))
+        }
+    };
+
+    let ops = Arc::new(Operations::new(transport, cache_base));
+    Ok(SshAppState { ops, inbox })
 }

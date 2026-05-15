@@ -596,7 +596,26 @@ impl Workspace {
         ops: &crate::ssh::operations::Operations,
     ) -> Result<TabSummary, crate::ssh::transport::TransportError> {
         let outcome = ops.open_url(&url).await?;
+        Ok(self.register_ssh_tab_from_outcome(url, outcome))
+    }
 
+    /// A9: synchronous half of `open_ssh_url`. The IPC handler in `main.rs`
+    /// holds a `std::sync::Mutex<Workspace>` which cannot be held across the
+    /// `.await` on `ops.open_url(...)` (the guard isn't `Send`). The handler
+    /// therefore runs the async fetch lock-free, then calls this method
+    /// under the re-acquired lock to register the new tab.
+    ///
+    /// Pre-condition: `outcome` must come from `Operations::open_url(&url)`
+    /// (the cache mirror is keyed on the URL, so handing a mismatched pair
+    /// would land the bytes under a wrong path). The combined async path
+    /// (`open_ssh_url`) is the single internal call site that ensures the
+    /// pre-condition; tests can construct an `Operations` with a fake
+    /// transport and reach the same shape through `open_ssh_url`.
+    pub fn register_ssh_tab_from_outcome(
+        &mut self,
+        url: SshUrl,
+        outcome: crate::ssh::operations::OpenOutcome,
+    ) -> TabSummary {
         // De-dupe against an already-open tab on the same cache path. The
         // cache mirror is deterministic for a given (host, port, user,
         // path) tuple so two `open_ssh_url` calls for the same URL collapse
@@ -606,7 +625,7 @@ impl Workspace {
             .values()
             .find(|t| t.path == outcome.cache_path)
         {
-            return Ok(existing.summary());
+            return existing.summary();
         }
 
         let source = String::from_utf8_lossy(&outcome.bytes).into_owned();
@@ -668,7 +687,7 @@ impl Workspace {
         // not a local path. A future task can teach Recents about SshUrl
         // entries; for now the URL-paste flow is the only entry point.
         self.persist_session();
-        Ok(summary)
+        summary
     }
 
     /// A8 review-cycle-1: read-only accessor for the per-tab SSH state
