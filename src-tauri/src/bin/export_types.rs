@@ -32,6 +32,11 @@ fn export_all() -> Result<String, Box<dyn std::error::Error>> {
     buf.push('\n');
     buf.push_str(&mdviewer_lib::settings::AppearanceSettings::export_to_string().unwrap());
     buf.push('\n');
+    // A10: SSH-tier autosave knobs (ssh_interval_ms + ssh_enabled). Emitted
+    // before `EditorSettings` so the latter's `autosave` field resolves the
+    // import without a dangling reference.
+    buf.push_str(&mdviewer_lib::settings::AutosaveSettings::export_to_string().unwrap());
+    buf.push('\n');
     buf.push_str(&mdviewer_lib::settings::EditorSettings::export_to_string().unwrap());
     buf.push('\n');
     buf.push_str(&mdviewer_lib::settings::CommentsSettings::export_to_string().unwrap());
@@ -97,7 +102,12 @@ fn export_all() -> Result<String, Box<dyn std::error::Error>> {
     buf.push_str(&mdviewer_lib::workspace::ExportResult::export_to_string().unwrap());
     buf.push('\n');
 
-    // RecentEntry — list_recents IPC return shape (path + mtime).
+    // A10: EntryKind tagging on RecentEntry — `"local" | "ssh"` literal.
+    // Emitted before `RecentEntry` so the latter's `kind` field resolves
+    // without a dangling import.
+    buf.push_str(&mdviewer_lib::recents::EntryKind::export_to_string().unwrap());
+    buf.push('\n');
+    // RecentEntry — list_recents IPC return shape (path + mtime + kind).
     buf.push_str(&mdviewer_lib::recents::RecentEntry::export_to_string().unwrap());
     buf.push('\n');
 

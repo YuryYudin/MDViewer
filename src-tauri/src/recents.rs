@@ -28,6 +28,13 @@ use std::time::UNIX_EPOCH;
 /// a path canonicalized on tab open must match the same form on save, or
 /// lookups silently miss.
 pub(crate) fn canonical_or_self(p: &Path) -> PathBuf {
+    // SSH URLs are remote handles, not local filesystem paths. Calling
+    // `canonicalize()` on them would resolve relative to the cwd and return
+    // garbage (or fail outright on some platforms). Short-circuit so the URL
+    // is preserved verbatim through the push/lookup pipeline.
+    if p.to_string_lossy().starts_with("ssh://") {
+        return p.to_path_buf();
+    }
     p.canonicalize().unwrap_or_else(|_| p.to_path_buf())
 }
 
@@ -38,11 +45,44 @@ pub(crate) fn canonical_or_self(p: &Path) -> PathBuf {
 ///
 /// `mtime` is `None` when the file was unreadable at list time (deleted,
 /// permission denied) — the frontend renders `—` in that case.
+///
+/// `kind` is derived at materialization time by sniffing the path's prefix —
+/// `ssh://` URLs land as [`EntryKind::Ssh`], everything else is
+/// [`EntryKind::Local`]. It is intentionally **not** stored on disk: keeping
+/// the on-disk schema as a bare `[String, ...]` means old recents.json files
+/// load unchanged and a future migration mangling kind-vs-path can't drift.
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 #[ts(export)]
 pub struct RecentEntry {
     pub path: PathBuf,
     pub mtime: Option<i64>,
+    pub kind: EntryKind,
+}
+
+/// Origin tag for a [`RecentEntry`]. Derived from the path string at
+/// materialization time, not persisted (see `RecentEntry`'s doc comment).
+/// `#[ts(rename_all = "kebab-case")]` makes the emitted TS literal type
+/// `"local" | "ssh"` — single-word variants serialize lowercased.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
+#[serde(rename_all = "kebab-case")]
+#[ts(export, rename_all = "kebab-case")]
+pub enum EntryKind {
+    Local,
+    Ssh,
+}
+
+impl RecentEntry {
+    /// Sniff a path's prefix to decide which origin tier it belongs to.
+    /// Anything starting with `ssh://` is remote; everything else is local.
+    /// Keeping this in one place means the classification rule lives next
+    /// to the field definition, not scattered across call sites.
+    fn classify(path: &Path) -> EntryKind {
+        if path.to_string_lossy().starts_with("ssh://") {
+            EntryKind::Ssh
+        } else {
+            EntryKind::Local
+        }
+    }
 }
 
 const MAX_ENTRIES: usize = 10;
@@ -73,7 +113,22 @@ impl RecentsStore {
             match std::fs::read_to_string(&path) {
                 Ok(bytes) => {
                     let on_disk: OnDisk = serde_json::from_str(&bytes).unwrap_or_default();
-                    on_disk.entries.into_iter().filter(|p| p.exists()).collect()
+                    on_disk
+                        .entries
+                        .into_iter()
+                        .filter(|p| {
+                            // SSH URLs can't be stat'd without spawning ssh —
+                            // applying `.exists()` to them would (a) always
+                            // return false on local FS, dropping every remote
+                            // recent, or (b) require a network probe per
+                            // startup. Trust the entry instead; A11 surfaces
+                            // unreachable hosts to the user at open time.
+                            if p.to_string_lossy().starts_with("ssh://") {
+                                return true;
+                            }
+                            p.exists()
+                        })
+                        .collect()
                 }
                 Err(e) => {
                     tracing::warn!(?path, ?e, "could not read recents.json; starting empty");
@@ -136,8 +191,108 @@ impl RecentsStore {
                     .and_then(|m| m.modified().ok())
                     .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
                     .map(|d| d.as_secs() as i64);
-                RecentEntry { path: p.clone(), mtime }
+                RecentEntry {
+                    path: p.clone(),
+                    mtime,
+                    kind: RecentEntry::classify(p),
+                }
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod ssh_tests {
+    use super::*;
+
+    /// `canonical_or_self` must short-circuit on `ssh://` prefixes — these are
+    /// URLs, not local paths, and calling `canonicalize()` on them resolves
+    /// relative to the cwd which produces garbage.
+    #[test]
+    fn ssh_url_preserved_unchanged() {
+        let p = Path::new("ssh://alice@host:22/notes/file.md");
+        let result = canonical_or_self(p);
+        assert_eq!(result, p);
+    }
+
+    /// On load, the existing filter at the load path drops paths that don't
+    /// `.exists()`. SSH URLs would always fail that check (we can't stat a
+    /// remote without spawning ssh), so they need to pass through
+    /// unconditionally.
+    #[test]
+    fn ssh_entries_survive_load_filter() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = RecentsStore::open(dir.path()).unwrap();
+        r.push(Path::new("ssh://host/file.md")).unwrap();
+        let r2 = RecentsStore::open(dir.path()).unwrap();
+        let entries = r2.list_with_mtime();
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.path.to_string_lossy() == "ssh://host/file.md"),
+            "ssh entry must survive the load-time `.exists()` filter"
+        );
+        assert!(
+            entries.iter().any(|e| matches!(e.kind, EntryKind::Ssh)),
+            "loaded ssh entry must be classified as Ssh"
+        );
+    }
+
+    /// Local entries keep their `Local` classification — kind is derived at
+    /// materialization time, not stored on disk.
+    #[test]
+    fn local_entries_keep_existing_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("hello.md");
+        std::fs::write(&file, "x").unwrap();
+        let r = RecentsStore::open(dir.path()).unwrap();
+        r.push(&file).unwrap();
+        let entries = r.list_with_mtime();
+        assert!(
+            entries.iter().any(|e| matches!(e.kind, EntryKind::Local)),
+            "local file must classify as Local"
+        );
+    }
+
+    /// On-disk schema stays the bare-path-array shape — `kind` is derived,
+    /// not persisted. A schema change here would force every existing user
+    /// through a migration, which we explicitly want to avoid.
+    #[test]
+    fn on_disk_schema_unchanged_no_kind_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = RecentsStore::open(dir.path()).unwrap();
+        r.push(Path::new("ssh://host/file.md")).unwrap();
+        let bytes = std::fs::read_to_string(dir.path().join("recents.json")).unwrap();
+        // Schema is `{"entries": ["..."]}` — no `kind`, no `mtime`.
+        assert!(bytes.contains("\"entries\""), "must keep `entries` key");
+        assert!(
+            !bytes.contains("\"kind\""),
+            "kind must NOT be persisted to disk (derived at materialize time)"
+        );
+        assert!(
+            bytes.contains("ssh://host/file.md"),
+            "ssh URL must be stored verbatim as a string entry"
+        );
+    }
+
+    /// Legacy on-disk format (the bare `{"entries": ["/abs/path"]}` shape we
+    /// already ship) must load cleanly without any schema migration. Drop a
+    /// hand-rolled legacy file in place and verify it deserializes.
+    #[test]
+    fn legacy_recents_file_loads_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("legacy.md");
+        std::fs::write(&file, "x").unwrap();
+        // Hand-roll the legacy on-disk shape (no `kind` field anywhere).
+        let canonical = file.canonicalize().unwrap();
+        let raw = format!(
+            "{{\"entries\":[{}]}}",
+            serde_json::to_string(&canonical).unwrap()
+        );
+        std::fs::write(dir.path().join("recents.json"), raw).unwrap();
+        let r = RecentsStore::open(dir.path()).unwrap();
+        let entries = r.list_with_mtime();
+        assert_eq!(entries.len(), 1, "legacy entry must survive load");
+        assert!(matches!(entries[0].kind, EntryKind::Local));
     }
 }

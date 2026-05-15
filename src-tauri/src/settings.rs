@@ -160,6 +160,47 @@ pub struct EditorSettings {
     pub mermaid_enabled: bool,
     pub show_whitespace: bool,
     pub word_wrap: bool,
+    /// SSH autosave knobs. Lives in its own sub-struct so users can disable
+    /// SSH autosave without affecting local autosave (Decision 6 — a 50 MB
+    /// markdown over a tethered hotspot shouldn't force you to choose
+    /// between "lose local autosave too" and "burn the data plan").
+    /// `serde(default)` keeps legacy settings.toml files (no `[editor.autosave]`
+    /// block) loading cleanly.
+    #[serde(default)]
+    pub autosave: AutosaveSettings,
+}
+
+/// Per-tier autosave settings. Today only the SSH tier is configurable here;
+/// local autosave still lives at [`EditorSettings::auto_save`] (kept stable
+/// so existing settings.toml files don't drift).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
+#[ts(export)]
+pub struct AutosaveSettings {
+    /// Debounce interval for the SSH autosave loop, in milliseconds. Clamped
+    /// to `[5_000, 600_000]` in `clamp()` so a fat-fingered config can't
+    /// hammer the link or silently lose edits across disconnects.
+    #[serde(default = "default_ssh_interval_ms")]
+    pub ssh_interval_ms: u32,
+    /// Whether to autosave SSH-backed documents at all. Independent of the
+    /// local `auto_save` toggle — see the struct doc.
+    #[serde(default = "default_ssh_enabled")]
+    pub ssh_enabled: bool,
+}
+
+impl Default for AutosaveSettings {
+    fn default() -> Self {
+        Self {
+            ssh_interval_ms: default_ssh_interval_ms(),
+            ssh_enabled: default_ssh_enabled(),
+        }
+    }
+}
+
+fn default_ssh_interval_ms() -> u32 {
+    60_000
+}
+fn default_ssh_enabled() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
@@ -335,6 +376,7 @@ impl Default for Settings {
                 mermaid_enabled: true,
                 show_whitespace: false,
                 word_wrap: true,
+                autosave: AutosaveSettings::default(),
             },
             comments: CommentsSettings {
                 auto_merge: AutoMergeMode::Always,
@@ -487,6 +529,9 @@ fn clamp(s: &mut Settings) {
     s.appearance.font_size_px = s.appearance.font_size_px.clamp(8, 64);
     s.appearance.line_height = s.appearance.line_height.clamp(100, 250);
     s.editor.auto_save_debounce_ms = s.editor.auto_save_debounce_ms.clamp(100, 10_000);
+    // SSH autosave debounce: floor of 5 s avoids hammering the link, ceiling
+    // of 10 min keeps lost-edits-across-disconnect bounded.
+    s.editor.autosave.ssh_interval_ms = s.editor.autosave.ssh_interval_ms.clamp(5_000, 600_000);
 }
 
 fn diff_event(a: &Settings, b: &Settings) -> Option<ChangeEvent> {
@@ -626,6 +671,100 @@ mod tests {
                 "default shortcut for {action} missing after load",
             );
         }
+    }
+
+    /// Legacy settings.toml files (written before A10) don't have an
+    /// `[editor.autosave]` block. The `#[serde(default)]` on the new field
+    /// must let those files load cleanly with the new defaults applied —
+    /// not error out and force the user back to a fully-reset config.
+    #[test]
+    fn legacy_settings_toml_loads_with_default_ssh_autosave() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("settings.toml");
+        std::fs::write(
+            &path,
+            b"[profile]\n\
+              user_id = \"x\"\n\
+              display_name = \"y\"\n\
+              color = \"#000000\"\n\
+              \n\
+              [appearance]\n\
+              theme = \"light\"\n\
+              font_size_px = 14\n\
+              line_height = 150\n\
+              density = \"comfortable\"\n\
+              \n\
+              [editor]\n\
+              default_open_mode = \"view\"\n\
+              auto_save = true\n\
+              auto_save_debounce_ms = 750\n\
+              external_change_behavior = \"ask\"\n\
+              syntax_highlighting = true\n\
+              mermaid_enabled = true\n\
+              show_whitespace = false\n\
+              word_wrap = true\n\
+              \n\
+              [comments]\n\
+              auto_merge = \"always\"\n\
+              reattachment_confidence = 75\n\
+              sidecar_pattern = \"{name}.md.comments.json\"\n\
+              show_resolved = false\n\
+              \n\
+              [advanced]\n\
+              verbose_logs = false\n\
+              \n\
+              [shortcuts]\n",
+        )
+        .unwrap();
+        let store = SettingsStore::open(dir.path()).expect("open");
+        let s = store.get();
+        assert!(
+            s.editor.autosave.ssh_enabled,
+            "ssh_enabled must default to true on legacy files"
+        );
+        assert_eq!(
+            s.editor.autosave.ssh_interval_ms, 60_000,
+            "ssh_interval_ms must default to 60_000 on legacy files"
+        );
+    }
+
+    /// `ssh_interval_ms` is clamped to a sensible range the same way
+    /// `auto_save_debounce_ms` is. Below 5 s would hammer the link; above
+    /// 10 min would silently lose user edits across disconnects.
+    #[test]
+    fn ssh_interval_ms_is_clamped_on_update() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = SettingsStore::open(dir.path()).expect("open");
+        // Below floor.
+        store
+            .update(|s| s.editor.autosave.ssh_interval_ms = 1)
+            .unwrap();
+        assert_eq!(store.get().editor.autosave.ssh_interval_ms, 5_000);
+        // Above ceiling.
+        store
+            .update(|s| s.editor.autosave.ssh_interval_ms = 10_000_000)
+            .unwrap();
+        assert_eq!(store.get().editor.autosave.ssh_interval_ms, 600_000);
+    }
+
+    /// New settings round-trip cleanly through TOML serialize/deserialize.
+    /// Catches accidental rename or attribute drift that would silently
+    /// stop persisting the user's choice.
+    #[test]
+    fn ssh_autosave_fields_round_trip_through_toml() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = SettingsStore::open(dir.path()).expect("open");
+        store
+            .update(|s| {
+                s.editor.autosave.ssh_enabled = false;
+                s.editor.autosave.ssh_interval_ms = 30_000;
+            })
+            .unwrap();
+        // Re-open from disk — confirms the field landed in settings.toml.
+        let store2 = SettingsStore::open(dir.path()).expect("reopen");
+        let s = store2.get();
+        assert!(!s.editor.autosave.ssh_enabled);
+        assert_eq!(s.editor.autosave.ssh_interval_ms, 30_000);
     }
 
     /// User-customized shortcuts must NOT be overwritten by the default
