@@ -76,5 +76,6 @@ pub mod recents;
 pub mod session;
 pub mod settings;
 pub mod sidecar;
+pub mod ssh;
 pub mod watcher;
 pub mod workspace;
