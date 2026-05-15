@@ -21,3 +21,10 @@ pub mod transport_windows;
 // save_sidecar). `askpass` (Unix-only socket server) lands in A6.
 pub mod auth;
 pub mod operations;
+
+// A6: Unix-only socket server feeding the standalone `mdviewer-askpass`
+// helper bin. The helper is what `ssh` invokes via `SSH_ASKPASS`; it
+// connects back to this server over a tempdir Unix socket. Gated
+// `#[cfg(unix)]` to match the module's own gating.
+#[cfg(unix)]
+pub mod askpass;

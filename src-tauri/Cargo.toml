@@ -21,6 +21,14 @@ path = "src/main.rs"
 name = "export_types"
 path = "src/bin/export_types.rs"
 
+# A6: standalone helper invoked by `ssh` via SSH_ASKPASS on Unix. Builds
+# on Windows too but compiles to a stub `main` that exits non-zero so
+# packaging never accidentally ships a Linux artifact on Windows
+# (Windows uses the russh in-process auth callback instead).
+[[bin]]
+name = "mdviewer-askpass"
+path = "src/bin/mdviewer-askpass.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -71,7 +79,13 @@ walkdir = "2"
 # spawns `ssh` via `tokio::process::Command` and writes upload bytes to
 # the child's stdin via `AsyncWriteExt`. The features are additive and
 # don't affect non-A3 callers.
-tokio = { version = "1", features = ["sync", "time", "rt", "macros", "process", "io-util"] }
+tokio = { version = "1", features = ["sync", "time", "rt", "macros", "process", "io-util", "net"] }
+# A6: askpass listener uses `tempfile::tempdir()` to mint a per-process
+# socket directory (chmod 700 by tempfile default) so a second mdviewer
+# instance can't connect and harvest prompts. The helper bin doesn't
+# need it — only the lib side does — but tempfile is small and already
+# in dev-dependencies, so promoting it costs almost nothing.
+tempfile = "3"
 
 # Google Drive integration (added in A1). HTTP client uses rustls (no
 # OpenSSL system dep). `oauth2` drives the PKCE loopback flow. `tiny_http`
@@ -124,7 +138,8 @@ default = []
 e2e = ["dep:tauri-plugin-webdriver-automation"]
 
 [dev-dependencies]
-tempfile = "3"
+# tempfile is a regular dep now (A6 needs it at runtime for the askpass
+# socket dir); listing it again here would be a duplicate.
 pretty_assertions = "1"
 criterion = "0.5"
 # A3: ssh::transport trait test asserts the client-side sha256 hash hex.
