@@ -379,6 +379,23 @@ pub fn store_from_automerge(bytes: &[u8]) -> Result<CommentsStore> {
     Ok(CommentsStore::from_threads(threads))
 }
 
+/// Byte-level adapter on top of `merge_stores`. Takes Automerge-serialized
+/// bytes for the local and remote sidecars, deserializes both, runs the
+/// existing CRDT merge, and returns the merged bytes. Used by the SSH save
+/// path which sees only opaque sidecar bytes coming off the wire.
+///
+/// `local` is the in-memory sidecar (about to be pushed); `incoming` is
+/// the bytes we just fetched from the remote host. Argument order matches
+/// `merge_stores(local, incoming)`. Returns `anyhow::Result` matching the
+/// module's existing convention (`store_from_automerge` /
+/// `store_to_automerge` both already do).
+pub fn merge_stores_bytes(local: &[u8], incoming: &[u8]) -> Result<Vec<u8>> {
+    let local_store = store_from_automerge(local)?;
+    let incoming_store = store_from_automerge(incoming)?;
+    let merged = merge_stores(&local_store, &incoming_store);
+    store_to_automerge(&merged)
+}
+
 /// CRDT-merge two stores into a third, used by the auto-merge=Always path
 /// in `sidecar::merge_with_policy`. The Automerge layer handles distinct
 /// `Thread.id`s as a conflict-free union; for threads that exist on BOTH
