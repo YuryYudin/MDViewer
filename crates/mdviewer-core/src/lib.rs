@@ -27,6 +27,9 @@ pub mod comments;
 pub mod document;
 pub mod sidecar;
 pub mod sidecar_path;
+pub mod ssh_url;
+
+pub use ssh_url::{sidecar_url, SshUrl};
 
 // Surface the UniFFI wrappers as a regular module so `cargo test
 // -p mdviewer-jni` can poke them directly. The wrappers are the bodies
