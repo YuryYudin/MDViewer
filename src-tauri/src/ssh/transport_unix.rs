@@ -34,16 +34,40 @@ impl UnixTransport {
     }
 }
 
+/// Single-quote the remote path for safe inclusion in a shell command line.
+///
+/// `ssh` joins all post-target argv with spaces and the remote sshd re-parses
+/// the result through the user's login shell — so an unquoted path containing
+/// whitespace or shell metacharacters arrives as multiple tokens. We wrap the
+/// path in single quotes uniformly across fetch/list_dir/stat/push.
+///
+/// Paths containing a single quote are intentionally rejected: handling them
+/// would require escape sequences that aren't portable across `sh`
+/// implementations. The trade-off is "fail clearly on a rare edge case"
+/// rather than "ship a quoting bug".
+fn quote_remote_path(path: &str) -> Result<String, TransportError> {
+    if path.contains('\'') {
+        return Err(TransportError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "path contains single quote; not supported",
+        )));
+    }
+    Ok(format!("'{}'", path))
+}
+
 #[async_trait::async_trait]
 impl SshTransport for UnixTransport {
     async fn fetch(&self, url: &SshUrl) -> Result<Vec<u8>, TransportError> {
-        // `ssh user@host -p port -- cat /path` — bytes on stdout.
+        // `ssh user@host -p port -- cat -- '/path'` — bytes on stdout. The
+        // single-quote wrap survives the remote shell's re-parse of argv.
+        let quoted = quote_remote_path(&url.path)?;
         let mut cmd = Command::new("ssh");
         cmd.args(Self::port_args(url));
         cmd.arg(Self::target(url));
         cmd.arg("--");
-        cmd.arg("cat");
-        cmd.arg(&url.path);
+        cmd.arg("sh");
+        cmd.arg("-c");
+        cmd.arg(format!("cat -- {}", quoted));
         let out = cmd.output().await.map_err(TransportError::Spawn)?;
         if !out.status.success() {
             return Err(TransportError::Ssh {
@@ -55,26 +79,19 @@ impl SshTransport for UnixTransport {
     }
 
     async fn push(&self, url: &SshUrl, bytes: &[u8]) -> Result<(), TransportError> {
-        // `ssh user@host -p port -- sh -c "cat > /path"` — stream bytes on stdin.
-        // Using `sh -c` rather than scp to (a) work with `cat` redirection
-        // semantics that don't need a remote temp file and (b) keep one
-        // codepath whether the remote uses scp protocol v1/v2 or sftp.
+        // `ssh user@host -p port -- sh -c "cat > '/path'"` — stream bytes on
+        // stdin. Using `sh -c` rather than scp to (a) work with `cat`
+        // redirection semantics that don't need a remote temp file and
+        // (b) keep one codepath whether the remote uses scp protocol v1/v2
+        // or sftp.
+        let quoted = quote_remote_path(&url.path)?;
         let mut cmd = Command::new("ssh");
         cmd.args(Self::port_args(url));
         cmd.arg(Self::target(url));
         cmd.arg("--");
         cmd.arg("sh");
         cmd.arg("-c");
-        // Single-quote the path defensively. Path-with-quote characters
-        // are intentionally not supported — they're a rare edge case
-        // and we'd rather fail clearly than ship a quoting bug.
-        if url.path.contains('\'') {
-            return Err(TransportError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "remote paths containing single quotes are not supported",
-            )));
-        }
-        cmd.arg(format!("cat > '{}'", url.path));
+        cmd.arg(format!("cat > {}", quoted));
         cmd.stdin(std::process::Stdio::piped());
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
@@ -97,20 +114,19 @@ impl SshTransport for UnixTransport {
     }
 
     async fn list_dir(&self, url: &SshUrl) -> Result<Vec<DirEntry>, TransportError> {
-        // `ssh user@host -- ls -lA --time-style=+%s /path` — parse stdout.
-        // The format string is GNU-specific; on macOS/BSD we fall back to
-        // a portable `find /path -maxdepth 1 -printf` invocation only if
-        // the first attempt fails. The Phase 2 dialog is the primary
-        // consumer, so parsing happens here and the trait returns typed
-        // `DirEntry` values.
+        // `ssh user@host -- sh -c "ls -lA -- '/path'"` — parse stdout. The
+        // format string is GNU-specific; we do NOT attempt a BSD fallback
+        // here. If the remote `ls` rejects `-lA` or our parser doesn't
+        // recognize its output, the non-zero exit's stderr is surfaced
+        // verbatim via `TransportError::Ssh` and the user can adapt.
+        let quoted = quote_remote_path(&url.path)?;
         let mut cmd = Command::new("ssh");
         cmd.args(Self::port_args(url));
         cmd.arg(Self::target(url));
         cmd.arg("--");
-        cmd.arg("ls");
-        cmd.arg("-lA");
-        cmd.arg("--");
-        cmd.arg(&url.path);
+        cmd.arg("sh");
+        cmd.arg("-c");
+        cmd.arg(format!("ls -lA -- {}", quoted));
         let out = cmd.output().await.map_err(TransportError::Spawn)?;
         if !out.status.success() {
             return Err(TransportError::Ssh {
@@ -118,21 +134,21 @@ impl SshTransport for UnixTransport {
                 stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
             });
         }
-        parse_ls_la(&String::from_utf8_lossy(&out.stdout))
+        Ok(parse_ls_la(&String::from_utf8_lossy(&out.stdout)))
     }
 
     async fn stat(&self, url: &SshUrl) -> Result<SshStat, TransportError> {
-        // `ssh user@host -- stat -c "%s %F" /path` — GNU. Fall back to
-        // `wc -c </path` + heuristic if -c flag is unsupported.
+        // `ssh user@host -- sh -c "stat -c '%s %F' -- '/path'"` — GNU-only
+        // format. As with list_dir, no BSD fallback: a non-zero exit
+        // surfaces the remote's stderr verbatim via `TransportError::Ssh`.
+        let quoted = quote_remote_path(&url.path)?;
         let mut cmd = Command::new("ssh");
         cmd.args(Self::port_args(url));
         cmd.arg(Self::target(url));
         cmd.arg("--");
-        cmd.arg("stat");
+        cmd.arg("sh");
         cmd.arg("-c");
-        cmd.arg("%s %F");
-        cmd.arg("--");
-        cmd.arg(&url.path);
+        cmd.arg(format!("stat -c '%s %F' -- {}", quoted));
         let out = cmd.output().await.map_err(TransportError::Spawn)?;
         if !out.status.success() {
             return Err(TransportError::Ssh {
@@ -152,7 +168,7 @@ impl SshTransport for UnixTransport {
     }
 }
 
-fn parse_ls_la(input: &str) -> Result<Vec<DirEntry>, TransportError> {
+fn parse_ls_la(input: &str) -> Vec<DirEntry> {
     // ls -lA emits a "total N" header line, then one entry per line.
     // Format: "perms links owner group size date time name". We split
     // on whitespace, take the first char of perms for is_dir, the 5th
@@ -182,19 +198,20 @@ fn parse_ls_la(input: &str) -> Result<Vec<DirEntry>, TransportError> {
             size,
         });
     }
-    Ok(out)
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn parse_ls_la_extracts_files_and_dirs() {
         let input = "total 8\n\
                      -rw-r--r-- 1 alice alice 123 May 14 10:00 fixture.md\n\
                      drwxr-xr-x 2 alice alice  64 May 14 10:00 subdir\n";
-        let entries = parse_ls_la(input).unwrap();
+        let entries = parse_ls_la(input);
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].name, "fixture.md");
         assert!(!entries[0].is_dir);
@@ -210,7 +227,7 @@ mod tests {
         // for not needing column-index alignment with the date.
         let input = "total 4\n\
                      -rw-r--r-- 1 alice alice 12 May 14 10:00 my file.md\n";
-        let entries = parse_ls_la(input).unwrap();
+        let entries = parse_ls_la(input);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "my file.md");
         assert_eq!(entries[0].size, 12);
@@ -219,13 +236,13 @@ mod tests {
     #[test]
     fn parse_ls_la_skips_total_header_and_blank_lines() {
         let input = "total 0\n\n";
-        let entries = parse_ls_la(input).unwrap();
+        let entries = parse_ls_la(input);
         assert!(entries.is_empty());
     }
 
     #[test]
     fn parse_ls_la_empty_input_yields_no_entries() {
-        let entries = parse_ls_la("").unwrap();
+        let entries = parse_ls_la("");
         assert!(entries.is_empty());
     }
 
@@ -235,7 +252,7 @@ mod tests {
         // listing `major, minor` rather than a byte count), we keep
         // emitting the entry with size 0 rather than dropping it.
         let input = "crw-rw-rw- 1 root root 1, 3 May 14 10:00 null\n";
-        let entries = parse_ls_la(input).unwrap();
+        let entries = parse_ls_la(input);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].size, 0);
     }
@@ -313,16 +330,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fetch_rejects_path_with_single_quote() {
+        // Same shell-quoting guard as `push`, applied uniformly across
+        // every method that interpolates `url.path` into the remote argv.
+        let t = UnixTransport::new();
+        let url = SshUrl {
+            user: None,
+            host: "h".into(),
+            port: 22,
+            path: "/tmp/it's.md".into(),
+        };
+        let err = t.fetch(&url).await.unwrap_err();
+        match err {
+            TransportError::Io(e) => {
+                assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput);
+            }
+            other => panic!("expected Io error, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn list_dir_rejects_path_with_single_quote() {
+        let t = UnixTransport::new();
+        let url = SshUrl {
+            user: None,
+            host: "h".into(),
+            port: 22,
+            path: "/tmp/it's".into(),
+        };
+        let err = t.list_dir(&url).await.unwrap_err();
+        match err {
+            TransportError::Io(e) => {
+                assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput);
+            }
+            other => panic!("expected Io error, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn stat_rejects_path_with_single_quote() {
+        let t = UnixTransport::new();
+        let url = SshUrl {
+            user: None,
+            host: "h".into(),
+            port: 22,
+            path: "/tmp/it's.md".into(),
+        };
+        let err = t.stat(&url).await.unwrap_err();
+        match err {
+            TransportError::Io(e) => {
+                assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput);
+            }
+            other => panic!("expected Io error, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
     async fn fetch_when_ssh_missing_returns_spawn_or_ssh_error() {
         // Override PATH so `ssh` cannot be resolved; the spawn either
         // fails outright (Spawn) or — on systems where Command can still
         // run but exits non-zero — surfaces as an Ssh error with non-zero
         // exit. Either is correct trait behavior for "no ssh in PATH".
-        // Saving and restoring PATH around the call keeps the rest of
-        // the test binary's environment intact.
+        // `#[serial]` keeps this from racing with any other test that
+        // touches PATH or spawns a subprocess — cargo runs tests within
+        // a binary in parallel by default, so without it a sibling test
+        // would observe the blanked-out PATH and flake.
         let orig = std::env::var_os("PATH");
-        // SAFETY: tests run serially within this test fn; we restore PATH
-        // before returning so neighboring async tests don't observe it.
+        // SAFETY: the `#[serial]` attribute ensures no other test in this
+        // binary runs concurrently; we restore PATH before returning so
+        // neighboring async tests don't observe the empty value.
         unsafe {
             std::env::set_var("PATH", "");
         }
