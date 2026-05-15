@@ -100,6 +100,27 @@ pub struct TabSummary {
     pub path: PathBuf,
 }
 
+/// A8: per-tab SSH state stashed at `open_ssh_url` time. Keyed on the tab id
+/// in `Workspace.ssh_tabs`. Saved separately from `Tab` because the rest of
+/// the workspace (watcher / renderer / autosave / save-dispatch for Local
+/// and Drive backends) is PathBuf-shaped — only the SSH-aware code paths
+/// (save-back, session restore, future A9 IPC commands) need to recover
+/// the original `SshUrl` and the open-time hash.
+///
+/// The previous implementation dropped both values via `let _ = url` /
+/// `let _ = outcome.sha256` to silence dead-code warnings, but those are
+/// exactly the values that:
+///   * save-back needs (the `SshUrl` to push to, the open-time hash to
+///     diff against the remote in the pre-save recheck — see
+///     `Operations::save_back`'s `on_open_sha` argument), and
+///   * conflict detection needs (the open-time hash IS the
+///     `ConflictSource::SshHashMismatch` discriminator's evidence).
+#[derive(Debug, Clone)]
+pub struct SshTabState {
+    pub url: SshUrl,
+    pub last_open_sha256: [u8; 32],
+}
+
 pub struct Tab {
     pub id: String,
     pub path: PathBuf,
@@ -293,6 +314,14 @@ pub struct Workspace {
     /// channel is initialized with `true` so `*cancel_rx.borrow()` reads as
     /// "still alive" until disconnect drops the sender.
     pub(crate) polling_cancel: Option<tokio::sync::watch::Sender<bool>>,
+    /// A8: per-tab SSH state keyed by tab id. Populated by `open_ssh_url`
+    /// with the parsed `SshUrl` and `OpenOutcome.sha256`; consumed by the
+    /// future B5 save-back path (which needs the URL to push to and the
+    /// open-time hash for the pre-save remote-drift recheck) and by future
+    /// A9 IPC surfaces (per-tab SSH metadata queries, session restore).
+    /// Cleared in `close_tab` so a closed-and-reopened SSH tab doesn't
+    /// pick up stale state. See `SshTabState` for the rationale.
+    pub(crate) ssh_tabs: HashMap<String, SshTabState>,
 }
 
 impl Workspace {
@@ -319,6 +348,8 @@ impl Workspace {
             // D2: no polling task exists until drive_connect spawns one;
             // drive_disconnect takes() this back to None.
             polling_cancel: None,
+            // A8: no SSH tabs at construction time; populated by open_ssh_url.
+            ssh_tabs: HashMap::new(),
         })
     }
 
@@ -619,19 +650,34 @@ impl Workspace {
         let summary = tab.summary();
         self.tabs.insert(id.clone(), tab);
         self.order.push(id.clone());
-        self.active = Some(id);
+        self.active = Some(id.clone());
+        // A8 review-cycle-1 fix: stash the `SshUrl` and the open-time
+        // `OpenOutcome.sha256` per tab so the future B5 save-back path can
+        // recover both. The previous `let _ = url; let _ = outcome.sha256;`
+        // dropped exactly the values save-back, conflict detection, and
+        // session restore need.
+        self.ssh_tabs.insert(
+            id,
+            SshTabState {
+                url,
+                last_open_sha256: outcome.sha256,
+            },
+        );
         // Suppress the cache-path entry from the recents list — surfacing
         // the local mirror would mislead the user; they pasted an ssh:// URL,
         // not a local path. A future task can teach Recents about SshUrl
         // entries; for now the URL-paste flow is the only entry point.
         self.persist_session();
-        // Silence dead-code on `url` until B5 wires the per-tab ssh_state
-        // map that stamps `outcome.sha256` and the SshUrl into the tab so
-        // `save_back` can re-fetch + compare. The variable is intentionally
-        // consumed so the caller-supplied URL is not dropped silently.
-        let _ = url;
-        let _ = outcome.sha256;
         Ok(summary)
+    }
+
+    /// A8 review-cycle-1: read-only accessor for the per-tab SSH state
+    /// stashed by `open_ssh_url`. Returns `None` for non-SSH tabs (Local /
+    /// DriveDesktop / DriveApi) and for unknown tab ids. The future A9 IPC
+    /// commands and B5 save-back path both call through here so they don't
+    /// have to know the field name.
+    pub fn ssh_state(&self, tab_id: &str) -> Option<&SshTabState> {
+        self.ssh_tabs.get(tab_id)
     }
 
     /// B5 dispatch path — uploads `local` to Drive with `If-Match: etag`.
@@ -1192,6 +1238,9 @@ impl Workspace {
                 self.closed_snapshots.insert(tab.path, snap);
             }
         }
+        // A8 review-cycle-1: clear the per-tab SSH state. Non-SSH tabs
+        // never seeded the map so this is a no-op for them.
+        self.ssh_tabs.remove(id);
         self.order.retain(|x| x != id);
         if self.active.as_deref() == Some(id) {
             self.active = self.order.last().cloned();
@@ -1953,5 +2002,180 @@ mod tests {
         let (interval_s, enabled_s) = ssh.autosave_settings(&settings);
         assert_eq!(interval_s, 30_000);
         assert!(!enabled_s, "SSH-tier autosave honors its independent toggle");
+    }
+
+    // === A8 review-cycle-1 fix #1: open_ssh_url unit coverage ===
+    //
+    // The fake transport here is a deterministic stand-in for the real
+    // `SshTransport` impl — fetch returns canned bytes (and a deterministic
+    // hash via the default `sha256` impl); push records the bytes for
+    // assertion but is not exercised by `open_url`. Same shape as the
+    // FakeTransport in ssh::operations::tests, redefined locally because
+    // that one lives behind a `mod tests` boundary.
+    //
+    // Each test gets its own tempdir so the cache mirror writes don't
+    // collide and the on-disk path stays under our control (no real
+    // network, no real filesystem outside the tempdir).
+
+    use crate::ssh::operations::Operations;
+    use crate::ssh::transport::{DirEntry, SshStat, SshTransport, TransportError};
+    use sha2::{Digest, Sha256};
+    use std::sync::{Arc, Mutex as StdMutex};
+
+    struct OpenUrlFake {
+        bytes: Vec<u8>,
+        push_calls: StdMutex<u32>,
+    }
+
+    impl OpenUrlFake {
+        fn new(bytes: Vec<u8>) -> Arc<Self> {
+            Arc::new(Self {
+                bytes,
+                push_calls: StdMutex::new(0),
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SshTransport for OpenUrlFake {
+        async fn fetch(&self, _url: &SshUrl) -> Result<Vec<u8>, TransportError> {
+            Ok(self.bytes.clone())
+        }
+        async fn push(&self, _url: &SshUrl, _bytes: &[u8]) -> Result<(), TransportError> {
+            *self.push_calls.lock().unwrap() += 1;
+            Ok(())
+        }
+        async fn list_dir(&self, _url: &SshUrl) -> Result<Vec<DirEntry>, TransportError> {
+            Ok(vec![])
+        }
+        async fn stat(&self, _url: &SshUrl) -> Result<SshStat, TransportError> {
+            Ok(SshStat {
+                size: 0,
+                is_dir: false,
+                mtime: None,
+            })
+        }
+    }
+
+    fn sample_ssh_url() -> SshUrl {
+        SshUrl {
+            user: Some("alice".into()),
+            host: "host.example".into(),
+            port: 22,
+            path: "/notes/file.md".into(),
+        }
+    }
+
+    fn sha256_of(bytes: &[u8]) -> [u8; 32] {
+        let mut h = Sha256::new();
+        h.update(bytes);
+        h.finalize().into()
+    }
+
+    /// `open_ssh_url` must wire the cache-mirror PathBuf onto the new tab's
+    /// summary (so the watcher / renderer / autosave pump see the right
+    /// on-disk cursor) AND stash the parsed `SshUrl` in `ssh_state(tab_id)`
+    /// so save-back can recover it. This is the central regression test
+    /// for the review-cycle-1 fix: the previous `let _ = url` dropped the
+    /// URL on the floor.
+    #[tokio::test]
+    async fn open_ssh_url_stamps_location_kind_on_tab() {
+        let data_dir = tempfile::tempdir().expect("workspace data dir");
+        let cache_dir = tempfile::tempdir().expect("ssh cache dir");
+        let mut ws = super::Workspace::new(data_dir.path()).expect("new workspace");
+        let url = sample_ssh_url();
+        let bytes = b"# remote\n".to_vec();
+        let fake = OpenUrlFake::new(bytes.clone());
+        let ops = Operations::new(fake.clone(), cache_dir.path().to_path_buf());
+
+        let summary = ws
+            .open_ssh_url(url.clone(), &ops)
+            .await
+            .expect("open_ssh_url ok");
+
+        // Tab summary path points at the cache mirror — same shape the
+        // watcher/renderer/autosave layer expects.
+        let expected_cache =
+            crate::ssh::operations::cache_path_for_url(cache_dir.path(), &url);
+        assert_eq!(summary.path, expected_cache);
+        // And the SshUrl is recoverable via the per-tab state map.
+        let state = ws
+            .ssh_state(&summary.id)
+            .expect("ssh_state populated for an SSH tab");
+        assert_eq!(state.url, url);
+    }
+
+    /// Two `open_ssh_url` calls for the same URL must return the same tab
+    /// id (cache-path de-dupe) and must leave the existing per-tab SSH
+    /// state untouched. Mirrors `drive_open_url`'s file_id de-dupe.
+    #[tokio::test]
+    async fn open_ssh_url_dedupes_by_url_when_called_twice() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let cache_dir = tempfile::tempdir().unwrap();
+        let mut ws = super::Workspace::new(data_dir.path()).unwrap();
+        let url = sample_ssh_url();
+        let fake = OpenUrlFake::new(b"# remote\n".to_vec());
+        let ops = Operations::new(fake.clone(), cache_dir.path().to_path_buf());
+
+        let first = ws.open_ssh_url(url.clone(), &ops).await.unwrap();
+        let original_state = ws.ssh_state(&first.id).cloned().expect("first stash");
+        let second = ws.open_ssh_url(url.clone(), &ops).await.unwrap();
+
+        assert_eq!(first.id, second.id, "same URL must collapse onto one tab");
+        let post_state = ws.ssh_state(&first.id).expect("state preserved");
+        assert_eq!(
+            post_state.url, original_state.url,
+            "de-dupe must not overwrite the stashed URL",
+        );
+        assert_eq!(
+            post_state.last_open_sha256, original_state.last_open_sha256,
+            "de-dupe must not overwrite the stashed open-time hash",
+        );
+    }
+
+    /// The open-time `sha256` is what `Operations::save_back` later
+    /// compares against to detect remote drift (its `on_open_sha` argument).
+    /// `open_ssh_url` must stash it verbatim. Asserting against
+    /// `sha256_of(bytes)` pins the contract: the hash the transport hands
+    /// back IS the hash that lands in `ssh_state(...)`.
+    #[tokio::test]
+    async fn open_ssh_url_stashes_sha256_for_conflict_detection() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let cache_dir = tempfile::tempdir().unwrap();
+        let mut ws = super::Workspace::new(data_dir.path()).unwrap();
+        let url = sample_ssh_url();
+        let bytes = b"original-bytes".to_vec();
+        let fake = OpenUrlFake::new(bytes.clone());
+        let ops = Operations::new(fake.clone(), cache_dir.path().to_path_buf());
+
+        let summary = ws.open_ssh_url(url, &ops).await.unwrap();
+        let state = ws.ssh_state(&summary.id).expect("stash present");
+        assert_eq!(
+            state.last_open_sha256,
+            sha256_of(&bytes),
+            "stashed hash must match the transport-reported open-time hash",
+        );
+    }
+
+    /// `close_tab` must clear the per-tab SSH state. Without this, a
+    /// closed-and-reopened SSH tab could pick up stale state from the
+    /// previous open (different URL, different open-time hash) and the
+    /// save-back path would diff against the wrong baseline.
+    #[tokio::test]
+    async fn close_tab_clears_ssh_state() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let cache_dir = tempfile::tempdir().unwrap();
+        let mut ws = super::Workspace::new(data_dir.path()).unwrap();
+        let url = sample_ssh_url();
+        let fake = OpenUrlFake::new(b"# remote\n".to_vec());
+        let ops = Operations::new(fake.clone(), cache_dir.path().to_path_buf());
+
+        let summary = ws.open_ssh_url(url, &ops).await.unwrap();
+        assert!(ws.ssh_state(&summary.id).is_some(), "open stashes state");
+        ws.close_tab(&summary.id).expect("close_tab ok");
+        assert!(
+            ws.ssh_state(&summary.id).is_none(),
+            "close_tab must clear the per-tab SSH state",
+        );
     }
 }

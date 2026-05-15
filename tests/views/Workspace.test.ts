@@ -361,7 +361,7 @@ describe('Workspace', () => {
   // Phase B implementation review fix #4: end-to-end coverage for the
   // save → SaveOutcome::Conflict → show-conflict event → Conflict view +
   // wireframe-07 banner flow. Catches regressions in either fix #1 (Rust
-  // emits the event) or fix #2 (TS threads drive_source through
+  // emits the event) or fix #2 (TS threads the source discriminator through
   // pendingConflict to mountConflict).
   it('routes a DriveApi save-conflict event to the Conflict view with the API banner', async () => {
     const root = document.createElement('div');
@@ -370,13 +370,16 @@ describe('Workspace', () => {
 
     // The Rust save_document handler emits this exact payload shape when
     // SaveOutcome::Conflict carries source: DriveApiEtag (Phase B fix #1).
+    // A8 rename: the event field is `source` (was `drive_source` pre-A8);
+    // the fallback was dropped in review-cycle-1, so this fixture pins the
+    // new wire spelling.
     tauriListeners['show-conflict']![0]!({
       payload: {
         tab_id: 't-drive',
         path: 'drive-api://FID',
         local: 'my edits',
         incoming: 'remote edits',
-        drive_source: 'DriveApiEtag',
+        source: 'DriveApiEtag',
       },
     });
     await new Promise((r) => setTimeout(r, 5));
@@ -402,7 +405,7 @@ describe('Workspace', () => {
         path: '/Users/me/Drive/notes.md',
         local: 'my edits',
         incoming: 'changed externally',
-        drive_source: 'DriveDesktopWatcher',
+        source: 'DriveDesktopWatcher',
       },
     });
     await new Promise((r) => setTimeout(r, 5));
@@ -417,10 +420,10 @@ describe('Workspace', () => {
     expect(banner?.getAttribute('data-drive-source')).toBe('DriveDesktopWatcher');
   });
 
-  it('omits the Drive banner when show-conflict carries no drive_source', async () => {
+  it('omits the Drive banner when show-conflict carries no source', async () => {
     // Local-backend conflicts (mtime mismatch from open_document) emit the
-    // same event without a drive_source field — Conflict.ts must NOT
-    // render the Drive-specific copy in that case.
+    // same event without a source field — Conflict.ts must NOT render the
+    // Drive-specific copy in that case.
     const root = document.createElement('div');
     await mountWorkspace(root, makeIpc(['t-1']));
 
@@ -430,7 +433,7 @@ describe('Workspace', () => {
         path: '/tmp/notes.md',
         local: 'l',
         incoming: 'r',
-        // drive_source intentionally omitted; older event payload shape.
+        // source intentionally omitted; Local-backend event payload shape.
       },
     });
     await new Promise((r) => setTimeout(r, 5));

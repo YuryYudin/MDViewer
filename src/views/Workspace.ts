@@ -933,11 +933,10 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
       local: string;
       incoming: string;
       // A8 wire-format rename: Rust emits `source` (was `drive_source`).
-      // Accept both spellings during the bring-up so an A8/A9 cross-merge
-      // doesn't drop conflicts on the floor — the new spelling wins when
-      // both are present.
+      // The bring-up `?? ev.payload.drive_source` fallback was dropped in
+      // review-cycle-1 — the Rust side now emits only `source` and the
+      // dead-code fallback hid wire-format drift instead of catching it.
       source?: string | null;
-      drive_source?: string | null;
     }>('show-conflict', (ev) => {
       setActive({
         kind: 'conflict',
@@ -945,7 +944,7 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
         path: ev.payload.path,
         local: ev.payload.local,
         incoming: ev.payload.incoming,
-        source: COERCE_SOURCE(ev.payload.source ?? ev.payload.drive_source),
+        source: COERCE_SOURCE(ev.payload.source),
       });
       void refresh();
     });
