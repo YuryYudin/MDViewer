@@ -4,7 +4,7 @@
 //! `Workspace::save_drive_*_tab` surface (B2) so the wireframe-07 banner
 //! routing has a guaranteed contract:
 //!
-//! 1. `DriveApi` 412 from `upload_with_etag` → `SaveError::DriveConflict`
+//! 1. `DriveApi` 412 from `upload_with_etag` → `SaveError::Conflict`
 //!    carrying the user's local bytes alongside the freshly-fetched remote
 //!    bytes (via `raw_get_media`, NOT `download_to_cache` — the cache file
 //!    must not be mutated while the tab buffer is live).
@@ -48,14 +48,14 @@ fn save_conflict_412_returns_local_and_remote_bytes() {
     let tab_id = ws.test_open_drive_api_tab("FID", "# local\n");
     let result = ws.save_drive_api_tab(&tab_id, b"# local edits\n", "W/\"stale\"");
 
-    let outcome = result.expect_err("412 must surface SaveError::DriveConflict");
+    let outcome = result.expect_err("412 must surface SaveError::Conflict");
     let (local, remote, source) = match outcome {
-        SaveError::DriveConflict {
+        SaveError::Conflict {
             local,
             remote,
             source,
         } => (local, remote, source),
-        other => panic!("expected DriveConflict, got {:?}", other),
+        other => panic!("expected SaveError::Conflict, got {:?}", other),
     };
     assert_eq!(
         std::str::from_utf8(&local).unwrap(),
@@ -80,7 +80,7 @@ fn save_conflict_drive_desktop_path_uses_watcher_compare() {
     // internal watcher captures the (mtime, sha256) baseline. Then mutate
     // the file from a "third party" before the user hits Save — the
     // watcher's compare_for_save must spot the divergence and the save
-    // dispatch must surface it as a SaveError::DriveConflict carrying both
+    // dispatch must surface it as a SaveError::Conflict carrying both
     // the user's local bytes and the on-disk bytes.
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path().join("notes.md");
@@ -95,14 +95,14 @@ fn save_conflict_drive_desktop_path_uses_watcher_compare() {
 
     // User hits save.
     let res = ws.save_drive_desktop_tab(&tab_id, b"# my new edits\n");
-    let outcome = res.expect_err("watcher mismatch must surface SaveError::DriveConflict");
+    let outcome = res.expect_err("watcher mismatch must surface SaveError::Conflict");
     let (local, remote, source) = match outcome {
-        SaveError::DriveConflict {
+        SaveError::Conflict {
             local,
             remote,
             source,
         } => (local, remote, source),
-        other => panic!("expected DriveConflict, got {:?}", other),
+        other => panic!("expected SaveError::Conflict, got {:?}", other),
     };
     assert_eq!(
         std::str::from_utf8(&local).unwrap(),

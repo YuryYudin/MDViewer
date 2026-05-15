@@ -348,9 +348,13 @@ fn save_document(
     // `show-conflict` Tauri event so Workspace.ts mounts the diff-merge view
     // even when the calling TS code (Edit.ts autosave) discards the
     // outcome. The event mirrors the open_document conflict event shape but
-    // adds a `drive_source` discriminator so wireframe-07's banner picks
-    // the right copy. The handler still returns SaveOutcome to the caller
-    // so Conflict.ts (Finish merge → saveDocument) can keep using it.
+    // adds a `source` discriminator so wireframe-07's banner picks the
+    // right copy. The handler still returns SaveOutcome to the caller so
+    // Conflict.ts (Finish merge → saveDocument) can keep using it.
+    //
+    // A8: emit the new `source` field name (was `drive_source` pre-A8); the
+    // TS-side Workspace.ts listener accepts both spellings during the
+    // bring-up so an A8/A9 cross-merge doesn't drop conflicts on the floor.
     let emit_drive_conflict = |local: &[u8], remote: &[u8], source: &mdviewer_lib::workspace::ConflictSource| {
         let _ = app.emit(
             "show-conflict",
@@ -359,7 +363,7 @@ fn save_document(
                 "path": tab_path,
                 "local": String::from_utf8_lossy(local),
                 "incoming": String::from_utf8_lossy(remote),
-                "drive_source": source.to_wire(),
+                "source": source.to_wire(),
             }),
         );
     };
@@ -408,7 +412,7 @@ fn save_document(
                     }
                     Ok(SaveOutcome::Ok { etag: Some(new_etag) })
                 }
-                Err(SaveError::DriveConflict { local, remote, source }) => {
+                Err(SaveError::Conflict { local, remote, source }) => {
                     // Drop the lock before emitting — the listener may
                     // re-enter via setActive → ipc.diffMd which itself
                     // doesn't take Workspace, but there's no benefit to
@@ -439,7 +443,7 @@ fn save_document(
             let mut ws = state.lock().map_err(|e| e.to_string())?;
             match ws.save_drive_desktop_tab(&tab_id, body.as_bytes()) {
                 Ok(()) => Ok(SaveOutcome::Ok { etag: None }),
-                Err(SaveError::DriveConflict { local, remote, source }) => {
+                Err(SaveError::Conflict { local, remote, source }) => {
                     drop(ws);
                     emit_drive_conflict(&local, &remote, &source);
                     Ok(SaveOutcome::Conflict {

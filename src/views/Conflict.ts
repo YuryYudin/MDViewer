@@ -15,14 +15,24 @@ import type { Hunk, Ipc } from '../ipc';
  * onto the IPC channel.
  */
 /**
- * Discriminator for the optional Drive-context banner. The two Drive code
- * paths into this view have very different mental models for the user
- * (DriveApi: "someone else uploaded a new revision while you were editing"
- * vs DriveDesktop: "your local sync client wrote new bytes to disk while
- * you were editing"), so wireframe-07 calls for two distinct banner copies
+ * Discriminator for the optional source-context banner. Three code paths
+ * feed this view with distinct mental models for the user:
+ *   - DriveApiEtag       — "someone else uploaded a new revision while you were editing"
+ *   - DriveDesktopWatcher — "your local sync client wrote new bytes to disk while you were editing"
+ *   - SshHashMismatch    — "the remote ssh:// file changed since you opened it"
+ * Wireframe-07 + the A8 SSH extension call for three distinct banner copies
  * sharing the same diff-merge surface.
+ *
+ * Renamed from `DriveConflictSource` in A8 — the SSH branch made the
+ * "Drive" prefix misleading. The wire-format strings (`DriveApiEtag` /
+ * `DriveDesktopWatcher` / `SshHashMismatch`) come from
+ * `mdviewer_lib::workspace::ConflictSource::to_wire()` and the TS literal
+ * here must stay byte-aligned with that Rust enum.
  */
-export type DriveConflictSource = 'DriveApiEtag' | 'DriveDesktopWatcher';
+export type ConflictSource =
+  | 'DriveApiEtag'
+  | 'DriveDesktopWatcher'
+  | 'SshHashMismatch';
 
 export interface ConflictArgs {
   tabId: string;
@@ -30,12 +40,11 @@ export interface ConflictArgs {
   local: string;
   incoming: string;
   /**
-   * If present, render the wireframe-07 Drive-context banner above the
-   * diff. Omit (or pass `null` / `undefined`) for plain Local-backend
-   * conflicts — those reuse the same view but must NOT show the
-   * Drive-specific copy.
+   * If present, render the source-specific banner above the diff. Omit
+   * (or pass `null` / `undefined`) for plain Local-backend conflicts —
+   * those reuse the same view but show no banner.
    */
-  driveSource?: DriveConflictSource | null;
+  source?: ConflictSource | null;
 }
 
 export interface ConflictHandle {
@@ -53,20 +62,35 @@ export async function mountConflict(
   view.setAttribute('data-view', 'conflict');
   view.className = 'conflict';
 
-  // B5: wireframe-07 Drive-context banner. Hidden by default (Local-backend
-  // conflicts) so the same view serves both audiences. The two Drive code
-  // paths get distinct copy because the underlying root cause differs —
-  // a 412 from the API means a remote collaborator pushed a new revision,
-  // a watcher mismatch means the user's own Drive Desktop client touched
-  // the file from another window.
-  if (args.driveSource) {
+  // B5 + A8: source-context banner. Hidden by default (Local-backend
+  // conflicts) so the same view serves all four audiences. Each source gets
+  // distinct copy because the root cause differs:
+  //   - DriveApiEtag       → a 412 means a remote collaborator pushed
+  //                          a new revision via the Drive web app.
+  //   - DriveDesktopWatcher → the user's own Drive Desktop client wrote
+  //                          new bytes to disk from another window.
+  //   - SshHashMismatch    → the remote `ssh://` file's bytes changed
+  //                          out-of-band since the open-time hash.
+  if (args.source) {
     const banner = document.createElement('div');
+    // Keep the legacy `drive-banner` class alongside `conflict-banner` so
+    // pre-A8 CSS selectors and Workspace.test fixtures keep matching for
+    // the Drive variants. The new `data-source` attribute is the
+    // canonical hook for source-aware styling/tests.
     banner.className = 'drive-banner conflict-banner';
-    banner.setAttribute('data-drive-source', args.driveSource);
+    banner.setAttribute('data-source', args.source);
+    // Mirror the legacy attribute for the two Drive variants so existing
+    // selectors (e.g. tests/views/Workspace.test.ts's `data-drive-source`
+    // assertions, e2e/19-drive-comments) keep passing.
+    if (args.source === 'DriveApiEtag' || args.source === 'DriveDesktopWatcher') {
+      banner.setAttribute('data-drive-source', args.source);
+    }
     banner.textContent =
-      args.driveSource === 'DriveApiEtag'
+      args.source === 'DriveApiEtag'
         ? 'Someone else updated this Drive file. Review both versions and merge.'
-        : 'This Drive Desktop file changed on disk while you were editing. Review both versions and merge.';
+        : args.source === 'DriveDesktopWatcher'
+          ? 'This Drive Desktop file changed on disk while you were editing. Review both versions and merge.'
+          : 'The remote ssh:// file changed since you opened it. Review both versions and merge.';
     view.appendChild(banner);
   }
 
