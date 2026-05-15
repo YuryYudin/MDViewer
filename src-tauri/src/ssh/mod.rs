@@ -17,6 +17,7 @@ pub mod transport_unix;
 #[cfg(windows)]
 pub mod transport_windows;
 
-// `operations`, `auth`, `askpass` are added
-// in A5/A6. Keep this module compiling with just `transport` until
-// they land.
+// A5 adds the auth probe + high-level operations (open_url / save_back /
+// save_sidecar). `askpass` (Unix-only socket server) lands in A6.
+pub mod auth;
+pub mod operations;
