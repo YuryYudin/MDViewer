@@ -138,17 +138,28 @@ impl Operations {
     /// `mdviewer_core::comments::merge_stores_bytes`, then push the
     /// merged result. If the merge yields no changes versus the remote,
     /// skip the push.
+    ///
+    /// Error handling per Decision 5: only treat an explicit "remote
+    /// sidecar does not exist yet" stderr as empty bytes (fresh save —
+    /// first comment on a freshly-opened doc). Every other
+    /// `TransportError` (auth failure, network outage, permission
+    /// denied, IO error) propagates so the caller can surface the
+    /// verbatim ssh stderr in a toast rather than silently overwriting
+    /// live remote comments with the local-only view.
     pub async fn save_sidecar(
         &self,
         sidecar_url: &SshUrl,
         local_sidecar: &[u8],
     ) -> Result<(), TransportError> {
-        // Fetch the remote sidecar (404-ish error is fine — treat as empty).
-        let remote = self
-            .transport
-            .fetch(sidecar_url)
-            .await
-            .unwrap_or_default();
+        let remote = match self.transport.fetch(sidecar_url).await {
+            Ok(bytes) => bytes,
+            Err(TransportError::Ssh { ref stderr, .. })
+                if stderr.contains("No such file") || stderr.contains("does not exist") =>
+            {
+                Vec::new()
+            }
+            Err(e) => return Err(e),
+        };
         let merged = mdviewer_core::comments::merge_stores_bytes(local_sidecar, &remote)
             .map_err(|e| {
                 TransportError::Io(std::io::Error::new(
@@ -156,16 +167,48 @@ impl Operations {
                     e.to_string(),
                 ))
             })?;
-        if merged == remote {
+        // Skip the push when the merge produced no semantic change vs
+        // remote. We compare deserialized thread lists rather than raw
+        // bytes because each `merge_stores_bytes` call mints fresh
+        // Automerge actor ids — a byte-level `merged == remote` check
+        // would essentially never fire (header bytes differ even for
+        // identical thread content). The empty-remote case (Vec::new())
+        // is also handled here: an empty-vs-empty thread list still
+        // counts as "no change", so we don't push an empty merged blob
+        // back to a host that has no sidecar yet.
+        if remote_equals_merged_semantically(&remote, &merged) {
             return Ok(());
         }
         self.transport.push(sidecar_url, &merged).await
     }
 }
 
+/// Compare two Automerge sidecar blobs by deserialized thread content,
+/// ignoring actor-id bookkeeping. An empty `remote` slice (no remote
+/// sidecar yet) is equivalent to an empty thread list. Falls back to
+/// byte equality if either decode fails so a deserialization edge case
+/// doesn't accidentally suppress a needed push.
+fn remote_equals_merged_semantically(remote: &[u8], merged: &[u8]) -> bool {
+    use mdviewer_core::comments::store_from_automerge;
+    let remote_threads = if remote.is_empty() {
+        Vec::new()
+    } else {
+        match store_from_automerge(remote) {
+            Ok(s) => s.list_threads().to_vec(),
+            Err(_) => return remote == merged,
+        }
+    };
+    let merged_threads = match store_from_automerge(merged) {
+        Ok(s) => s.list_threads().to_vec(),
+        Err(_) => return remote == merged,
+    };
+    remote_threads == merged_threads
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::sync::Mutex;
 
     #[test]
@@ -212,10 +255,12 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn resolve_cache_base_respects_env_var() {
-        // The env-var override path. We don't actually mutate the live env
-        // (would race with other tests in this crate) — instead we exercise
-        // the helper with a temp override and then unset.
+        // `#[serial]` keeps this from racing with
+        // `resolve_cache_base_falls_back_to_tauri_dir_when_unset` — both
+        // mutate the same `MDVIEWER_REMOTE_CACHE_DIR` global, and cargo
+        // runs tests within a binary in parallel by default.
         let key = "MDVIEWER_REMOTE_CACHE_DIR";
         let prev = std::env::var(key).ok();
         std::env::set_var(key, "/tmp/override-cache");
@@ -232,6 +277,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn resolve_cache_base_falls_back_to_tauri_dir_when_unset() {
         let key = "MDVIEWER_REMOTE_CACHE_DIR";
         let prev = std::env::var(key).ok();
@@ -377,30 +423,163 @@ mod tests {
         assert!(fake.pushed.lock().unwrap().is_empty());
     }
 
-    #[tokio::test]
-    async fn save_sidecar_pushes_crdt_merged_bytes() {
-        use mdviewer_core::comments::{store_to_automerge, CommentsStore};
-        // local sidecar = empty store; remote sidecar = empty store. The
-        // merged bytes equal the remote (both empty CRDT docs differ in
-        // actor id but the post-merge serialization is stable from
-        // local's perspective). Verifies the no-op short-circuit path.
-        let local = store_to_automerge(&CommentsStore::new()).unwrap();
-        let remote = store_to_automerge(&CommentsStore::new()).unwrap();
-        let fake = Arc::new(FakeTransport::new(vec![Ok(remote.clone())]));
-        let tmp = tempfile::tempdir().unwrap();
-        let ops = Operations::new(fake.clone(), tmp.path().to_path_buf());
-        let url = SshUrl {
+    // === Helpers for the save_sidecar tests ===
+
+    fn sidecar_url() -> SshUrl {
+        SshUrl {
             user: None,
             host: "h".into(),
             port: 22,
             path: "/x.md.comments.json".into(),
+        }
+    }
+
+    fn fixture_anchor(exact: &str) -> mdviewer_core::anchor::Anchor {
+        mdviewer_core::anchor::Anchor {
+            start: 0,
+            end: exact.len(),
+            exact: exact.into(),
+            prefix: String::new(),
+            suffix: String::new(),
+        }
+    }
+
+    fn store_with_thread(
+        thread_id: &str,
+        comment_id: &str,
+        anchor_text: &str,
+    ) -> Vec<u8> {
+        use mdviewer_core::comments::{
+            store_to_automerge, Comment, CommentsStore, Thread,
         };
-        ops.save_sidecar(&url, &local).await.expect("ok");
-        // The pushed body either equals nothing (short-circuit) or equals
-        // the merged bytes; we accept either as long as the call didn't
-        // error. The substantive merge correctness is tested in
-        // mdviewer-core::comments::tests::merge_stores_bytes_*.
-        let pushed_count = fake.pushed.lock().unwrap().len();
-        assert!(pushed_count <= 1);
+        let thread = Thread {
+            id: thread_id.into(),
+            anchor: fixture_anchor(anchor_text),
+            comments: vec![Comment {
+                id: comment_id.into(),
+                author: "alice".into(),
+                color: "#ff0000".into(),
+                body: "hi".into(),
+                created_at: "2026-05-15T00:00:00Z".into(),
+                ..Default::default()
+            }],
+            resolved: false,
+            resolved_at: None,
+            resolved_by: None,
+        };
+        store_to_automerge(&CommentsStore::from_threads(vec![thread])).unwrap()
+    }
+
+    #[tokio::test]
+    async fn save_sidecar_pushes_merged_when_local_diverges_from_remote() {
+        use mdviewer_core::comments::store_from_automerge;
+        // Local has thread A; remote has thread B. The CRDT merge unions
+        // both (distinct ids never conflict — see comments.rs's
+        // store_to_automerge rationale). We assert:
+        //   1. exactly one push happens, and
+        //   2. the pushed bytes round-trip to a store containing BOTH
+        //      threads (so the merge actually ran end-to-end, not just
+        //      a short-circuit re-push of local bytes).
+        let local_bytes = store_with_thread("t-A", "c-A", "alpha");
+        let remote_bytes = store_with_thread("t-B", "c-B", "beta");
+        let fake = Arc::new(FakeTransport::new(vec![Ok(remote_bytes.clone())]));
+        let tmp = tempfile::tempdir().unwrap();
+        let ops = Operations::new(fake.clone(), tmp.path().to_path_buf());
+
+        ops.save_sidecar(&sidecar_url(), &local_bytes)
+            .await
+            .expect("save_sidecar ok");
+
+        let pushed = fake.pushed.lock().unwrap();
+        assert_eq!(pushed.len(), 1, "expected exactly one push");
+        let pushed_store = store_from_automerge(&pushed[0]).expect("decode pushed");
+        let ids: Vec<&str> = pushed_store
+            .list_threads()
+            .iter()
+            .map(|t| t.id.as_str())
+            .collect();
+        assert!(ids.contains(&"t-A"), "thread A missing from merged push: {:?}", ids);
+        assert!(ids.contains(&"t-B"), "thread B missing from merged push: {:?}", ids);
+    }
+
+    #[tokio::test]
+    async fn save_sidecar_skips_push_when_local_equals_remote() {
+        // Symmetric setup: local and remote carry the same single thread.
+        // The merge produces a store with the same thread content; the
+        // semantic-equality short-circuit fires and no push happens.
+        // (Byte equality wouldn't fire here — Automerge actor ids mint
+        // fresh on every `merge_stores_bytes` call — which is why
+        // save_sidecar compares deserialized thread lists, not bytes.)
+        let local = store_with_thread("t-S", "c-S", "same");
+        let remote = store_with_thread("t-S", "c-S", "same");
+        let fake = Arc::new(FakeTransport::new(vec![Ok(remote.clone())]));
+        let tmp = tempfile::tempdir().unwrap();
+        let ops = Operations::new(fake.clone(), tmp.path().to_path_buf());
+
+        ops.save_sidecar(&sidecar_url(), &local)
+            .await
+            .expect("save_sidecar ok");
+
+        assert_eq!(
+            fake.pushed.lock().unwrap().len(),
+            0,
+            "no push expected when local == remote semantically",
+        );
+    }
+
+    #[tokio::test]
+    async fn save_sidecar_treats_not_found_stderr_as_empty_remote() {
+        // Decision 5 carve-out: the remote sidecar doesn't exist yet
+        // (first comment on a freshly-opened doc). The Unix transport
+        // surfaces "No such file or directory" in the ssh stderr;
+        // save_sidecar must treat this as an empty remote and proceed
+        // to push the local bytes verbatim.
+        let local_bytes = store_with_thread("t-A", "c-A", "alpha");
+        let fake = Arc::new(FakeTransport::new(vec![Err(TransportError::Ssh {
+            code: Some(1),
+            stderr: "cat: /remote/x.md.comments.json: No such file or directory\n".into(),
+        })]));
+        let tmp = tempfile::tempdir().unwrap();
+        let ops = Operations::new(fake.clone(), tmp.path().to_path_buf());
+
+        ops.save_sidecar(&sidecar_url(), &local_bytes)
+            .await
+            .expect("not-found stderr should be treated as empty, not an error");
+
+        let pushed = fake.pushed.lock().unwrap();
+        assert_eq!(pushed.len(), 1, "expected push to proceed against empty remote");
+    }
+
+    #[tokio::test]
+    async fn save_sidecar_propagates_non_not_found_transport_errors() {
+        // Counterpart to the carve-out: an auth/permission/network
+        // failure must surface so the caller (Tauri command → frontend)
+        // can render a toast with the verbatim stderr. The previous
+        // implementation's blanket `unwrap_or_default()` would have
+        // silently treated this as "remote has no sidecar" and
+        // overwritten live remote comments with the local-only view.
+        let local_bytes = store_with_thread("t-A", "c-A", "alpha");
+        let fake = Arc::new(FakeTransport::new(vec![Err(TransportError::Ssh {
+            code: Some(255),
+            stderr: "Permission denied (publickey).\n".into(),
+        })]));
+        let tmp = tempfile::tempdir().unwrap();
+        let ops = Operations::new(fake.clone(), tmp.path().to_path_buf());
+
+        let err = ops
+            .save_sidecar(&sidecar_url(), &local_bytes)
+            .await
+            .expect_err("auth failures must propagate");
+        match err {
+            TransportError::Ssh { stderr, .. } => {
+                assert!(
+                    stderr.contains("Permission denied"),
+                    "expected verbatim stderr, got: {stderr}",
+                );
+            }
+            other => panic!("expected TransportError::Ssh, got {other:?}"),
+        }
+        // No push happened — we never proceeded past the fetch.
+        assert_eq!(fake.pushed.lock().unwrap().len(), 0);
     }
 }
