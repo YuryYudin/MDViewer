@@ -3222,9 +3222,11 @@ name = "mdviewer"
 version = "0.4.1"
 dependencies = [
  "anyhow",
+ "async-trait",
  "base64 0.22.1",
  "criterion",
  "getrandom 0.2.17",
+ "hex",
  "keyring",
  "mdviewer-core",
  "notify",

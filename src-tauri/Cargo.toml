@@ -67,7 +67,11 @@ walkdir = "2"
 # at 8, and sleeps between iterations with `tokio::time::sleep`. Tauri 2
 # already pulls Tokio in as a transitive dep; we surface it as a direct
 # dependency here so the explicit `use tokio::*` imports compile.
-tokio = { version = "1", features = ["sync", "time", "rt", "macros"] }
+# `process` + `io-util` were added in A3 for the Unix SSH transport: it
+# spawns `ssh` via `tokio::process::Command` and writes upload bytes to
+# the child's stdin via `AsyncWriteExt`. The features are additive and
+# don't affect non-A3 callers.
+tokio = { version = "1", features = ["sync", "time", "rt", "macros", "process", "io-util"] }
 
 # Google Drive integration (added in A1). HTTP client uses rustls (no
 # OpenSSL system dep). `oauth2` drives the PKCE loopback flow. `tiny_http`
@@ -94,6 +98,12 @@ keyring = { version = "3", default-features = false, features = ["apple-native",
 sha2 = "0.10"
 getrandom = "0.2"
 
+# A3: SshTransport trait is async (fetch/push/list/stat are I/O-bound), so the
+# trait uses `async-trait` to allow dispatching through `dyn SshTransport`.
+# Later transport impls (Unix process, Windows russh) implement the trait
+# behind the same dyn-safe surface.
+async-trait = "0.1"
+
 # E2E testing on macOS. Optional dep gated behind the `e2e` feature so
 # release bundles built without the feature never expose a WebDriver port.
 # The debug-build e2e workflow is `cargo build --features e2e`.
@@ -107,6 +117,8 @@ e2e = ["dep:tauri-plugin-webdriver-automation"]
 tempfile = "3"
 pretty_assertions = "1"
 criterion = "0.5"
+# A3: ssh::transport trait test asserts the client-side sha256 hash hex.
+hex = "0.4"
 # Drive integration tests mutate the process-global `MDVIEWER_DRIVE_API_BASE`
 # env var to point at a stub HTTP server. Cargo runs tests in parallel by
 # default, so each such test is tagged `#[serial_test::serial]` to force
