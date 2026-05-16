@@ -389,3 +389,99 @@ fn thread_resolveoutcome_serialize_matches_ts_generated_shape() {
     })
     .unwrap();
 }
+
+// ---------------------------------------------------------------------------
+// A9 review-cycle-1: SSH IPC command registration smoke tests.
+//
+// Mirrors the existing per-command checks. The two SSH IPC commands
+// (`ssh_open_url`, `ssh_password_response`) must both have matching
+// `#[tauri::command]`-decorated declarations in main.rs AND be listed in
+// the `invoke_handler!` macro arm — otherwise frontend invocations fail
+// with a runtime "command not found" toast.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ipc_registration_includes_ssh_open_url() {
+    let main_rs = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    )
+    .expect("read main.rs");
+    assert!(
+        main_rs.contains("fn ssh_open_url("),
+        "main.rs must declare `fn ssh_open_url(...)`",
+    );
+    assert!(
+        main_rs.contains("            ssh_open_url,"),
+        "main.rs must register `ssh_open_url` in the invoke_handler! list",
+    );
+}
+
+#[test]
+fn ipc_registration_includes_ssh_password_response() {
+    let main_rs = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    )
+    .expect("read main.rs");
+    assert!(
+        main_rs.contains("fn ssh_password_response("),
+        "main.rs must declare `fn ssh_password_response(...)`",
+    );
+    assert!(
+        main_rs.contains("            ssh_password_response,"),
+        "main.rs must register `ssh_password_response` in the invoke_handler! list",
+    );
+}
+
+#[tokio::test]
+async fn ssh_password_response_handler_logic_resolves_pending_oneshot() {
+    // Mirrors the handler body in `main.rs::ssh_password_response`: register
+    // a oneshot under `req_id` in a freshly-constructed AskpassInbox, then
+    // invoke the same `inbox.respond(req_id, value)` the IPC handler runs.
+    // The pending oneshot must resolve with the value carried by the IPC
+    // payload. This proves the password-modal reply path stays intact even
+    // if the handler shape ever changes.
+    use mdviewer_lib::ssh::auth::AskpassInbox;
+    let inbox = AskpassInbox::new();
+    let rx = inbox.register("test-1".into());
+    inbox.respond("test-1", Some("hunter2".into()));
+    let got = rx.await.expect("oneshot delivered");
+    assert_eq!(got, Some("hunter2".into()));
+}
+
+#[tokio::test]
+async fn ssh_password_response_handler_logic_cancellation_path() {
+    // The frontend cancel button calls `ssh_password_response` with `value =
+    // None`. The pending oneshot must resolve with `None` so the
+    // helper-conn task (Unix) / russh callback (Windows) returns the cancel
+    // path rather than blocking forever waiting for a real value.
+    use mdviewer_lib::ssh::auth::AskpassInbox;
+    let inbox = AskpassInbox::new();
+    let rx = inbox.register("test-cancel".into());
+    inbox.respond("test-cancel", None);
+    let got = rx.await.expect("oneshot delivered");
+    assert_eq!(got, None);
+}
+
+#[test]
+fn ssh_password_response_is_sync_not_async() {
+    // `AskpassInbox::respond` has no .await. Declaring the handler `async`
+    // would force callers (frontend) to await an immediately-ready future
+    // and forces `State<'_, T>` to live across an await point that doesn't
+    // exist. Pin the sync shape so a future refactor doesn't re-async-ify
+    // the handler.
+    let main_rs = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    )
+    .expect("read main.rs");
+    // Match the exact declaration line shape: `fn ssh_password_response(`
+    // preceded by no `async`. We look for "async fn ssh_password_response("
+    // and assert it does NOT appear.
+    assert!(
+        !main_rs.contains("async fn ssh_password_response("),
+        "ssh_password_response must NOT be declared async (no .await in body)",
+    );
+    assert!(
+        main_rs.contains("fn ssh_password_response("),
+        "ssh_password_response declaration must remain present",
+    );
+}

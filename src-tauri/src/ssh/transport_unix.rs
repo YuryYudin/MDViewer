@@ -1,11 +1,30 @@
 //! Unix transport — shells to system `ssh` and `scp` via tokio::process.
 
+use super::auth::{probe, AuthContext};
 use super::transport::{DirEntry, SshStat, SshTransport, TransportError};
 use mdviewer_core::ssh_url::SshUrl;
+use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
-pub struct UnixTransport;
+/// Unix transport. Each fetch/push/list_dir/stat:
+///   1. Builds the `ssh` argv via `build_*_argv` helpers.
+///   2. Probes the auth strategy via `auth::probe(&ctx)` (cheap — reads
+///      `SSH_AUTH_SOCK` + `ssh-add -l`).
+///   3. Installs SSH_ASKPASS + MDVIEWER_ASKPASS_SOCKET env vars on the
+///      `Command` via `AuthStrategy::authenticate_unix(&mut cmd, &ctx)`
+///      BEFORE spawning, so the spawned ssh sees the helper hook even when
+///      the agent has no keys loaded. Agent-only operations skip the env
+///      install (no-op `Ok(())` from `authenticate_unix`).
+///
+/// `auth_ctx` is `Option<Arc<AuthContext>>`: production construction in
+/// `main.rs::build_ssh_app_state` always passes `Some(ctx)` so the askpass
+/// flow can resolve a password prompt; the `None` constructor exists so
+/// unit tests in this file can drive the transport without spinning up a
+/// real `AskpassServer`.
+pub struct UnixTransport {
+    auth_ctx: Option<Arc<AuthContext>>,
+}
 
 impl Default for UnixTransport {
     fn default() -> Self {
@@ -14,8 +33,37 @@ impl Default for UnixTransport {
 }
 
 impl UnixTransport {
+    /// Construct a transport with no auth context — every command runs in
+    /// agent-only mode. Used by unit tests where a real `AskpassServer`
+    /// would be overkill. Production code paths construct via
+    /// `with_auth_context`.
     pub fn new() -> Self {
-        Self
+        Self { auth_ctx: None }
+    }
+
+    /// Production constructor: stash a clonable handle to the shared
+    /// `AuthContext` so each per-command spawn can install the askpass
+    /// env vars (SSH_ASKPASS + MDVIEWER_ASKPASS_SOCKET) and the russh
+    /// callback path can resolve a pending prompt against the same inbox.
+    pub fn with_auth_context(ctx: Arc<AuthContext>) -> Self {
+        Self {
+            auth_ctx: Some(ctx),
+        }
+    }
+
+    /// Install SSH_ASKPASS/MDVIEWER_ASKPASS_SOCKET env vars on `cmd` before
+    /// spawn, if an `AuthContext` was supplied at construction. Tests
+    /// without context (legacy `new()`) skip the install entirely — same
+    /// behavior as `AuthStrategy::AgentOnly`.
+    async fn install_auth_env(
+        &self,
+        cmd: &mut Command,
+    ) -> Result<(), TransportError> {
+        if let Some(ctx) = &self.auth_ctx {
+            let strategy = probe(ctx);
+            strategy.authenticate_unix(cmd, ctx).await?;
+        }
+        Ok(())
     }
 
     fn target(url: &SshUrl) -> String {
@@ -107,6 +155,11 @@ impl SshTransport for UnixTransport {
         let argv = Self::build_fetch_argv(url)?;
         let mut cmd = Command::new("ssh");
         cmd.args(argv);
+        // Install SSH_ASKPASS + MDVIEWER_ASKPASS_SOCKET env vars on `cmd`
+        // BEFORE spawning so the spawned `ssh` consults our helper when the
+        // agent has no usable keys for this host (Decision 5 — no silent
+        // degradation to agent-only fallback).
+        self.install_auth_env(&mut cmd).await?;
         let out = cmd.output().await.map_err(TransportError::Spawn)?;
         if !out.status.success() {
             return Err(TransportError::Ssh {
@@ -130,6 +183,7 @@ impl SshTransport for UnixTransport {
         cmd.stdin(std::process::Stdio::piped());
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
+        self.install_auth_env(&mut cmd).await?;
         let mut child = cmd.spawn().map_err(TransportError::Spawn)?;
         if let Some(mut stdin) = child.stdin.take() {
             stdin.write_all(bytes).await.map_err(TransportError::Io)?;
@@ -157,6 +211,7 @@ impl SshTransport for UnixTransport {
         let argv = Self::build_list_dir_argv(url)?;
         let mut cmd = Command::new("ssh");
         cmd.args(argv);
+        self.install_auth_env(&mut cmd).await?;
         let out = cmd.output().await.map_err(TransportError::Spawn)?;
         if !out.status.success() {
             return Err(TransportError::Ssh {
@@ -174,6 +229,7 @@ impl SshTransport for UnixTransport {
         let argv = Self::build_stat_argv(url)?;
         let mut cmd = Command::new("ssh");
         cmd.args(argv);
+        self.install_auth_env(&mut cmd).await?;
         let out = cmd.output().await.map_err(TransportError::Spawn)?;
         if !out.status.success() {
             return Err(TransportError::Ssh {
@@ -327,12 +383,30 @@ mod tests {
     }
 
     #[test]
-    fn new_and_default_produce_equivalent_unit_transports() {
-        // `UnixTransport` is a unit struct with no state — both constructors
-        // are exercised so the coverage signal reflects that they're sound.
-        let _ = UnixTransport::new();
-        let _ = UnixTransport;
-        let _ = UnixTransport::default();
+    fn new_and_default_produce_transports_without_auth_context() {
+        // Both no-arg constructors yield a transport in agent-only mode
+        // (`auth_ctx == None`). Exercised so the coverage signal stays clean
+        // and the no-context fallback path is observed.
+        let t = UnixTransport::new();
+        assert!(t.auth_ctx.is_none());
+        let t = UnixTransport::default();
+        assert!(t.auth_ctx.is_none());
+    }
+
+    #[test]
+    fn with_auth_context_stashes_the_arc() {
+        use super::super::auth::{AskpassInbox, AuthContext};
+        use std::path::PathBuf;
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let ctx = Arc::new(AuthContext {
+            askpass_helper_path: PathBuf::from("/opt/mdviewer/mdviewer-askpass"),
+            askpass_socket: PathBuf::from("/tmp/sock"),
+            askpass_tx: tx,
+            inbox: Arc::new(AskpassInbox::new()),
+        });
+        let t = UnixTransport::with_auth_context(ctx.clone());
+        let held = t.auth_ctx.as_ref().expect("ctx stashed");
+        assert!(Arc::ptr_eq(held, &ctx));
     }
 
     #[tokio::test]

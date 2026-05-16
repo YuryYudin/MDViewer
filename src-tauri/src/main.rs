@@ -880,9 +880,26 @@ async fn is_drive_desktop_path(path: String) -> bool {
 /// One instance is constructed in `setup()` and reused for every SSH IPC
 /// invocation. The transport baked into `ops` differs per platform; both
 /// platforms route askpass replies through the same `inbox`.
+///
+/// `_auth_ctx` and (on Unix) `_askpass_server` are held here purely for
+/// lifetime: dropping the `SshAppState` at app shutdown drops them in
+/// order — server first (closes the socket cleanly), then auth context
+/// (releases the resolved helper path and the mpsc sender).
 pub struct SshAppState {
     pub ops: Arc<mdviewer_lib::ssh::operations::Operations>,
     pub inbox: Arc<mdviewer_lib::ssh::auth::AskpassInbox>,
+    /// Hold-onto field — the transport's `Arc<AuthContext>` aliases this.
+    /// Keeping it alive in SshAppState matches the desired "app-lifetime"
+    /// scope without `Box::leak`.
+    _auth_ctx: Arc<mdviewer_lib::ssh::auth::AuthContext>,
+    /// Unix-only: lives for the lifetime of the app so the askpass socket
+    /// (held inside a tempdir leaked by `start_listener`) is reachable
+    /// from every spawned ssh process. The Receiver inside is currently
+    /// unused at the AppState level (each helper connection resolves
+    /// directly via the inbox); future code may forward those events to
+    /// the frontend modal.
+    #[cfg(unix)]
+    _askpass_server: Mutex<mdviewer_lib::ssh::askpass::AskpassServer>,
 }
 
 #[tauri::command]
@@ -914,13 +931,17 @@ async fn ssh_open_url(
 }
 
 #[tauri::command]
-async fn ssh_password_response(
+fn ssh_password_response(
     ssh: State<'_, SshAppState>,
     req_id: String,
     value: Option<String>,
 ) -> Result<(), String> {
     // `AskpassInbox::respond` is synchronous (oneshot::Sender::send doesn't
-    // await). Unknown req_ids silently no-op — see the auth.rs unit suite.
+    // await), so this whole handler is sync. The Tauri-side `State<'_, T>`
+    // borrow lifetime doesn't survive a `.await` either, so dropping `async`
+    // also tightens the lifetime contract — no risk of the state guard being
+    // held across an await point that doesn't exist.
+    // Unknown req_ids silently no-op — see the auth.rs unit suite.
     ssh.inbox.respond(&req_id, value);
     Ok(())
 }
@@ -972,7 +993,9 @@ fn dispatch_cli_targets(
     // happens off the event loop.
     for url in deferred_ssh {
         let app_handle = app.clone();
-        let url_label = format_ssh_label(&url);
+        // Display impl on SshUrl renders the canonical
+        // `ssh://[user@]host[:port]/path` form — same shape A2 pinned.
+        let url_label = url.to_string();
         tauri::async_runtime::spawn(async move {
             let ssh_state = app_handle.state::<SshAppState>();
             let outcome = match ssh_state.ops.open_url(&url).await {
@@ -1336,7 +1359,9 @@ fn main() {
                             }
                         }
                         cli::OpenTarget::Ssh(url) => {
-                            let url_label = format_ssh_label(&url);
+                            // SshUrl's Display impl is the canonical formatter
+                            // (A2). format_ssh_label was a stale dupe.
+                            let url_label = url.to_string();
                             let res = tauri::async_runtime::block_on(
                                 ws.open_ssh_url(url.clone(), &ssh_ops),
                             );
@@ -1544,20 +1569,6 @@ fn main() {
         });
 }
 
-/// A9: render a user-friendly "ssh://user@host:port/path" label for
-/// logging. Mirrors what the user typed at the prompt so log scraping
-/// can correlate a CLI argv entry to the resulting Workspace open.
-fn format_ssh_label(url: &mdviewer_core::ssh_url::SshUrl) -> String {
-    let (user, sep) = match &url.user {
-        Some(u) => (u.as_str(), "@"),
-        None => ("", ""),
-    };
-    format!(
-        "ssh://{}{}{}:{}{}",
-        user, sep, url.host, url.port, url.path
-    )
-}
-
 /// A9: assemble the shared `SshAppState`.
 ///
 /// `Operations` wraps a per-platform `SshTransport` impl plus the on-disk
@@ -1587,7 +1598,7 @@ fn build_ssh_app_state(
     app: &tauri::App,
     data_dir: &std::path::Path,
 ) -> Result<SshAppState, Box<dyn std::error::Error>> {
-    use mdviewer_lib::ssh::auth::AskpassInbox;
+    use mdviewer_lib::ssh::auth::{AskpassInbox, AuthContext};
     use mdviewer_lib::ssh::operations::Operations;
 
     let cache_base = {
@@ -1599,7 +1610,19 @@ fn build_ssh_app_state(
     };
 
     let inbox = Arc::new(AskpassInbox::new());
-
+    // Resolve the helper binary's installed path. Tauri's externalBin
+    // declaration in `tauri.conf.json` places `mdviewer-askpass-<triple>`
+    // next to the main binary at build time (renamed to `mdviewer-askpass`
+    // on macOS .app bundles and Linux .deb/.AppImage payloads); resolving
+    // against `resource_dir()` works for both dev (cargo target) and
+    // installed builds. The helper is invoked by `ssh` via SSH_ASKPASS;
+    // its path needs to be absolute because `ssh` execs it with no PATH
+    // lookup.
+    let askpass_helper_path = app
+        .path()
+        .resource_dir()
+        .map(|d| d.join("mdviewer-askpass"))
+        .unwrap_or_else(|_| std::path::PathBuf::from("mdviewer-askpass"));
     // Per-platform transport construction. The Unix branch starts the
     // askpass listener whose socket path the per-command transport call
     // bakes into `SSH_ASKPASS` + `MDVIEWER_ASKPASS_SOCKET` env vars; the
@@ -1607,40 +1630,43 @@ fn build_ssh_app_state(
     // `tauri::async_runtime::block_on` call below starts the listener on
     // the runtime that backs every other async IPC handler, so the
     // socket survives the `setup()` return.
+    #[cfg(unix)]
+    let askpass_server = tauri::async_runtime::block_on(
+        mdviewer_lib::ssh::askpass::start_listener(inbox.clone()),
+    )?;
+    #[cfg(unix)]
+    let askpass_socket = askpass_server.socket_path.clone();
+    #[cfg(not(unix))]
+    let askpass_socket = std::path::PathBuf::new();
+
+    // Build one AuthContext shared by everything below. The transport
+    // (Unix) and the Windows russh auth callback both capture clones of
+    // the same `Arc<AuthContext>` so a single user-side state (inbox,
+    // helper path, socket path, mpsc sender) drives every connection.
+    let (askpass_tx, _askpass_rx) = tokio::sync::mpsc::channel(8);
+    let auth_ctx = Arc::new(AuthContext {
+        askpass_helper_path,
+        askpass_socket,
+        askpass_tx,
+        inbox: inbox.clone(),
+    });
+
     let transport: Arc<dyn mdviewer_lib::ssh::transport::SshTransport> = {
         #[cfg(unix)]
         {
-            // Start the listener so per-command transport invocations have
-            // a socket to thread into the spawned ssh process. The returned
-            // server is leaked into a static so its TempDir guard isn't
-            // dropped (matching `start_listener`'s own internal leak of
-            // the tempdir handle). We ignore the `requests` receiver here —
-            // each helper connection already calls `inbox.register(...)`
-            // and the receiver isn't consumed by A9; future tasks will
-            // forward those events to the frontend modal.
-            let _server = tauri::async_runtime::block_on(
-                mdviewer_lib::ssh::askpass::start_listener(inbox.clone()),
-            )?;
-            // Leak the server so the socket + tempdir survive until process
-            // exit. The listener's accept loop is already spawned on the
-            // runtime; only the `AskpassServer` handle wrapping it needs
-            // to stay alive.
-            let _: &'static mdviewer_lib::ssh::askpass::AskpassServer =
-                Box::leak(Box::new(_server));
-            Arc::new(mdviewer_lib::ssh::transport_unix::UnixTransport::new())
+            // Unix transport stashes the AuthContext so each per-command
+            // spawn can install SSH_ASKPASS + MDVIEWER_ASKPASS_SOCKET env
+            // vars (Decision 5 — no silent agent-only degradation).
+            Arc::new(mdviewer_lib::ssh::transport_unix::UnixTransport::with_auth_context(
+                auth_ctx.clone(),
+            ))
         }
         #[cfg(windows)]
         {
-            // Build an AuthContext + probe upfront — Windows bakes the
-            // resulting AuthStrategy into the transport at construction.
-            let (tx, _rx) = tokio::sync::mpsc::channel(8);
-            let ctx = mdviewer_lib::ssh::auth::AuthContext {
-                askpass_helper_path: std::path::PathBuf::new(),
-                askpass_socket: std::path::PathBuf::new(),
-                askpass_tx: tx,
-                inbox: inbox.clone(),
-            };
-            let strategy = mdviewer_lib::ssh::auth::probe(&ctx);
+            // Windows bakes the resolved AuthStrategy into the transport
+            // at construction: the russh auth callback uses the inbox +
+            // mpsc sender to drive password prompts via the same flow.
+            let strategy = mdviewer_lib::ssh::auth::probe(&auth_ctx);
             Arc::new(mdviewer_lib::ssh::transport_windows::WindowsTransport::new(
                 strategy,
             ))
@@ -1648,5 +1674,11 @@ fn build_ssh_app_state(
     };
 
     let ops = Arc::new(Operations::new(transport, cache_base));
-    Ok(SshAppState { ops, inbox })
+    Ok(SshAppState {
+        ops,
+        inbox,
+        _auth_ctx: auth_ctx,
+        #[cfg(unix)]
+        _askpass_server: Mutex::new(askpass_server),
+    })
 }

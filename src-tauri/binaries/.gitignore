@@ -1,0 +1,7 @@
+# A9: build.rs auto-copies the built mdviewer-askpass helper here as
+# `mdviewer-askpass-<target-triple>` so Tauri's externalBin resolves at
+# codegen time. The artifacts themselves are produced from sources under
+# src/bin/, so they shouldn't be checked in.
+mdviewer-askpass-*
+!.gitkeep
+!.gitignore
