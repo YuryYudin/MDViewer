@@ -1014,6 +1014,52 @@ fn ssh_password_response(
     Ok(())
 }
 
+/// B1 wire DTO: a flat camelCase shape for one directory entry returned by
+/// `ssh_list_dir`. The OpenRemoteDialog (B2) renders these directly into the
+/// file-picker tree — name + is-dir flag (folder icon) + size (badge). The
+/// underlying `mdviewer_lib::ssh::transport::DirEntry` is intentionally NOT
+/// re-used at the IPC boundary: the dialog wants `isDir` (camelCase), and
+/// the snake_case raw struct would force every renderer site to re-key.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DirEntryWire {
+    name: String,
+    is_dir: bool,
+    size: u64,
+}
+
+/// B1: list a remote directory for the OpenRemoteDialog's tree view.
+///
+/// Parses the URL with the canonical core parser, calls
+/// `Operations::list_dir`, and flattens each `DirEntry` into the camelCase
+/// wire DTO. Transport errors propagate as their `Display` text — the
+/// dialog's state-C surface renders that verbatim (Permission denied,
+/// Host key has changed, etc.) per wireframe-02.
+///
+/// Pattern matches `ssh_open_url` in this file: parse → IO → return.
+/// Holds no workspace lock; the underlying transport may take seconds
+/// over a flaky link.
+#[tauri::command]
+async fn ssh_list_dir(
+    ssh: State<'_, SshAppState>,
+    url: String,
+) -> Result<Vec<DirEntryWire>, String> {
+    let parsed = mdviewer_core::ssh_url::parse(&url).map_err(|e| e.to_string())?;
+    let entries = ssh
+        .ops
+        .list_dir(&parsed)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(entries
+        .into_iter()
+        .map(|e| DirEntryWire {
+            name: e.name,
+            is_dir: e.is_dir,
+            size: e.size,
+        })
+        .collect())
+}
+
 /// Dispatch a heterogeneous list of CLI targets onto the workspace. Used by
 /// (a) the single-instance plugin callback and (b) macOS's
 /// `RunEvent::Opened` hook — both sync contexts that may receive a mix of
@@ -1606,6 +1652,8 @@ fn main() {
             // A9: SSH IPC surface.
             ssh_open_url,
             ssh_password_response,
+            // B1: SSH directory listing for the OpenRemoteDialog.
+            ssh_list_dir,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

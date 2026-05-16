@@ -309,11 +309,13 @@ describe('tauriIpc', () => {
       'sshOpenUrl',
       'sshPasswordResponse',
       'onSshAskpassRequest',
+      // B1: directory listing for the OpenRemoteDialog file-picker.
+      'sshListDir',
     ];
     for (const m of required) {
       expect(typeof tauriIpc[m]).toBe('function');
     }
-    expect(required.length).toBe(28);
+    expect(required.length).toBe(29);
   });
 
   // ---------------------------------------------------------------------
@@ -343,6 +345,38 @@ describe('tauriIpc', () => {
       reqId: 'req-2',
       value: null,
     });
+  });
+
+  // -------------------------------------------------------------------
+  // B1: ssh_list_dir wire shape. The OpenRemoteDialog calls this once
+  // per host the user picks; the Rust side flattens the transport's
+  // `DirEntry` enum into a camelCase `{ name, isDir, size }` DTO before
+  // returning so the dialog can render rows without re-keying.
+  // -------------------------------------------------------------------
+
+  it('sshListDir invokes ssh_list_dir with { url } and returns the flat entries', async () => {
+    const stub = [
+      { name: 'README.md', isDir: false, size: 1234 },
+      { name: 'notes', isDir: true, size: 0 },
+    ];
+    invoke.mockResolvedValueOnce(stub);
+    const got = await tauriIpc.sshListDir('ssh://alice@host/notes');
+    expect(invoke).toHaveBeenCalledWith('ssh_list_dir', {
+      url: 'ssh://alice@host/notes',
+    });
+    expect(got).toEqual(stub);
+  });
+
+  it('sshListDir propagates the verbatim Rust error string for state-C rendering', async () => {
+    // The wireframe-02 state C requires the dialog to show the verbatim ssh
+    // stderr (Permission denied, host key changed, etc.). The Rust handler
+    // surfaces `TransportError::Display` as a plain string — the adapter
+    // must not wrap it ("An unknown error occurred." would be the
+    // regression).
+    invoke.mockRejectedValueOnce('ssh exited Some(255)\nPermission denied (publickey)');
+    await expect(tauriIpc.sshListDir('ssh://host/x')).rejects.toBe(
+      'ssh exited Some(255)\nPermission denied (publickey)',
+    );
   });
 
   it('onSshAskpassRequest returns a synchronous disposer even before listen resolves', async () => {

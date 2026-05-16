@@ -201,6 +201,30 @@ export interface Ipc {
    * never has to know about it.
    */
   onSshAskpassRequest(handler: (req: SshAskpassRequest) => void): () => void;
+  /**
+   * B1: list one remote directory for the OpenRemoteDialog's file
+   * picker. The Rust handler parses the URL via the canonical
+   * `mdviewer_core::ssh_url::parse`, then forwards to the transport's
+   * `list_dir`. Each row is flattened into the camelCase wire DTO
+   * `DirEntry` below.
+   *
+   * Errors surface as the verbatim `TransportError::Display` string
+   * (e.g. "ssh exited Some(255)\nPermission denied (publickey)") so
+   * the dialog's state-C surface (wireframe 02) can render them
+   * verbatim. The adapter does NOT wrap or normalize the error string.
+   */
+  sshListDir(url: string): Promise<DirEntry[]>;
+}
+
+/**
+ * Payload returned by `ssh_list_dir`. Flat camelCase shape — the Rust
+ * boundary converts the snake_case `mdviewer_lib::ssh::transport::DirEntry`
+ * into this so the OpenRemoteDialog can render rows without re-keying.
+ */
+export interface DirEntry {
+  name: string;
+  isDir: boolean;
+  size: number;
 }
 
 /**
@@ -284,6 +308,7 @@ export const tauriIpc: Ipc = {
   sshOpenUrl: (url) => invoke<TabSummary>('ssh_open_url', { url }),
   sshPasswordResponse: (reqId, value) =>
     invoke<void>('ssh_password_response', { reqId, value }),
+  sshListDir: (url) => invoke<DirEntry[]>('ssh_list_dir', { url }),
   // Subscribe to `ssh:askpass-request`. `listen` is async (it round-trips
   // through Tauri's event API) so the unlisten handle isn't available
   // synchronously — capture it asynchronously and have the returned
