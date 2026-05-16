@@ -34,67 +34,22 @@ fn main() {
     std::fs::create_dir_all(&binaries_dir).expect("create src-tauri/binaries dir");
     let helper_dest = binaries_dir.join(format!("mdviewer-askpass-{}", target_triple));
 
-    // Step 1: empty placeholder so tauri_build's resource-path check passes
-    // even on the very first build (before the recursive cargo invocation
-    // has produced the real bin).
+    // Tauri's `externalBin` codegen resolves the suffixed file at compile
+    // time. A 0-byte placeholder satisfies the existence check; cargo builds
+    // the real `mdviewer-askpass` binary as a normal workspace bin in the
+    // same pass (declared via [[bin]] in Cargo.toml), landing at
+    // `target/<profile>/mdviewer-askpass` where dev-mode resource resolution
+    // picks it up. Release builds (`cargo tauri build`) get the real bytes
+    // via release.yml's explicit `cargo build --release --bin mdviewer-askpass`
+    // step which copies the binary into `src-tauri/binaries/<triple>` before
+    // `tauri build` runs.
+    //
+    // We deliberately do NOT invoke a recursive sub-cargo here: the inner
+    // `cargo build --bin mdviewer-askpass` blocks on the outer cargo's
+    // target-directory lock, deadlocking any nested invocation (e.g. the
+    // codegen test in `tests/codegen.test.ts` and B5's WDIO suite).
     if !helper_dest.exists() {
         std::fs::write(&helper_dest, b"").expect("write askpass placeholder");
-    }
-
-    // Step 2: outer-build recursive helper build (Unix only).
-    let is_recursive = std::env::var("MDVIEWER_BUILD_HELPER_RUNNING").is_ok();
-    let is_windows_target = target_triple.contains("windows");
-    if !is_recursive && !is_windows_target {
-        let profile = std::env::var("PROFILE").unwrap_or_else(|_| "debug".into());
-        let cargo_bin = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-        let target_dir = std::env::var("CARGO_TARGET_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| manifest_dir.parent().unwrap().join("target"));
-
-        let mut cmd = Command::new(&cargo_bin);
-        cmd.args(["build", "--bin", "mdviewer-askpass", "--manifest-path"])
-            .arg(manifest_dir.join("Cargo.toml"));
-        if profile == "release" {
-            cmd.arg("--release");
-        }
-        let triple_subdir = std::env::var("CARGO_BUILD_TARGET").unwrap_or_default();
-        if !triple_subdir.is_empty() {
-            cmd.args(["--target", &triple_subdir]);
-        }
-        // Sentinel: the recursive build.rs invocation observes this env var
-        // and skips both this whole helper-build block AND any other costly
-        // outer-only work. Without it the recursion is unbounded.
-        cmd.env("MDVIEWER_BUILD_HELPER_RUNNING", "1");
-        let status = cmd
-            .status()
-            .expect("invoke cargo to build mdviewer-askpass helper bin");
-        if !status.success() {
-            panic!(
-                "cargo build --bin mdviewer-askpass exited {:?}",
-                status.code()
-            );
-        }
-        let produced = if triple_subdir.is_empty() {
-            target_dir.join(&profile).join("mdviewer-askpass")
-        } else {
-            target_dir
-                .join(&triple_subdir)
-                .join(&profile)
-                .join("mdviewer-askpass")
-        };
-        if !produced.exists() {
-            panic!(
-                "mdviewer-askpass not found at {} after recursive cargo build",
-                produced.display(),
-            );
-        }
-        std::fs::copy(&produced, &helper_dest).unwrap_or_else(|e| {
-            panic!(
-                "copy {} -> {} failed: {e}",
-                produced.display(),
-                helper_dest.display()
-            )
-        });
     }
     println!("cargo:rerun-if-changed=src/bin/mdviewer-askpass.rs");
 
