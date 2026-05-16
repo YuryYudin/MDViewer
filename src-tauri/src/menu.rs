@@ -50,6 +50,10 @@ pub fn menu_id_to_action(id: &str) -> Option<&'static str> {
         "menu-zoom-in" => Some("zoom-in"),
         "menu-zoom-out" => Some("zoom-out"),
         "menu-zoom-reset" => Some("zoom-reset"),
+        // B1: "Open from remote…" File menu item. The frontend's
+        // OpenRemoteDialog (B2) subscribes to `mdviewer:open-remote`,
+        // which `menuBridge.ts` synthesizes from this action string.
+        "menu-open-remote" => Some("open-remote"),
         _ => None,
     }
 }
@@ -130,6 +134,19 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             "Open…",
             true,
             Some("CmdOrCtrl+O"),
+        )?)
+        // B1: SSH "Open from remote…" picker. Sits next to "Open…" so the
+        // two are visually adjacent; uses CmdOrCtrl+Shift+O because the
+        // unshifted variant is already taken by the local-file picker.
+        // The id `menu-open-remote` is what `menu_id_to_action` maps to
+        // the `open-remote` action string the frontend's menuBridge (B2)
+        // forwards as `mdviewer:open-remote` for OpenRemoteDialog.
+        .item(&MenuItem::with_id(
+            app,
+            "menu-open-remote",
+            "Open from remote…",
+            true,
+            Some("CmdOrCtrl+Shift+O"),
         )?)
         .separator()
         .item(&MenuItem::with_id(
@@ -233,6 +250,16 @@ mod tests {
         assert_eq!(menu_id_to_action("menu-save-file"), Some("save-file"));
         assert_eq!(menu_id_to_action("menu-toggle-edit"), Some("toggle-edit"));
         assert_eq!(menu_id_to_action("menu-toggle-sidebar"), Some("toggle-sidebar"));
+    }
+
+    /// B1: the "Open from remote…" File menu item bridges to the
+    /// frontend's OpenRemoteDialog via the existing `menu-action` Tauri
+    /// event. The Rust id `menu-open-remote` translates to the action
+    /// string `open-remote`, which `menuBridge.ts` (B2) will map onto
+    /// `mdviewer:open-remote` for the dialog to subscribe to.
+    #[test]
+    fn menu_id_action_mapping_includes_open_remote() {
+        assert_eq!(menu_id_to_action("menu-open-remote"), Some("open-remote"));
     }
 
     /// The View-menu zoom items map to kebab-case action strings that the

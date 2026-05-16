@@ -87,6 +87,21 @@ impl Operations {
         tauri_cache_dir.join("remote")
     }
 
+    /// Forward a directory listing to the underlying transport.
+    ///
+    /// `Operations` keeps `transport` private so callers can't poke at
+    /// it directly; the higher-level methods (`open_url`, `save_back`,
+    /// `save_sidecar`) all go through it. `list_dir` is symmetric — the
+    /// B1 IPC handler needs the entries verbatim (no caching, no hash
+    /// bookkeeping) so this is a pass-through. Errors propagate the
+    /// transport's `Display` text unchanged.
+    pub async fn list_dir(
+        &self,
+        url: &SshUrl,
+    ) -> Result<Vec<super::transport::DirEntry>, TransportError> {
+        self.transport.list_dir(url).await
+    }
+
     /// Fetch the remote bytes, hash them, mirror to the cache path, and
     /// return all three to the caller. The cache mirror lets the watcher
     /// observe local edits via a real file path; the hash is what
