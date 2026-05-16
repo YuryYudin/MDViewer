@@ -17,6 +17,7 @@ import { mountConflict, type ConflictSource } from './Conflict';
 import { mountAskpassModal } from './AskpassModal';
 import { mountShareDialog } from './ShareDialog';
 import { mountDriveStatus } from './DriveStatus';
+import { mountOpenRemoteDialog, type OpenRemoteDialogHandle } from './OpenRemoteDialog';
 
 /**
  * C1: synthetic prefix used by `drive_open_url` for DriveApi tabs whose
@@ -504,6 +505,59 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
       const detail = (ev as CustomEvent<Settings>).detail;
       if (detail) settings = detail;
       if (!activeDocPref) updateReadout();
+    },
+    { signal: mountAbort.signal },
+  );
+
+  // B2: File → "Open from remote…" menu item arrives here as a
+  // `mdviewer:open-remote` CustomEvent (the menu-bridge translates the
+  // Tauri `menu-action` event payload `open-remote` to that name; see
+  // `src/menuBridge.ts`). The same dialog is also reachable from the
+  // StartPage button — both paths mount the dialog directly onto
+  // document.body so the overlay floats over the workspace shell.
+  //
+  // Track the active dialog so a second menu click while a dialog is
+  // already open is a no-op rather than stacking two overlays. The
+  // dialog's onPick path nulls this out via the close() it runs before
+  // invoking the callback; Escape / × dismissal removes the DOM node
+  // but the reference here would dangle, so we re-check the DOM on
+  // each click rather than trusting the captured handle alone.
+  let activeRemoteDialog: OpenRemoteDialogHandle | null = null;
+  document.addEventListener(
+    'mdviewer:open-remote',
+    () => {
+      const existing = document.body.querySelector(
+        '[data-testid="open-remote-dialog"]',
+      );
+      if (existing) return;
+      activeRemoteDialog = mountOpenRemoteDialog({
+        root: document.body,
+        // Pass the same `ipc` the workspace received so unit-test fakes
+        // reach the dialog. Without this the dialog would default to the
+        // module-level singleton and crash under jsdom (no Tauri runtime).
+        ipc,
+        onPick: (url) => {
+          activeRemoteDialog = null;
+          void (async () => {
+            try {
+              // Route through openPathOrUrl so the OpenOutcome from the
+              // resulting openDocument call funnels into the same
+              // setActive → refresh pipeline the local-open path uses.
+              const outcome = await openPathOrUrl(ipc, url);
+              setActive(outcome);
+              await refresh();
+            } catch (e) {
+              // Auth / transport failures shouldn't wedge the workspace —
+              // log and leave the user on their current view. The dialog
+              // itself surfaces transport-level errors via state C during
+              // browsing; this catch covers the open-handoff that follows
+              // a successful directory pick.
+              // eslint-disable-next-line no-console
+              console.warn('open-remote handoff failed:', e);
+            }
+          })();
+        },
+      });
     },
     { signal: mountAbort.signal },
   );

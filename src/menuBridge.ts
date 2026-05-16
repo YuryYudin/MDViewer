@@ -22,6 +22,11 @@
 export const MENU_ACTION_TO_EVENT: Readonly<Record<string, string>> = Object.freeze({
   'open-file': 'mdviewer:open-file',
   'open-from-drive': 'mdviewer:open-from-drive',
+  // B2: File → "Open from remote…" → `mdviewer:open-remote`. The Rust
+  // side (menu_id_to_action in src-tauri/src/menu.rs) maps the menu id
+  // `menu-open-remote` to the action string `open-remote` which lands
+  // here and fans out as the CustomEvent the Workspace listens for.
+  'open-remote': 'mdviewer:open-remote',
   'new-document': 'mdviewer:new-document',
   'close-tab': 'mdviewer:close-tab',
   'open-settings': 'mdviewer:open-settings',

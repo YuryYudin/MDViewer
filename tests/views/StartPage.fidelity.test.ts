@@ -57,7 +57,10 @@ describe('StartPage — wireframe-01 fidelity', () => {
     expect(h.textContent).toBe('Welcome to MDViewer');
   });
 
-  it('renders three actions in wireframe order: Open · New · Settings', async () => {
+  it('renders four actions in wireframe order: Open · Open from remote · New · Settings', async () => {
+    // B2 inserted "Open from remote…" between Open and New (wireframe 02
+    // pairs it with the local Open action so the two file-source entry
+    // points sit together). The other three retain their original order.
     const root = document.createElement('div');
     await mountStartPage(root, ipcWith([]));
     const buttons = Array.from(
@@ -67,12 +70,14 @@ describe('StartPage — wireframe-01 fidelity', () => {
     );
     expect(buttons.map((b) => b.getAttribute('data-action'))).toEqual([
       'open-file',
+      'open-from-remote',
       'new-document',
       'open-settings',
     ]);
     expect(buttons[0].textContent).toBe('Open file…');
-    expect(buttons[1].textContent).toBe('New document');
-    expect(buttons[2].textContent).toBe('Settings…');
+    expect(buttons[1].textContent).toBe('Open from remote…');
+    expect(buttons[2].textContent).toBe('New document');
+    expect(buttons[3].textContent).toBe('Settings…');
     // Open is the primary action — wireframe-01 styles it as the accent
     // button via the .primary class.
     expect(buttons[0].className).toContain('primary');

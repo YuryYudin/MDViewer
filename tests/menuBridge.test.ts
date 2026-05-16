@@ -36,6 +36,14 @@ describe('menuBridge', () => {
     expect(MENU_ACTION_TO_EVENT['save-file']).toBe('mdviewer:save-active');
   });
 
+  it('File → "Open from remote…" maps to mdviewer:open-remote (B2)', () => {
+    // B2: the Rust menu builds an `Open from remote…` item with id
+    // `menu-open-remote`. The Rust id-to-action map translates that to
+    // the action string `open-remote`, which lands here and must surface
+    // as the `mdviewer:open-remote` CustomEvent the Workspace listens for.
+    expect(MENU_ACTION_TO_EVENT['open-remote']).toBe('mdviewer:open-remote');
+  });
+
   it('View → Zoom items map to the three font-zoom CustomEvents', () => {
     // The native View menu uses kebab-case action ids (`zoom-in`, `zoom-out`,
     // `zoom-reset`) per `menu_id_to_action`. The bridge translates them to
