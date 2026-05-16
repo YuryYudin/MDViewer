@@ -1,0 +1,31 @@
+# Stripped-down sshd config for integration tests. Substituted at
+# runtime by `tests/common/ssh_fixture.rs`. The defaults here aim for:
+#   * loopback-only listener (never expose an open port to a CI runner's
+#     subnet),
+#   * publickey-only auth against the committed fixture key,
+#   * no PAM / GSSAPI / host-based fallback so the listener boots fast and
+#     reproducibly on minimal CI images.
+#
+# Tokens substituted at fixture-spawn time:
+#   __PORT__       random ephemeral port
+#   __HOST_KEY__   absolute path to tests/fixtures/ssh/test_host_key
+#   __AUTHKEYS__   absolute path to tests/fixtures/ssh/authorized_keys
+#   __PIDFILE__    tmpdir path for sshd's pidfile
+
+Port __PORT__
+ListenAddress 127.0.0.1
+HostKey __HOST_KEY__
+AuthorizedKeysFile __AUTHKEYS__
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+ChallengeResponseAuthentication no
+UsePAM no
+GSSAPIAuthentication no
+HostbasedAuthentication no
+PermitRootLogin prohibit-password
+StrictModes no
+PrintMotd no
+LogLevel ERROR
+PidFile __PIDFILE__
+Subsystem sftp internal-sftp

@@ -125,6 +125,15 @@ jobs:
             librsvg2-dev \
             libayatana-appindicator3-dev \
             libxdo-dev
+      # A12: ssh_integration_phase1.rs spawns /usr/sbin/sshd against the
+      # committed fixture keypair. The Linux runner image ships ssh client
+      # tools but NOT the server; install openssh-server here so the
+      # integration test has something to connect to. macOS uses the
+      # bundled /usr/sbin/sshd and needs no install; the Windows test
+      # path uses the in-process russh harness (no system dep).
+      - name: Install openssh-server (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get install -y openssh-server
       - name: cargo test
         working-directory: src-tauri
         run: cargo test --features e2e --no-fail-fast

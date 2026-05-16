@@ -24,6 +24,27 @@ use tokio::process::Command;
 /// real `AskpassServer`.
 pub struct UnixTransport {
     auth_ctx: Option<Arc<AuthContext>>,
+    /// A12 test seam: when populated (only via `new_with_test_identity`),
+    /// every `ssh` spawn gets prepended with `-i <key> -o
+    /// IdentitiesOnly=yes -o UserKnownHostsFile=/dev/null -o
+    /// StrictHostKeyChecking=no` so the integration test can target a
+    /// local sshd fixture without an agent or known_hosts entry. The
+    /// production path leaves this `None`; the env-var reads only run
+    /// inside the test-only constructor, so no production code ever
+    /// consults `MDVIEWER_TEST_SSH_*`.
+    test_identity: Option<TestIdentity>,
+}
+
+/// Test-only ssh override: identity-file path + an extra `-p` to
+/// override the URL-derived port. The transport always honors the
+/// URL's port via `port_args`; this is here so a test that hardcodes
+/// a port-22 URL but wants to redirect to a non-22 fixture has a
+/// channel to do so. Currently only `identity_file` is required —
+/// `port_override` is kept for forward-compat.
+#[derive(Debug, Clone)]
+struct TestIdentity {
+    identity_file: std::path::PathBuf,
+    port_override: Option<u16>,
 }
 
 impl Default for UnixTransport {
@@ -38,7 +59,10 @@ impl UnixTransport {
     /// would be overkill. Production code paths construct via
     /// `with_auth_context`.
     pub fn new() -> Self {
-        Self { auth_ctx: None }
+        Self {
+            auth_ctx: None,
+            test_identity: None,
+        }
     }
 
     /// Production constructor: stash a clonable handle to the shared
@@ -48,6 +72,71 @@ impl UnixTransport {
     pub fn with_auth_context(ctx: Arc<AuthContext>) -> Self {
         Self {
             auth_ctx: Some(ctx),
+            test_identity: None,
+        }
+    }
+
+    /// A12 test-only constructor: reads `MDVIEWER_TEST_SSH_IDENTITY`
+    /// (absolute path to a private key) and `MDVIEWER_TEST_SSH_PORT`
+    /// (optional u16) from the process environment and produces a
+    /// transport that prepends the identity + strict-host-key-bypass
+    /// flags to every `ssh` argv.
+    ///
+    /// The `StrictHostKeyChecking=no` knob is acceptable here because
+    /// the test runs against a controlled local sshd whose key the
+    /// fixture just generated; the production transport keeps strict
+    /// checking. Hidden behind `#[doc(hidden)]` so it doesn't show up
+    /// in cargo doc output, but `pub` so integration tests in the
+    /// `tests/` directory (a separate crate) can construct one.
+    #[doc(hidden)]
+    pub fn new_with_test_identity() -> Self {
+        let identity_file = std::env::var_os("MDVIEWER_TEST_SSH_IDENTITY")
+            .map(std::path::PathBuf::from)
+            .expect(
+                "MDVIEWER_TEST_SSH_IDENTITY must be set when constructing a test-identity transport",
+            );
+        let port_override = std::env::var("MDVIEWER_TEST_SSH_PORT")
+            .ok()
+            .and_then(|s| s.parse::<u16>().ok());
+        Self {
+            auth_ctx: None,
+            test_identity: Some(TestIdentity {
+                identity_file,
+                port_override,
+            }),
+        }
+    }
+
+    /// Build the leading argv supplied by the test-identity seam, if
+    /// any. Empty in production. Inserted before `port_args` so the
+    /// `-i` / `-o` flags apply uniformly to fetch/push/list_dir/stat.
+    fn test_identity_args(&self) -> Vec<String> {
+        match &self.test_identity {
+            None => Vec::new(),
+            Some(t) => {
+                let mut v = vec![
+                    "-i".to_string(),
+                    t.identity_file.to_string_lossy().into_owned(),
+                    "-o".to_string(),
+                    "IdentitiesOnly=yes".to_string(),
+                    "-o".to_string(),
+                    "UserKnownHostsFile=/dev/null".to_string(),
+                    "-o".to_string(),
+                    "StrictHostKeyChecking=no".to_string(),
+                    "-o".to_string(),
+                    "GlobalKnownHostsFile=/dev/null".to_string(),
+                    // Disable batch mode is unnecessary, but we DO want
+                    // BatchMode=yes to make sure the test never opens an
+                    // interactive prompt (which would hang the runner).
+                    "-o".to_string(),
+                    "BatchMode=yes".to_string(),
+                ];
+                if let Some(p) = t.port_override {
+                    v.push("-p".to_string());
+                    v.push(p.to_string());
+                }
+                v
+            }
         }
     }
 
@@ -154,6 +243,7 @@ impl SshTransport for UnixTransport {
         // cause double-parsing and lose the quoting.
         let argv = Self::build_fetch_argv(url)?;
         let mut cmd = Command::new("ssh");
+        cmd.args(self.test_identity_args());
         cmd.args(argv);
         // Install SSH_ASKPASS + MDVIEWER_ASKPASS_SOCKET env vars on `cmd`
         // BEFORE spawning so the spawned `ssh` consults our helper when the
@@ -179,6 +269,7 @@ impl SshTransport for UnixTransport {
         // "no extra sh -c wrap" rationale.
         let argv = Self::build_push_argv(url)?;
         let mut cmd = Command::new("ssh");
+        cmd.args(self.test_identity_args());
         cmd.args(argv);
         cmd.stdin(std::process::Stdio::piped());
         cmd.stdout(std::process::Stdio::piped());
@@ -210,6 +301,7 @@ impl SshTransport for UnixTransport {
         // `TransportError::Ssh` and the user can adapt.
         let argv = Self::build_list_dir_argv(url)?;
         let mut cmd = Command::new("ssh");
+        cmd.args(self.test_identity_args());
         cmd.args(argv);
         self.install_auth_env(&mut cmd).await?;
         let out = cmd.output().await.map_err(TransportError::Spawn)?;
@@ -228,6 +320,7 @@ impl SshTransport for UnixTransport {
         // remote's stderr verbatim via `TransportError::Ssh`.
         let argv = Self::build_stat_argv(url)?;
         let mut cmd = Command::new("ssh");
+        cmd.args(self.test_identity_args());
         cmd.args(argv);
         self.install_auth_env(&mut cmd).await?;
         let out = cmd.output().await.map_err(TransportError::Spawn)?;
@@ -389,8 +482,55 @@ mod tests {
         // and the no-context fallback path is observed.
         let t = UnixTransport::new();
         assert!(t.auth_ctx.is_none());
+        assert!(t.test_identity.is_none());
         let t = UnixTransport::default();
         assert!(t.auth_ctx.is_none());
+        assert!(t.test_identity.is_none());
+    }
+
+    #[test]
+    fn test_identity_args_empty_when_seam_unused() {
+        // Production constructors never populate `test_identity`; the seam
+        // method must be a no-op for them so the argv is byte-identical to
+        // the legacy production shape.
+        let t = UnixTransport::new();
+        assert!(t.test_identity_args().is_empty());
+    }
+
+    #[test]
+    #[serial]
+    fn new_with_test_identity_reads_env_vars() {
+        // A12: the test-only constructor reads MDVIEWER_TEST_SSH_IDENTITY
+        // and prepends `-i <path>` + strict-host-key-bypass flags. We pin
+        // the argv shape so a future refactor that drops a flag is caught
+        // here rather than in a flaky integration test.
+        let key_path_env = "MDVIEWER_TEST_SSH_IDENTITY";
+        let port_env = "MDVIEWER_TEST_SSH_PORT";
+        let prev_key = std::env::var(key_path_env).ok();
+        let prev_port = std::env::var(port_env).ok();
+        std::env::set_var(key_path_env, "/tmp/test_id");
+        std::env::set_var(port_env, "12345");
+        let t = UnixTransport::new_with_test_identity();
+        let args = t.test_identity_args();
+        // -i <path>
+        assert_eq!(args[0], "-i");
+        assert_eq!(args[1], "/tmp/test_id");
+        // Strict-host-key bypass + identities-only + batch-mode.
+        assert!(args.iter().any(|a| a == "IdentitiesOnly=yes"));
+        assert!(args.iter().any(|a| a == "UserKnownHostsFile=/dev/null"));
+        assert!(args.iter().any(|a| a == "StrictHostKeyChecking=no"));
+        assert!(args.iter().any(|a| a == "BatchMode=yes"));
+        // Optional port override.
+        assert!(args.iter().any(|a| a == "12345"));
+        // Restore env so neighboring tests aren't perturbed.
+        match prev_key {
+            Some(v) => std::env::set_var(key_path_env, v),
+            None => std::env::remove_var(key_path_env),
+        }
+        match prev_port {
+            Some(v) => std::env::set_var(port_env, v),
+            None => std::env::remove_var(port_env),
+        }
     }
 
     #[test]

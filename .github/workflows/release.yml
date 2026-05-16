@@ -75,6 +75,28 @@ jobs:
 
       - run: npm ci
 
+      # A12: build the mdviewer-askpass helper bin BEFORE tauri build runs
+      # so the `bundle.externalBin` declaration in tauri.conf.json can
+      # resolve `binaries/mdviewer-askpass-<triple>` at bundle time. The
+      # outer build.rs handles this in CI/dev runs, but the release path
+      # invokes tauri-action which forces --release; we mirror that
+      # explicitly here to guarantee a real signed binary lands in
+      # `src-tauri/binaries/` rather than the empty placeholder build.rs
+      # writes on a fresh checkout.
+      #
+      # Windows uses the russh in-process auth callback (no helper bin
+      # ever invoked), so the step is skipped there — the placeholder
+      # written by build.rs is sufficient for the MSI bundler.
+      - name: Build mdviewer-askpass helper (Unix)
+        if: matrix.os != 'windows-latest'
+        working-directory: src-tauri
+        shell: bash
+        run: |
+          cargo build --release --bin mdviewer-askpass --locked --target ${{ matrix.target }}
+          mkdir -p binaries
+          cp target/${{ matrix.target }}/release/mdviewer-askpass \
+             binaries/mdviewer-askpass-${{ matrix.target }}
+
       # tauri-action runs `tauri build`, picks up bundle.targets from
       # tauri.conf.json (overridden via --bundles), and uploads each
       # produced artifact to a draft GitHub Release named after the tag.
