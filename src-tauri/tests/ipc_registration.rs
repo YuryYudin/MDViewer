@@ -690,7 +690,7 @@ mod ssh_save_dispatch {
         let summary = owned_ws.open_ssh_url(url, &ops).await.expect("open ok");
         let ws = StdMutex::new(owned_ws);
 
-        let local_edit = b"# v2 — my edit\n".to_vec();
+        let local_edit = b"# v2 - my edit\n".to_vec();
         let outcome = save_via_ssh_branch(&ws, &ops, &summary.id, &local_edit)
             .await
             .expect("save_back returns ok-with-conflict");
