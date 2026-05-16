@@ -98,23 +98,26 @@ describe('sshd-fixture: config template rendering', () => {
   });
 });
 
+import type { SshdFixture } from '../../e2e/helpers/sshd-fixture';
+
 describe('sshd-fixture: SshdFixture shape', () => {
-  it('exposes the fields immutable A1 specs (21/22/23/24) destructure', async () => {
-    // Type-level smoke test — the spec files (21/22/23/24) destructure
-    // `port`, `tmpDir`, `cleanup`, `identityFile`, and
-    // `passphrasedKey.passphrase`. If the type changes shape, the
-    // immutable A1 spec files stop compiling. This test is a runtime
-    // assertion against the *type module*'s exported shape; we read the
-    // .ts source and check for the relevant `interface SshdFixture`
-    // fields.
-    const sourcePath = path.join(repoRoot, 'e2e/helpers/sshd-fixture.ts');
-    const src = readFileSync(sourcePath, 'utf8');
-    expect(src).toMatch(/interface\s+SshdFixture\s*\{/);
-    expect(src).toMatch(/\bport\s*:/);
-    expect(src).toMatch(/\btmpDir\s*:/);
-    expect(src).toMatch(/\bcleanup\s*:/);
-    expect(src).toMatch(/\bidentityFile\s*:/);
-    expect(src).toMatch(/\bpassphrasedKey\s*:/);
+  it('SshdFixture type matches what A1 specs destructure', () => {
+    // Type-level shape check — the immutable A1 spec files (21/22/23/24)
+    // destructure `port`, `tmpDir`, `cleanup`, `identityFile`, and
+    // `passphrasedKey.{passphrase,identityFile}`. The `satisfies` clause
+    // below fails to compile if the interface regresses, which is a
+    // strictly stronger guarantee than the previous source-text regex
+    // check: tsc enforces both shape AND types, whereas regex was
+    // happy with stale `// port: ...` comments etc.
+    const _shape = {
+      port: 22,
+      tmpDir: '/tmp/x',
+      identityFile: '/tmp/key',
+      passphrasedKey: { identityFile: '/tmp/k', passphrase: 'p' },
+      cleanup: async () => {},
+    } satisfies SshdFixture;
+    // Runtime: keep one no-op assertion to anchor the test name.
+    expect(_shape.port).toBe(22);
   });
 });
 

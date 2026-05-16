@@ -31,7 +31,7 @@
  * pointing the caller at the Rust integration tests instead.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, createConnection } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -185,7 +185,6 @@ export async function startSshd(): Promise<SshdFixture> {
   // git can preserve mode bits across clones on most filesystems, but
   // the safe-by-default belt-and-braces is to chmod 600 here. sshd
   // refuses to load a key whose perms grant group/other read.
-  const { chmodSync } = await import('node:fs');
   for (const p of [identityFile, hostKey]) {
     try {
       chmodSync(p, 0o600);
