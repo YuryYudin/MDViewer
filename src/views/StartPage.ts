@@ -1,4 +1,5 @@
 import type { Ipc, OpenOutcome } from '../ipc';
+import { mountOpenRemoteDialog } from './OpenRemoteDialog';
 
 /**
  * Detects whether we're running under WebdriverIO + tauri-driver. In that
@@ -173,6 +174,50 @@ export async function mountStartPage(
     }
   });
 
+  // B2: "Open from remote…" button. Mounts OpenRemoteDialog onto
+  // document.body (NOT under StartPage's `root`) so the overlay floats
+  // above the whole workspace shell rather than only the StartPage.
+  // Successful file pick: dismiss the dialog (the dialog does that itself
+  // before invoking onPick) and route through ipc.sshOpenUrl → openDocument
+  // so the same OpenOutcome plumbing the local-open path uses kicks in.
+  // The cache_path returned by sshOpenUrl is what openDocument can read
+  // bytes from (the cache mirror that A11 wires up).
+  const openRemote = document.createElement('button');
+  openRemote.setAttribute('data-testid', 'open-from-remote-button');
+  openRemote.setAttribute('data-action', 'open-from-remote');
+  openRemote.textContent = 'Open from remote…';
+  openRemote.addEventListener('click', () => {
+    mountOpenRemoteDialog({
+      root: document.body,
+      // Pass the same `ipc` the StartPage received so unit-test fakes
+      // (and a future test harness that swaps the singleton) reach the
+      // dialog instead of the global module-level singleton. Production
+      // callers thread the real ipc through here so the wiring is the
+      // same in both modes.
+      ipc,
+      onPick: (url) => {
+        void (async () => {
+          try {
+            const summary = await ipc.sshOpenUrl(url);
+            // Re-enter the local open path with the cache path the
+            // SSH transport just wrote. The OpenOutcome from this call
+            // primes the Workspace cache identically to the local flow.
+            const outcome = await ipc.openDocument(summary.path);
+            if (onOpened) await onOpened(outcome);
+          } catch (e) {
+            // Network / auth failure shouldn't wedge the StartPage —
+            // surface it on the console and leave the user where they
+            // were. The dialog itself surfaces transport-level errors
+            // through its state-C surface during browsing; this catch
+            // covers the open-handoff step that follows.
+            // eslint-disable-next-line no-console
+            console.warn('open-from-remote failed:', e);
+          }
+        })();
+      },
+    });
+  });
+
   const newDoc = document.createElement('button');
   newDoc.setAttribute('data-action', 'new-document');
   newDoc.textContent = 'New document';
@@ -187,7 +232,7 @@ export async function mountStartPage(
     document.dispatchEvent(new CustomEvent('mdviewer:open-settings'));
   });
 
-  actions.append(open, newDoc, settingsBtn);
+  actions.append(open, openRemote, newDoc, settingsBtn);
   stack.appendChild(actions);
   view.appendChild(fileInput);
 

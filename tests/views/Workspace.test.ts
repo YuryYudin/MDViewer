@@ -1249,3 +1249,66 @@ describe('Workspace — getDocPref failure path (C5 branch coverage)', () => {
     vi.useRealTimers();
   });
 });
+
+describe('Workspace — File → "Open from remote…" menu wiring (B2)', () => {
+  it('mounts the OpenRemoteDialog when the mdviewer:open-remote CustomEvent fires', async () => {
+    // The menu-bridge layer (menuBridge.ts) translates the `menu-action`
+    // Tauri event with payload `open-remote` into a `mdviewer:open-remote`
+    // CustomEvent on document. Workspace listens for that and mounts the
+    // dialog. We dispatch the CustomEvent directly so the test doesn't
+    // have to plumb through the Tauri runtime — the bridge contract is
+    // covered separately in tests/menuBridge.test.ts.
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    try {
+      await mountWorkspace(root, makeIpc());
+      expect(
+        document.body.querySelector('[data-testid="open-remote-dialog"]'),
+      ).toBeNull();
+      document.dispatchEvent(new CustomEvent('mdviewer:open-remote'));
+      expect(
+        document.body.querySelector('[data-testid="open-remote-dialog"]'),
+      ).toBeTruthy();
+    } finally {
+      // Cleanup so subsequent tests start with a clean body.
+      document.body
+        .querySelector('[data-testid="open-remote-dialog"]')
+        ?.remove();
+      document.body.removeChild(root);
+    }
+  });
+
+  it('a second mdviewer:open-remote event after the dialog is dismissed re-mounts a fresh dialog', async () => {
+    // Without proper close-on-Escape semantics the listener path can
+    // either silently stack dialogs or, conversely, refuse to mount a
+    // second one. Verify a sane "dismiss then reopen" cycle works.
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    try {
+      await mountWorkspace(root, makeIpc());
+      document.dispatchEvent(new CustomEvent('mdviewer:open-remote'));
+      const first = document.body.querySelector(
+        '[data-testid="open-remote-dialog"]',
+      );
+      expect(first).toBeTruthy();
+      // Dismiss the dialog via Escape.
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+      expect(
+        document.body.querySelector('[data-testid="open-remote-dialog"]'),
+      ).toBeNull();
+      // Second menu click — must re-mount.
+      document.dispatchEvent(new CustomEvent('mdviewer:open-remote'));
+      const second = document.body.querySelector(
+        '[data-testid="open-remote-dialog"]',
+      );
+      expect(second).toBeTruthy();
+      // It's a fresh element, not the original.
+      expect(second).not.toBe(first);
+    } finally {
+      document.body
+        .querySelector('[data-testid="open-remote-dialog"]')
+        ?.remove();
+      document.body.removeChild(root);
+    }
+  });
+});

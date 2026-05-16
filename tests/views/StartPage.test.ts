@@ -189,6 +189,43 @@ describe('StartPage', () => {
       vi.doUnmock('@tauri-apps/plugin-dialog');
     }
   });
+
+  // B2: the "Open from remote…" button mounts OpenRemoteDialog. The
+  // button's presence is the contract — the dialog's wiring is covered
+  // separately in tests/views/OpenRemoteDialog.test.ts. Here we only
+  // assert (a) the button exists with the agreed data-testid, and (b)
+  // clicking it appends an OpenRemoteDialog overlay to document.body
+  // (the dialog mounts at the body level, not inside StartPage's root,
+  // because it needs to overlay the entire workspace).
+  it('renders an "Open from remote…" button on the action row', async () => {
+    const root = document.createElement('div');
+    const ipc = fakeIpc();
+    await mountStartPage(root, ipc);
+    const btn = root.querySelector('[data-testid="open-from-remote-button"]');
+    expect(btn).toBeTruthy();
+    expect(btn?.textContent).toContain('Open from remote');
+  });
+
+  it('clicking "Open from remote…" mounts the OpenRemoteDialog overlay on document.body', async () => {
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    const ipc = fakeIpc();
+    try {
+      await mountStartPage(root, ipc);
+      // Pre-condition: no dialog present yet.
+      expect(document.body.querySelector('[data-testid="open-remote-dialog"]')).toBeNull();
+      (
+        root.querySelector('[data-testid="open-from-remote-button"]') as HTMLButtonElement
+      ).click();
+      // The dialog mounts synchronously in its initial render before its
+      // async autocomplete fetch resolves.
+      expect(
+        document.body.querySelector('[data-testid="open-remote-dialog"]'),
+      ).toBeTruthy();
+    } finally {
+      document.body.innerHTML = '';
+    }
+  });
 });
 
 // Branch-coverage gate (C5): the relativeTime() helper has six arms — just
