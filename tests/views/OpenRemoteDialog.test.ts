@@ -437,3 +437,214 @@ describe('OpenRemoteDialog — hostAutocompleteSource override', () => {
     expect(document.body.querySelector('script')).toBeNull();
   });
 });
+
+describe('OpenRemoteDialog — keyboard navigation in browsing state', () => {
+  /**
+   * The wireframe's Avoid block calls for full keyboard nav while
+   * browsing: arrow keys move row focus, Enter activates the focused
+   * row, Backspace pops the breadcrumb. The implementation tracks the
+   * focused index on the State, marks the focused row with
+   * `aria-selected="true"`, and listens for keydown on the entries
+   * container (tabindex="0" so it can receive focus).
+   */
+
+  async function enterBrowsing(
+    ipc: Ipc,
+    onPick = vi.fn(),
+  ): Promise<HTMLElement> {
+    mountOpenRemoteDialog({ root: document.body, onPick, ipc });
+    await flushMicrotasks();
+    (document.body.querySelector('.host-input') as HTMLInputElement).value =
+      'alice@host.example.com';
+    (document.body.querySelector('.connect-btn') as HTMLButtonElement).click();
+    await flushMicrotasks();
+    return document.body.querySelector('table.entries') as HTMLElement;
+  }
+
+  it('first row is selected on entry into browsing state and container is focusable', async () => {
+    const ipc = makeIpc();
+    const table = await enterBrowsing(ipc);
+    expect(table).toBeTruthy();
+    expect(table.getAttribute('tabindex')).toBe('0');
+    const rows = table.querySelectorAll('tr[role="option"]');
+    expect(rows[0].getAttribute('aria-selected')).toBe('true');
+    expect(rows[1].getAttribute('aria-selected')).toBe('false');
+  });
+
+  it('ArrowDown advances selection from 0 to 1', async () => {
+    const ipc = makeIpc();
+    const table = await enterBrowsing(ipc);
+    table.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }),
+    );
+    const rows = document.body.querySelectorAll('tr[role="option"]');
+    expect(rows[0].getAttribute('aria-selected')).toBe('false');
+    expect(rows[1].getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('ArrowDown at the last row does not overflow', async () => {
+    const ipc = makeIpc();
+    const table = await enterBrowsing(ipc);
+    // Two rows total; press ArrowDown three times.
+    for (let i = 0; i < 3; i += 1) {
+      table.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }),
+      );
+    }
+    const rows = document.body.querySelectorAll('tr[role="option"]');
+    expect(rows[1].getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('ArrowUp moves selection back; clamped at 0', async () => {
+    const ipc = makeIpc();
+    const table = await enterBrowsing(ipc);
+    table.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }),
+    );
+    table.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }),
+    );
+    table.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }),
+    );
+    const rows = document.body.querySelectorAll('tr[role="option"]');
+    expect(rows[0].getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('Enter on a directory row descends into it', async () => {
+    const ipc = makeIpc();
+    const table = await enterBrowsing(ipc);
+    // Focus is on row 0 (the `docs` directory). Press Enter.
+    table.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+    );
+    await flushMicrotasks();
+    const calls = (ipc.sshListDir as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls[calls.length - 1][0]).toBe('ssh://alice@host.example.com/docs/');
+  });
+
+  it('Enter on a markdown file row picks the file and dismisses the dialog', async () => {
+    const ipc = makeIpc();
+    const onPick = vi.fn();
+    const table = await enterBrowsing(ipc, onPick);
+    // Advance to README.md row.
+    table.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }),
+    );
+    table.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+    );
+    expect(onPick).toHaveBeenCalledWith('ssh://alice@host.example.com/README.md');
+    expect(
+      document.body.querySelector('[data-testid="open-remote-dialog"]'),
+    ).toBeNull();
+  });
+
+  it('Enter on a non-markdown file row is a no-op', async () => {
+    const ipc = makeIpc({
+      sshListDir: vi
+        .fn()
+        .mockResolvedValue([{ name: 'image.png', isDir: false, size: 100 }]),
+    });
+    const onPick = vi.fn();
+    const table = await enterBrowsing(ipc, onPick);
+    table.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+    );
+    expect(onPick).not.toHaveBeenCalled();
+    expect(
+      document.body.querySelector('[data-testid="open-remote-dialog"]'),
+    ).toBeTruthy();
+  });
+
+  it('Backspace at the host root is a no-op (only one breadcrumb segment)', async () => {
+    const ipc = makeIpc();
+    const table = await enterBrowsing(ipc);
+    const callCountBefore = (ipc.sshListDir as ReturnType<typeof vi.fn>).mock
+      .calls.length;
+    table.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true }),
+    );
+    await flushMicrotasks();
+    const callCountAfter = (ipc.sshListDir as ReturnType<typeof vi.fn>).mock
+      .calls.length;
+    expect(callCountAfter).toBe(callCountBefore);
+    // Still browsing — dialog is still up.
+    expect(
+      document.body.querySelector('[data-testid="open-remote-dialog"]'),
+    ).toBeTruthy();
+  });
+
+  it('Backspace mid-tree pops the breadcrumb (descends into parent)', async () => {
+    const ipc = makeIpc();
+    (ipc.sshListDir as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce([{ name: 'docs', isDir: true, size: 0 }])
+      .mockResolvedValueOnce([{ name: 'README.md', isDir: false, size: 1 }])
+      .mockResolvedValueOnce([{ name: 'docs', isDir: true, size: 0 }]);
+    mountOpenRemoteDialog({ root: document.body, onPick: vi.fn(), ipc });
+    await flushMicrotasks();
+    (document.body.querySelector('.host-input') as HTMLInputElement).value =
+      'alice@host.example.com';
+    (document.body.querySelector('.connect-btn') as HTMLButtonElement).click();
+    await flushMicrotasks();
+    // Descend into docs/.
+    const dirRow = document.body.querySelector(
+      'tr[data-name="docs"]',
+    ) as HTMLElement;
+    dirRow.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    await flushMicrotasks();
+    // Now two breadcrumb segments (host, docs). Press Backspace from the table.
+    const table = document.body.querySelector('table.entries') as HTMLElement;
+    table.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true }),
+    );
+    await flushMicrotasks();
+    const calls = (ipc.sshListDir as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls[calls.length - 1][0]).toBe('ssh://alice@host.example.com/');
+  });
+
+  it('descending resets focus to the first row', async () => {
+    const ipc = makeIpc();
+    (ipc.sshListDir as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce([
+        { name: 'docs', isDir: true, size: 0 },
+        { name: 'README.md', isDir: false, size: 4096 },
+      ])
+      .mockResolvedValueOnce([
+        { name: 'inner.md', isDir: false, size: 1 },
+        { name: 'second.md', isDir: false, size: 2 },
+      ]);
+    const table = await enterBrowsing(ipc);
+    // Move focus to row 1.
+    table.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }),
+    );
+    // Descend into docs/ (row 0). First move focus back to 0.
+    table.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }),
+    );
+    table.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+    );
+    await flushMicrotasks();
+    const rows = document.body.querySelectorAll('tr[role="option"]');
+    expect(rows[0].getAttribute('aria-selected')).toBe('true');
+    expect(rows[1].getAttribute('aria-selected')).toBe('false');
+  });
+
+  it('keydown is ignored when there are no entries', async () => {
+    const ipc = makeIpc({
+      sshListDir: vi.fn().mockResolvedValue([] satisfies DirEntry[]),
+    });
+    const onPick = vi.fn();
+    const table = await enterBrowsing(ipc, onPick);
+    table.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }),
+    );
+    table.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+    );
+    // No crash, no pick, no new list_dir.
+    expect(onPick).not.toHaveBeenCalled();
+  });
+});

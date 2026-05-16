@@ -17,7 +17,7 @@ import { mountConflict, type ConflictSource } from './Conflict';
 import { mountAskpassModal } from './AskpassModal';
 import { mountShareDialog } from './ShareDialog';
 import { mountDriveStatus } from './DriveStatus';
-import { mountOpenRemoteDialog, type OpenRemoteDialogHandle } from './OpenRemoteDialog';
+import { mountOpenRemoteDialog } from './OpenRemoteDialog';
 
 /**
  * C1: synthetic prefix used by `drive_open_url` for DriveApi tabs whose
@@ -516,13 +516,10 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
   // StartPage button — both paths mount the dialog directly onto
   // document.body so the overlay floats over the workspace shell.
   //
-  // Track the active dialog so a second menu click while a dialog is
-  // already open is a no-op rather than stacking two overlays. The
-  // dialog's onPick path nulls this out via the close() it runs before
-  // invoking the callback; Escape / × dismissal removes the DOM node
-  // but the reference here would dangle, so we re-check the DOM on
-  // each click rather than trusting the captured handle alone.
-  let activeRemoteDialog: OpenRemoteDialogHandle | null = null;
+  // The DOM-presence check below is the canonical "is a dialog already
+  // mounted" guard: Escape / × dismissal removes the DOM node directly
+  // and a captured handle would dangle, so we re-query the DOM on each
+  // click rather than holding a reference.
   document.addEventListener(
     'mdviewer:open-remote',
     () => {
@@ -530,14 +527,13 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
         '[data-testid="open-remote-dialog"]',
       );
       if (existing) return;
-      activeRemoteDialog = mountOpenRemoteDialog({
+      mountOpenRemoteDialog({
         root: document.body,
         // Pass the same `ipc` the workspace received so unit-test fakes
         // reach the dialog. Without this the dialog would default to the
         // module-level singleton and crash under jsdom (no Tauri runtime).
         ipc,
         onPick: (url) => {
-          activeRemoteDialog = null;
           void (async () => {
             try {
               // Route through openPathOrUrl so the OpenOutcome from the

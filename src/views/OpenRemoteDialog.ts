@@ -57,6 +57,13 @@ interface State {
   url?: string;
   entries?: DirEntry[];
   message?: string;
+  /**
+   * Index of the currently-focused row in `entries`. Used for keyboard
+   * navigation while the dialog is in the browsing state. Resets to 0
+   * on every directory change (re-render of the entries table) so the
+   * user always starts at the top of a freshly-listed folder.
+   */
+  focused?: number;
 }
 
 export interface OpenRemoteDialogHandle {
@@ -151,6 +158,15 @@ export function mountOpenRemoteDialog(
     const url = state.url!;
     const entries = state.entries ?? [];
     const segs = breadcrumbsForUrl(url);
+    // Clamp the focused index so a stale value from a previous listing
+    // (or a state hand-off through error/back) can never index past the
+    // current entries array. Defaults to 0 when undefined or out of range.
+    const focused =
+      typeof state.focused === 'number' &&
+      state.focused >= 0 &&
+      state.focused < entries.length
+        ? state.focused
+        : 0;
     body.innerHTML = `
       <nav class="breadcrumb" aria-label="Path">
         ${segs
@@ -162,12 +178,14 @@ export function mountOpenRemoteDialog(
           )
           .join('')}
       </nav>
-      <table class="entries" role="listbox">
+      <table class="entries" role="listbox" tabindex="0">
         <tbody>
           ${entries
             .map(
-              (e) => `
-            <tr role="option" data-name="${escapeAttr(e.name)}" data-is-dir="${e.isDir}">
+              (e, i) => `
+            <tr role="option" data-name="${escapeAttr(e.name)}" data-is-dir="${e.isDir}"
+                aria-selected="${i === focused ? 'true' : 'false'}"
+                class="${i === focused ? 'focused' : ''}">
               <td class="icon">${e.isDir ? '📁' : '📄'}</td>
               <td class="name">${escapeHtml(e.name)}</td>
               <td class="size">${e.isDir ? '' : formatSize(e.size)}</td>
@@ -201,6 +219,60 @@ export function mountOpenRemoteDialog(
         }
       });
     });
+
+    // Keyboard navigation. Scoped to the entries table (which gets
+    // tabindex=0 so it can receive focus) rather than `document` to
+    // avoid intercepting keydown when the user is interacting with the
+    // breadcrumb buttons. Arrow keys move row focus, Enter activates
+    // the focused row (descend if directory, pick if a `.md` file),
+    // Backspace pops the last breadcrumb segment (no-op at host root).
+    const table = body.querySelector('table.entries') as HTMLTableElement | null;
+    table?.addEventListener('keydown', (e) => {
+      if (state.kind !== 'browsing') return;
+      const ents = state.entries ?? [];
+      if (ents.length === 0) return;
+      const cur =
+        typeof state.focused === 'number' &&
+        state.focused >= 0 &&
+        state.focused < ents.length
+          ? state.focused
+          : 0;
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        const next = Math.min(cur + 1, ents.length - 1);
+        state = { ...state, focused: next };
+        render();
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        const prev = Math.max(cur - 1, 0);
+        state = { ...state, focused: prev };
+        render();
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        const row = ents[cur];
+        if (!row) return;
+        if (row.isDir) {
+          void browse(joinSshDirPath(url, row.name));
+        } else if (isMarkdownName(row.name)) {
+          const target = joinSshFilePath(url, row.name);
+          close();
+          props.onPick(target);
+        }
+      } else if (e.key === 'Backspace') {
+        // Backspace at host root has nowhere to go — leave as a no-op
+        // rather than navigating away. Breadcrumb length > 1 means we
+        // have at least one path component beyond the host segment.
+        if (segs.length > 1) {
+          e.preventDefault();
+          const parent = segs[segs.length - 2]?.url;
+          if (parent) void browse(parent);
+        }
+      }
+    });
+    // Auto-focus the table so the keyboard handler picks up keydown
+    // events without the user having to click first. setTimeout matches
+    // the host-input focus pattern (deferred past mount/append).
+    setTimeout(() => table?.focus(), 0);
   }
 
   function renderError(): void {
@@ -233,7 +305,11 @@ export function mountOpenRemoteDialog(
   async function browse(url: string): Promise<void> {
     try {
       const entries = await ipc.sshListDir(url);
-      state = { kind: 'browsing', url, entries };
+      // focused: 0 is intentional — every navigation lands the
+      // selection at the top of the freshly-listed folder. Carrying a
+      // stale focused index across directory changes would point at the
+      // wrong row (or worse, an out-of-range index).
+      state = { kind: 'browsing', url, entries, focused: 0 };
       render();
     } catch (e: unknown) {
       // Surface the SSH transport's verbatim error string (state C). The
