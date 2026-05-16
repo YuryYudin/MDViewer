@@ -1,6 +1,12 @@
 //! Phase 1 SSH integration tests — exercise the full Operations stack
 //! against a local sshd fixture.
 //!
+//! All `#[tokio::test]` functions in this file are also `#[serial]` because
+//! they mutate process-global env vars (`MDVIEWER_TEST_SSH_IDENTITY`,
+//! `MDVIEWER_TEST_SSH_PORT`) consumed by `UnixTransport::test_identity_args`.
+//! cargo runs integration tests in parallel by default; the serialization
+//! attribute prevents tests from clobbering each other's env state.
+//!
 //! Linux + macOS spawn `/usr/sbin/sshd -f <tmp-config> -D` against the
 //! committed fixture keypair (see `tests/fixtures/ssh/README.md`).
 //! Windows stands up a minimal russh server harness in-process — the
@@ -20,6 +26,7 @@
 mod common;
 
 use common::ssh_fixture::start_fixture;
+use serial_test::serial;
 use mdviewer_lib::ssh::operations::{Operations, SaveBackOutcome};
 #[cfg(unix)]
 use mdviewer_lib::ssh::transport_unix::UnixTransport;
@@ -47,6 +54,7 @@ fn current_username() -> String {
 
 #[cfg(unix)]
 #[tokio::test]
+#[serial]
 async fn open_save_back_round_trip() {
     if !sshd_available() {
         eprintln!("skipping ssh_integration_phase1::open_save_back_round_trip — /usr/sbin/sshd missing");
@@ -135,6 +143,7 @@ async fn open_save_back_round_trip() {
 
 #[cfg(unix)]
 #[tokio::test]
+#[serial]
 async fn save_back_after_resolving_conflict_pushes_with_new_hash() {
     // Phase 2 of the round-trip: confirm that once the caller resolves
     // a conflict (re-opening the doc to refresh on_open_sha), the next
@@ -209,6 +218,7 @@ async fn save_back_after_resolving_conflict_pushes_with_new_hash() {
 
 #[cfg(windows)]
 #[tokio::test]
+#[serial]
 #[ignore = "Windows russh harness is accept-and-drop; the full SFTP round-trip is covered by transport_windows.rs unit tests."]
 async fn open_save_back_round_trip() {
     // The Windows harness stands up a bindable TCP listener so the
