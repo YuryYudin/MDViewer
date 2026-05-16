@@ -321,26 +321,43 @@ fn render_markdown(source: String) -> RenderResult {
 /// `src/views/Conflict.ts` route the `Conflict` arm into the existing
 /// diff-merge UI.
 #[tauri::command]
-fn save_document(
+async fn save_document(
     state: State<'_, Ws>,
     watcher: State<'_, Mutex<Watcher>>,
+    ssh: State<'_, SshAppState>,
     app: tauri::AppHandle,
     tab_id: String,
     body: String,
 ) -> Result<mdviewer_lib::document::SaveOutcome, String> {
     use mdviewer_lib::document::SaveOutcome;
     use mdviewer_lib::drive::TabBackend;
-    use mdviewer_lib::workspace::SaveError;
+    use mdviewer_lib::ssh::operations::SaveBackOutcome;
+    use mdviewer_lib::workspace::{ConflictSource, SaveError};
 
     // Snapshot just the per-tab fields we need under a short critical
     // section, then drop the immutable borrow before re-entering Workspace
     // mutably. Avoids a mid-function lock upgrade.
-    let (tab_backend, tab_path, tab_etag) = {
+    //
+    // Phase-A impl-review fix: also snapshot ssh_state(tab_id) here. The
+    // SSH branch below routes through Operations::save_back lock-free, so
+    // we must read both the URL and the open-time hash before releasing
+    // the lock — re-acquiring just to read them after the .await would
+    // mean holding the std::sync::MutexGuard across the await point and
+    // failing the Send bound for the Tauri worker future.
+    let (tab_backend, tab_path, tab_etag, ssh_info) = {
         let ws = state.lock().map_err(|e| e.to_string())?;
         let tab = ws
             .tab(&tab_id)
             .ok_or_else(|| format!("tab not found: {tab_id}"))?;
-        (tab.backend, tab.path.clone(), tab.etag.clone())
+        let backend = tab.backend;
+        let path = tab.path.clone();
+        let etag = tab.etag.clone();
+        // ssh_state(&tab_id) is the discriminator for the SSH branch.
+        // SSH tabs are pinned to TabBackend::Local (A8) so we can't use
+        // tab.backend to detect them — only ssh_state's presence tells us
+        // the tab originated from `open_ssh_url`.
+        let ssh = ws.ssh_state(&tab_id).map(|s| (s.url.clone(), s.last_open_sha256));
+        (backend, path, etag, ssh)
     };
 
     // Phase B implementation review fix #1: when a Drive save returns
@@ -367,6 +384,57 @@ fn save_document(
             }),
         );
     };
+
+    // Phase-A impl-review fix: SSH branch must run BEFORE the existing
+    // tab.backend match. SSH tabs are pinned to TabBackend::Local (A8), so
+    // dispatching on backend alone silently hits the local-write path and
+    // bypasses Operations::save_back entirely — the remote file never
+    // updates and SshHashMismatch conflict detection is unreachable. The
+    // ssh_state(&tab_id) check is the marker the integration tests
+    // (`src-tauri/tests/ipc_registration.rs::ssh_save_dispatch`) pin on.
+    if let Some((url, last_sha)) = ssh_info {
+        // Lock-free .await — the workspace lock was dropped above so the
+        // std::sync::MutexGuard doesn't cross the await point. Sidecar
+        // CRDT-merge push is deferred to a Phase-B follow-up; the body
+        // bytes are what the user wants persisted to the remote markdown
+        // file and that's the regression this fix targets.
+        let outcome = ssh
+            .ops
+            .save_back(&url, body.as_bytes(), &last_sha)
+            .await
+            .map_err(|e| e.to_string())?;
+        return match outcome {
+            SaveBackOutcome::Saved { new_sha256 } => {
+                // Re-acquire the lock briefly to advance the per-tab
+                // open-time hash. The next save will diff against the bytes
+                // we just pushed — without this update, every subsequent
+                // save would re-flag the same successful push as a
+                // conflict (the remote bytes now match new_sha256, not
+                // last_sha).
+                let mut ws = state.lock().map_err(|e| e.to_string())?;
+                if let Some(s) = ws.ssh_state_mut(&tab_id) {
+                    s.last_open_sha256 = new_sha256;
+                }
+                // Mirror the Local arm's tab-snapshot refresh so the
+                // editor's dirty-bit clears and the cache mirror's source
+                // string stays in sync with what was just pushed.
+                if let Some(t) = ws.tab_mut(&tab_id) {
+                    t.last_saved_snapshot = Some(body.clone());
+                    t.source = body;
+                }
+                Ok(SaveOutcome::Ok { etag: None })
+            }
+            SaveBackOutcome::Conflict { local, remote } => {
+                let source = ConflictSource::SshHashMismatch;
+                emit_drive_conflict(&local, &remote, &source);
+                Ok(SaveOutcome::Conflict {
+                    local: String::from_utf8_lossy(&local).into_owned(),
+                    remote: String::from_utf8_lossy(&remote).into_owned(),
+                    drive_source: Some(source.to_wire().to_string()),
+                })
+            }
+        };
+    }
 
     match tab_backend {
         TabBackend::Local => {

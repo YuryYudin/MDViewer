@@ -699,6 +699,17 @@ impl Workspace {
         self.ssh_tabs.get(tab_id)
     }
 
+    /// Phase-A impl-review fix: mutable accessor for the per-tab SSH state.
+    /// `save_document`'s SSH branch needs this to advance
+    /// `last_open_sha256` after `Operations::save_back` reports `Saved` —
+    /// otherwise the next save would re-diff against the original open-time
+    /// hash and either spuriously flag a conflict (if a peer ever lands
+    /// changes that match our last push) or silently push over a peer edit
+    /// that landed after ours.
+    pub fn ssh_state_mut(&mut self, tab_id: &str) -> Option<&mut SshTabState> {
+        self.ssh_tabs.get_mut(tab_id)
+    }
+
     /// B5 dispatch path — uploads `local` to Drive with `If-Match: etag`.
     /// On a 412 (PreconditionFailed) the helper fetches the remote bytes
     /// and surfaces a `SaveError::Conflict { local, remote, source: DriveApiEtag }`

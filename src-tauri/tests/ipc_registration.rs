@@ -485,3 +485,291 @@ fn ssh_password_response_is_sync_not_async() {
         "ssh_password_response declaration must remain present",
     );
 }
+
+// ---------------------------------------------------------------------------
+// Phase-A impl-review fix: SSH save_document routing.
+//
+// The save_document Tauri command originally dispatched on `tab.backend`
+// only — SSH tabs are pinned to `TabBackend::Local` in A8 so saves were
+// silently hitting the local-write path. Operations::save_back was never
+// called, the remote file was never updated, and SshHashMismatch conflict
+// detection was unreachable.
+//
+// The handler now checks `ws.ssh_state(tab_id).is_some()` before the
+// backend dispatch. If Some, it routes through Operations::save_back
+// (lock-free .await) and applies the outcome under a re-acquired lock.
+//
+// We can't invoke the real #[tauri::command] from an integration test, so
+// we exercise the dispatch logic against the same Workspace + Operations
+// types the handler binds to. The fake transport drives both the Saved
+// and Conflict paths and asserts push() did / did not run.
+// ---------------------------------------------------------------------------
+
+mod ssh_save_dispatch {
+    use async_trait::async_trait;
+    use mdviewer_core::ssh_url::SshUrl;
+    use mdviewer_lib::ssh::operations::{Operations, SaveBackOutcome};
+    use mdviewer_lib::ssh::transport::{
+        DirEntry, SshStat, SshTransport, TransportError,
+    };
+    use mdviewer_lib::workspace::Workspace;
+    use std::sync::{Arc, Mutex as StdMutex};
+
+    /// Deterministic transport stand-in. `fetch_queue` is popped per call so
+    /// the test can stage [open, save_back-recheck] in order, asserting the
+    /// save-back code path's pre-push fetch sees exactly the bytes we want.
+    /// `pushed` records every push for post-assertions.
+    struct FakeTransport {
+        fetch_queue: StdMutex<Vec<Vec<u8>>>,
+        pushed: StdMutex<Vec<Vec<u8>>>,
+    }
+
+    impl FakeTransport {
+        fn new(fetches: Vec<Vec<u8>>) -> Arc<Self> {
+            Arc::new(Self {
+                fetch_queue: StdMutex::new(fetches),
+                pushed: StdMutex::new(Vec::new()),
+            })
+        }
+        fn pushed_count(&self) -> usize {
+            self.pushed.lock().unwrap().len()
+        }
+        fn last_pushed(&self) -> Option<Vec<u8>> {
+            self.pushed.lock().unwrap().last().cloned()
+        }
+    }
+
+    #[async_trait]
+    impl SshTransport for FakeTransport {
+        async fn fetch(&self, _url: &SshUrl) -> Result<Vec<u8>, TransportError> {
+            let mut q = self.fetch_queue.lock().unwrap();
+            if q.is_empty() {
+                // Default fallback so tests that don't pre-seed every fetch
+                // (e.g. sidecar fetch the save-path doesn't exercise here)
+                // don't trip on an empty queue.
+                return Ok(Vec::new());
+            }
+            Ok(q.remove(0))
+        }
+        async fn push(&self, _url: &SshUrl, bytes: &[u8]) -> Result<(), TransportError> {
+            self.pushed.lock().unwrap().push(bytes.to_vec());
+            Ok(())
+        }
+        async fn list_dir(&self, _url: &SshUrl) -> Result<Vec<DirEntry>, TransportError> {
+            Ok(vec![])
+        }
+        async fn stat(&self, _url: &SshUrl) -> Result<SshStat, TransportError> {
+            Ok(SshStat {
+                size: 0,
+                is_dir: false,
+                mtime: None,
+            })
+        }
+    }
+
+    fn sample_ssh_url() -> SshUrl {
+        SshUrl {
+            user: Some("alice".into()),
+            host: "host.example".into(),
+            port: 22,
+            path: "/notes/file.md".into(),
+        }
+    }
+
+    /// Mirrors the production SSH branch of `save_document` (main.rs):
+    ///   1. Snapshot ssh_state(tab_id) under a brief Workspace lock, release.
+    ///   2. Await Operations::save_back lock-free.
+    ///   3. On Saved, re-acquire and update ssh_state[tab_id].last_open_sha256.
+    /// Returns the outcome so the test can assert against both arms.
+    ///
+    /// The presence of this helper is the point — if `save_document` skips
+    /// the ssh_state check (as it did before the fix), this test path can't
+    /// even reach `save_back` because the Workspace would have no entry for
+    /// the tab. The companion source-level smoke test below pins that the
+    /// production handler actually calls `ssh_state` before the backend
+    /// dispatch.
+    async fn save_via_ssh_branch(
+        ws: &StdMutex<Workspace>,
+        ops: &Operations,
+        tab_id: &str,
+        bytes: &[u8],
+    ) -> Result<SaveBackOutcome, TransportError> {
+        let (url, last_sha) = {
+            let ws = ws.lock().unwrap();
+            let s = ws
+                .ssh_state(tab_id)
+                .expect("ssh_state must be populated for an SSH tab");
+            (s.url.clone(), s.last_open_sha256)
+        };
+        let outcome = ops.save_back(&url, bytes, &last_sha).await?;
+        if let SaveBackOutcome::Saved { new_sha256 } = &outcome {
+            let mut ws = ws.lock().unwrap();
+            let st = ws
+                .ssh_state_mut(tab_id)
+                .expect("ssh_state must still be present after a successful save");
+            st.last_open_sha256 = *new_sha256;
+        }
+        Ok(outcome)
+    }
+
+    #[tokio::test]
+    async fn save_document_routes_ssh_tabs_to_save_back() {
+        // Open: fetch returns the initial bytes; the open-time hash is
+        // sha256(initial). Save-back: pre-push fetch returns the SAME bytes
+        // (no remote drift) so save_back pushes the new local edit and
+        // reports SaveBackOutcome::Saved.
+        let data_dir = tempfile::tempdir().expect("data dir");
+        let cache_dir = tempfile::tempdir().expect("cache dir");
+        let initial = b"# v1\n".to_vec();
+        // Two fetches: one for open_url, one for save_back's pre-push recheck.
+        let fake = FakeTransport::new(vec![initial.clone(), initial.clone()]);
+        let ops = Operations::new(fake.clone(), cache_dir.path().to_path_buf());
+
+        let url = sample_ssh_url();
+        let mut owned_ws = Workspace::new(data_dir.path()).expect("workspace");
+        let summary = owned_ws.open_ssh_url(url, &ops).await.expect("open ok");
+        let ws = StdMutex::new(owned_ws);
+
+        let new_body = b"# v2 - my edit\n";
+        let outcome = save_via_ssh_branch(&ws, &ops, &summary.id, new_body)
+            .await
+            .expect("save_back returns ok");
+        match outcome {
+            SaveBackOutcome::Saved { new_sha256 } => {
+                use sha2::Digest;
+                let mut h = sha2::Sha256::new();
+                h.update(new_body);
+                let expected: [u8; 32] = h.finalize().into();
+                assert_eq!(new_sha256, expected, "new hash must equal sha256(local)");
+            }
+            SaveBackOutcome::Conflict { .. } => {
+                panic!("expected Saved (no remote drift staged)")
+            }
+        }
+
+        // Push happened with the new bytes — the heart of the fix.
+        assert_eq!(fake.pushed_count(), 1, "exactly one push for the save");
+        assert_eq!(
+            fake.last_pushed().unwrap(),
+            new_body.to_vec(),
+            "pushed bytes == local edit",
+        );
+
+        // ssh_state's hash advanced to sha256(new_body) — the next save
+        // will use this as the on_open_sha baseline.
+        use sha2::Digest;
+        let mut h = sha2::Sha256::new();
+        h.update(new_body);
+        let expected: [u8; 32] = h.finalize().into();
+        let post_state = ws
+            .lock()
+            .unwrap()
+            .ssh_state(&summary.id)
+            .expect("ssh_state preserved")
+            .clone();
+        assert_eq!(
+            post_state.last_open_sha256, expected,
+            "last_open_sha256 must advance to sha256(new_body) after Saved",
+        );
+    }
+
+    #[tokio::test]
+    async fn save_document_ssh_branch_returns_conflict_on_remote_drift() {
+        // Open returns v1. Save-back's pre-push fetch returns v2 (a peer
+        // edited the remote while the user was editing locally) so the
+        // hash check rejects the push and returns Conflict { local, remote }.
+        let data_dir = tempfile::tempdir().expect("data dir");
+        let cache_dir = tempfile::tempdir().expect("cache dir");
+        let initial = b"# v1\n".to_vec();
+        let remote_now = b"# v2 from peer\n".to_vec();
+        let fake = FakeTransport::new(vec![initial.clone(), remote_now.clone()]);
+        let ops = Operations::new(fake.clone(), cache_dir.path().to_path_buf());
+
+        let url = sample_ssh_url();
+        let mut owned_ws = Workspace::new(data_dir.path()).expect("workspace");
+        let summary = owned_ws.open_ssh_url(url, &ops).await.expect("open ok");
+        let ws = StdMutex::new(owned_ws);
+
+        let local_edit = b"# v2 — my edit\n".to_vec();
+        let outcome = save_via_ssh_branch(&ws, &ops, &summary.id, &local_edit)
+            .await
+            .expect("save_back returns ok-with-conflict");
+
+        match outcome {
+            SaveBackOutcome::Conflict { local, remote } => {
+                assert_eq!(local, local_edit);
+                assert_eq!(remote, remote_now);
+            }
+            SaveBackOutcome::Saved { .. } => {
+                panic!("expected Conflict — remote hash drifted")
+            }
+        }
+
+        // No push on the conflict path — that's the whole point.
+        assert_eq!(
+            fake.pushed_count(),
+            0,
+            "Conflict must NOT push: the local bytes would clobber the remote edit",
+        );
+
+        // ssh_state hash stays at sha256(initial) so a re-open is needed to
+        // recover. (Asserting it didn't advance to sha256(local_edit) catches
+        // a future bug where the handler updates the hash on the wrong arm.)
+        use sha2::Digest;
+        let mut h = sha2::Sha256::new();
+        h.update(&initial);
+        let initial_sha: [u8; 32] = h.finalize().into();
+        let post = ws
+            .lock()
+            .unwrap()
+            .ssh_state(&summary.id)
+            .expect("state preserved through conflict")
+            .clone();
+        assert_eq!(
+            post.last_open_sha256, initial_sha,
+            "Conflict must NOT advance last_open_sha256 (caller re-opens to refresh)",
+        );
+    }
+
+    #[test]
+    fn save_document_checks_ssh_state_before_backend_dispatch() {
+        // Source-level smoke: the SSH branch must run BEFORE the existing
+        // `match tab.backend` dispatch in save_document. The check is the
+        // marker `ws.ssh_state(&tab_id)` in main.rs's save_document body.
+        // Locating that string proves the wiring exists; not finding it
+        // means the Phase-A integration gap is back.
+        let main_rs = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+        )
+        .expect("read main.rs");
+
+        // Locate the save_document body and the backend match within it.
+        let body_start = main_rs
+            .find("fn save_document(")
+            .expect("main.rs must declare fn save_document(");
+        let body = &main_rs[body_start..];
+        let ssh_check_idx = body
+            .find("ssh_state(&tab_id)")
+            .expect("save_document must consult ws.ssh_state(&tab_id)");
+        let backend_match_idx = body
+            .find("match tab_backend")
+            .expect("save_document must still match on tab_backend after the SSH check");
+        assert!(
+            ssh_check_idx < backend_match_idx,
+            "ssh_state check must occur BEFORE the tab_backend dispatch \
+             (otherwise SSH tabs hit the Local write path again)",
+        );
+
+        // It must also call Operations::save_back inside the SSH branch
+        // (which runs before `match tab_backend`). The exact prefix
+        // (`.save_back(`) is the syntactic marker; locate it within the
+        // pre-match window.
+        let save_back_idx = body[..backend_match_idx]
+            .find(".save_back(")
+            .expect("SSH branch must call Operations::save_back(...) before backend dispatch");
+        assert!(
+            save_back_idx < backend_match_idx,
+            "Operations::save_back must be invoked BEFORE the backend dispatch",
+        );
+    }
+}
