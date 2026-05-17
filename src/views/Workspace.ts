@@ -18,6 +18,7 @@ import { mountAskpassModal } from './AskpassModal';
 import { mountShareDialog } from './ShareDialog';
 import { mountDriveStatus } from './DriveStatus';
 import { mountOpenRemoteDialog } from './OpenRemoteDialog';
+import { mountToast } from './Toast';
 
 /**
  * C1: synthetic prefix used by `drive_open_url` for DriveApi tabs whose
@@ -166,6 +167,28 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
     // or ipc.onSshAskpassRequest missing entirely). Silent fallback — the
     // SSH path will surface the auth error via the operation's promise
     // rejection rather than the modal, which is the next-best UX.
+  }
+
+  // B5: global toast surface. Mounted at document.body level for the same
+  // reason as the askpass modal — the toast must outlive workspace re-
+  // mounts and overlay any document/tab content. Specs 21 (host-key-
+  // changed) and 24 (askpass cancel) both poll the `[data-region="toast"]`
+  // selector for verbatim error text; producers (main.ts::openSshUrl on
+  // SSH transport failure, AskpassModal::cancel) dispatch
+  // `mdviewer:toast` events into this surface.
+  try {
+    const disposeToast = mountToast(document.body);
+    mountAbort.signal.addEventListener('abort', () => {
+      try {
+        disposeToast();
+      } catch {
+        // best-effort cleanup; never let a stale disposer crash a re-mount.
+      }
+    });
+  } catch {
+    // jsdom unit tests without document.body — silent fallback. Producers
+    // dispatch events into the void; specs that don't poll the surface
+    // are unaffected.
   }
 
   root.replaceChildren();

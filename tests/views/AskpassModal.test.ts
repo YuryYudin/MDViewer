@@ -137,6 +137,30 @@ describe('AskpassModal', () => {
     expect(document.querySelector('[data-testid="askpass-modal"]')).toBeNull();
   });
 
+  it('cancel click emits a mdviewer:toast event with "auth cancelled"', async () => {
+    // B5 spec 24 contract — the toast surface is the user-visible signal.
+    // The Toast view (mounted by Workspace) listens on document for
+    // `mdviewer:toast`; here we assert the producer side fires it with
+    // the verbatim text the spec polls.
+    const mount = await importMount();
+    mount({ root: document.body });
+    askpassHandler!({ reqId: 'x', prompt: 'P:', isPassword: false });
+    const received: Array<{ message: string; level?: string }> = [];
+    const handler = (ev: Event): void => {
+      const d = (ev as CustomEvent<{ message: string; level?: string }>).detail;
+      received.push(d);
+    };
+    document.addEventListener('mdviewer:toast', handler);
+    try {
+      (document.querySelector('.askpass-cancel') as HTMLButtonElement).click();
+    } finally {
+      document.removeEventListener('mdviewer:toast', handler);
+    }
+    expect(received).toHaveLength(1);
+    expect(received[0].message).toBe('auth cancelled');
+    expect(received[0].level).toBe('error');
+  });
+
   it('Escape key triggers cancel (sends null)', async () => {
     const mount = await importMount();
     mount({ root: document.body });

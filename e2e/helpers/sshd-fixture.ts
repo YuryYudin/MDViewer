@@ -1,11 +1,36 @@
 /**
- * WDIO sshd test fixture helper (B4).
+ * WDIO sshd test fixture helper (B4 + B5 gap 8).
  *
  * The TS analog of `src-tauri/tests/common/ssh_fixture.rs` (A12). Spawns
- * a real `/usr/sbin/sshd` against a random ephemeral port using the
- * committed test keypair under `src-tauri/tests/fixtures/ssh/`, so the
- * WDIO suite (specs 21-24) drives the production SSH transport end-to-
- * end against a real server we control.
+ * FOUR real `/usr/sbin/sshd` processes on the literal ports the immutable
+ * A1 specs reference (2222-2225), each with a per-scenario config:
+ *
+ *   * 2222 / happy             — id_test.pub authorized; standard host
+ *                                key. The "looks like a local tab" and
+ *                                save-back scenarios (specs 21, 22, 23)
+ *                                hit this listener.
+ *   * 2223 / hostKeyMismatch   — id_test.pub authorized BUT a different
+ *                                host key (generated ad-hoc per run).
+ *                                The client's known_hosts is implicitly
+ *                                seeded from 2222's fingerprint; the
+ *                                production transport must surface
+ *                                "host key verification failed" when it
+ *                                connects to 2223 and sees the different
+ *                                fingerprint. Drives spec 21's host-key-
+ *                                changed assertion.
+ *   * 2224 / unauthorized      — authorized_keys is EMPTY. The client's
+ *                                id_test fails publickey auth and ssh
+ *                                emits "Permission denied (publickey)".
+ *                                Drives spec 22's auth-failure scenario.
+ *   * 2225 / passphrasedKey    — a second ed25519 keypair (generated at
+ *                                fixture start, NOT committed) protected
+ *                                by a known passphrase. authorized_keys
+ *                                = the new pub. The client must invoke
+ *                                askpass to unlock the key. Drives spec
+ *                                24's askpass scenarios.
+ *
+ * All four share the same `tmpDir` so the seeded `fixture.md` file lives
+ * at a path every sshd can serve.
  *
  * Coverage seam: the small pure helpers — `renderSshdConfig`,
  * `pickRandomPort`, `waitForPort`, and the argv composers in the
@@ -13,25 +38,15 @@
  * `startSshd` body that actually shells to `/usr/sbin/sshd` is NOT
  * unit-tested: that's the artifact whose behavior we're verifying,
  * and mocking it would only exercise the test scaffolding. The real
- * spawn lifecycle is exercised by the WDIO suite (B5) on macOS.
- *
- * Lifecycle:
- *   1. `const fixture = await startSshd()` — spawns sshd, blocks until
- *      the port accepts a TCP connect, returns a handle.
- *   2. The caller uses `fixture.port`, `fixture.tmpDir/fixture.md`, etc.
- *   3. `await fixture.cleanup()` — SIGTERMs sshd, removes the tmpdir.
- *
- * Why a tmpdir at all: sshd needs writable scratch (its pidfile lives
- * here) AND we need a writable mountpoint for `fixture.md` that the
- * specs can mutate (save-back marker, conflict simulation). Combining
- * those two into one tmpdir keeps the lifecycle trivial.
+ * spawn lifecycle is exercised by the WDIO suite (B5) on macOS / Linux
+ * CI.
  *
  * Windows: `/usr/sbin/sshd` doesn't exist on Windows and the WDIO suite
  * doesn't run there (see `wdio.conf.ts`). We reject with a clear message
  * pointing the caller at the Rust integration tests instead.
  */
-import { spawn, type ChildProcess } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, createConnection } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -42,45 +57,88 @@ import { fileURLToPath } from 'node:url';
 // `import.meta.url`. Same pattern as `tests/codegen.test.ts`.
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-export interface SshdFixture {
-  /** Ephemeral TCP port sshd is listening on (loopback only). */
+/**
+ * Literal port numbers the immutable A1 specs hardcode. Centralised so a
+ * future renumber blows up here, not deep inside spec assertions or the
+ * sshd spawn loop.
+ *
+ * NOTE: these are LITERAL ports, not ephemeral. The spec contract is
+ * "open ssh://localhost:2222/..." — if the kernel hands us a different
+ * port the spec's URL no longer points at our sshd. The fallback when
+ * a port is already in use is to surface the bind failure loudly so
+ * the dev / CI runner notices and shuts down the stale listener.
+ */
+export const SCENARIO_PORTS = {
+  happy: 2222,
+  hostKeyMismatch: 2223,
+  unauthorized: 2224,
+  passphrasedKey: 2225,
+} as const;
+
+/**
+ * Per-scenario sub-fixture. Each gets its own tmpdir (sshd writes a
+ * pidfile + log here) but they all share the parent `tmpDir` for the
+ * served `fixture.md` so the specs can compose the same URL path
+ * regardless of which scenario port they're hitting.
+ */
+export interface ScenarioSubFixture {
   port: number;
+  cleanup: () => Promise<void>;
+}
+
+export interface HappyScenario extends ScenarioSubFixture {
+  /** Client identity file (= the committed id_test). */
+  identityFile: string;
+}
+
+export interface HostKeyMismatchScenario extends ScenarioSubFixture {
+  // No identityFile here — the connect should fail before auth even runs.
+  // Host key is generated ad-hoc and lives in this scenario's per-port
+  // tmpdir, so the path isn't a stable spec contract.
+}
+
+export interface UnauthorizedScenario extends ScenarioSubFixture {
+  /** Client identity file the spec offers — server rejects it. */
+  identityFile: string;
+}
+
+export interface PassphrasedKeyScenario extends ScenarioSubFixture {
+  /** Plain-text passphrase the askpass modal must echo back. */
+  passphrase: string;
+  /** Absolute path to the passphrased client identity. */
+  identityFile: string;
+}
+
+export interface SshdFixture {
   /**
    * Writable tmpdir under `os.tmpdir()`. The helper seeds it with a
    * baseline `fixture.md` so save-back / conflict specs can mutate the
-   * file at a path they control. The rendered sshd config and pidfile
-   * also live here.
+   * file at a path they control. Per-scenario sshd configs live in
+   * per-scenario subdirectories under this root.
    */
   tmpDir: string;
   /**
-   * Absolute path to the client identity. Forwarded into the app under
-   * test via `MDVIEWER_TEST_SSH_IDENTITY` (same env-var the Rust
-   * integration tests use). Specs 23/24 also pass it directly to the
-   * out-of-band `independentSshRead` / `independentSshWrite` helpers
-   * so those bypass the production transport.
+   * Absolute path to the committed default client identity (`id_test`).
+   * Top-level so existing specs that pass `identityFile: fixture.identityFile`
+   * to `independentSshRead` / `independentSshWrite` keep working.
    */
   identityFile: string;
-  /**
-   * The fixture for the askpass-modal scenarios (spec 24). The Phase A
-   * fixture set up by A12 doesn't ship a separate passphrased keypair
-   * yet — the field exists so the immutable A1 spec file continues to
-   * compile, and so a future fixture extension can drop the real
-   * passphrased key in without touching the helper's API surface.
-   */
-  passphrasedKey: {
-    /** Plain-text passphrase the askpass modal must echo back. */
-    passphrase: string;
-    /** Absolute path to the passphrased client identity. */
-    identityFile: string;
-  };
-  /** SIGTERMs sshd, awaits exit, and removes the tmpdir. */
+  /** Standard happy-path listener (id_test.pub authorized). */
+  happy: HappyScenario;
+  /** Listener with a divergent host key — drives the host-key-changed toast. */
+  hostKeyMismatch: HostKeyMismatchScenario;
+  /** Listener with no authorized keys — drives "Permission denied (publickey)". */
+  unauthorized: UnauthorizedScenario;
+  /** Listener whose only authorized key is passphrase-protected — drives askpass. */
+  passphrasedKey: PassphrasedKeyScenario;
+  /** SIGTERMs every sshd and removes the shared tmpdir. */
   cleanup: () => Promise<void>;
 }
 
 /**
  * Workspace-root-relative path to the committed fixture keypair. The
  * fixture dir is shared with the Rust integration tests; the README at
- * `tests/fixtures/ssh/README.md` documents that contract.
+ * `src-tauri/tests/fixtures/ssh/README.md` documents that contract.
  */
 export const FIXTURE_ROOT = path.resolve(__dirname, '../../src-tauri/tests/fixtures/ssh');
 
@@ -155,70 +213,75 @@ export async function waitForPort(port: number, deadlineMs: number = 5000): Prom
 }
 
 /**
- * Spawn `/usr/sbin/sshd -f <rendered config> -D -e` against the committed
- * fixture keypair on a random ephemeral port. Returns a handle the caller
- * can drive specs against; the handle's `cleanup` SIGTERMs sshd and
- * removes the tmpdir.
+ * Generate an ed25519 keypair using the system `ssh-keygen`. Writes
+ * `<dest>` and `<dest>.pub`. Optional passphrase encrypts the private key.
+ *
+ * The keypair is throwaway — used only for the host-key-mismatch and
+ * passphrased-key scenarios. Not committed; regenerated on every fixture
+ * spawn so stale fingerprints don't leak across runs.
  */
-export async function startSshd(): Promise<SshdFixture> {
-  if (process.platform === 'win32') {
-    throw new Error(
-      'WDIO sshd fixture not supported on Windows; use the Rust integration tests instead.',
-    );
+function generateEd25519Key(dest: string, passphrase: string = ''): void {
+  // -t ed25519: algorithm
+  // -f <dest>: output file
+  // -N <pass>: new passphrase (empty string = no passphrase)
+  // -C <comment>: identifier so the comment column doesn't read "user@host"
+  // -q: quiet (no random-art pretty-print)
+  const result = spawnSync(
+    'ssh-keygen',
+    ['-t', 'ed25519', '-f', dest, '-N', passphrase, '-C', 'mdviewer-b5-fixture', '-q'],
+    { stdio: ['ignore', 'inherit', 'inherit'] },
+  );
+  if (result.status !== 0) {
+    throw new Error(`ssh-keygen failed (status ${result.status}) generating ${dest}`);
   }
+  // Tighten perms — sshd refuses keys whose perms grant group/other read.
+  chmodSync(dest, 0o600);
+}
 
-  const tmpDir = mkdtempSync(path.join(tmpdir(), 'mdviewer-wdio-sshd-'));
-  const port = await pickRandomPort();
-  const configPath = path.join(tmpDir, 'sshd_config');
-  const pidfile = path.join(tmpDir, 'sshd.pid');
-  const identityFile = path.join(FIXTURE_ROOT, 'id_test');
-  const hostKey = path.join(FIXTURE_ROOT, 'test_host_key');
-  const authorizedKeys = path.join(FIXTURE_ROOT, 'authorized_keys');
-
-  const rendered = renderSshdConfig({ port, hostKey, authorizedKeys, pidfile });
-  // 0o600 because sshd refuses to load a config with group/other write
-  // bits set when StrictModes is on. We set StrictModes=no in the
-  // template too, but defense-in-depth on a test fixture costs nothing.
+/**
+ * Spawn one sshd process. Renders a per-scenario sshd_config in
+ * `scenarioDir`, drops a `pidfile`, and waits for the port to accept
+ * a TCP connect. Returns the child + a cleanup that SIGTERMs the
+ * listener and removes the per-scenario dir.
+ *
+ * Throws if sshd dies before binding (the message includes the exit
+ * code so a CI failure points at the actual cause, not a generic
+ * "never came up" timeout).
+ */
+async function spawnOneSshd(opts: {
+  port: number;
+  hostKey: string;
+  authorizedKeys: string;
+  scenarioDir: string;
+}): Promise<{ cleanup: () => Promise<void> }> {
+  const configPath = path.join(opts.scenarioDir, 'sshd_config');
+  const pidfile = path.join(opts.scenarioDir, 'sshd.pid');
+  const rendered = renderSshdConfig({
+    port: opts.port,
+    hostKey: opts.hostKey,
+    authorizedKeys: opts.authorizedKeys,
+    pidfile,
+  });
   writeFileSync(configPath, rendered, { mode: 0o600 });
+  chmodSync(opts.hostKey, 0o600);
 
-  // Re-tighten the committed private-key perms before sshd reads them.
-  // git can preserve mode bits across clones on most filesystems, but
-  // the safe-by-default belt-and-braces is to chmod 600 here. sshd
-  // refuses to load a key whose perms grant group/other read.
-  for (const p of [identityFile, hostKey]) {
-    try {
-      chmodSync(p, 0o600);
-    } catch {
-      // chmod can fail on filesystems that don't track unix perms (e.g.
-      // some CI cache mounts). The fixture has the right perms in git
-      // already, so a failed re-tighten isn't fatal — let sshd surface
-      // the real error if it cares.
-    }
-  }
-
-  // Seed the writable markdown file specs 21/22/23/24 open.
-  writeFileSync(path.join(tmpDir, 'fixture.md'), '# original\n');
-
-  // `-D` keeps sshd in the foreground so `child.kill()` reaps the
-  // listener; `-e` forwards logs to stderr so a failed spawn surfaces
-  // the actual reason in the test output rather than a generic
-  // "sshd never came up".
   const child: ChildProcess = spawn('/usr/sbin/sshd', ['-f', configPath, '-D', '-e'], {
     stdio: ['ignore', 'inherit', 'inherit'],
   });
 
-  // If sshd dies before we can wait for the port, surface that explicitly
-  // rather than letting `waitForPort` time out with a misleading message.
   let earlyExitCode: number | null = null;
   child.once('exit', (code) => {
     earlyExitCode = code;
   });
 
   try {
-    await waitForPort(port);
+    await waitForPort(opts.port);
   } catch (e) {
     if (earlyExitCode !== null) {
-      throw new Error(`sshd exited with code ${earlyExitCode} before binding port ${port}`);
+      throw new Error(
+        `sshd exited with code ${earlyExitCode} before binding port ${opts.port}; ` +
+          `is the port already in use? (configured for the immutable spec contract)`,
+      );
     }
     throw e;
   }
@@ -226,8 +289,6 @@ export async function startSshd(): Promise<SshdFixture> {
   const cleanup = async (): Promise<void> => {
     if (!child.killed && child.exitCode === null) {
       child.kill('SIGTERM');
-      // Wait up to 2s for the process to actually exit; on stubborn
-      // sshd builds (or under heavy CI load) SIGTERM can take a moment.
       await new Promise<void>((resolve) => {
         const t = setTimeout(() => {
           try {
@@ -243,28 +304,170 @@ export async function startSshd(): Promise<SshdFixture> {
         });
       });
     }
+  };
+
+  return { cleanup };
+}
+
+/**
+ * Spawn one sshd PER scenario on the literal spec ports 2222-2225.
+ *
+ * Why literal ports: the A1 spec files (immutable) hardcode the port
+ * numbers in their `const HOST_KEY_OK_PORT = 2222` etc. declarations.
+ * Allocating ephemeral ports here would mean threading a per-scenario
+ * port back into the specs, which we cannot do.
+ *
+ * The cost of literal ports is collision with other processes on the
+ * runner. CI runs on a clean image so collision is rare; for local dev,
+ * any prior fixture run that didn't shut down cleanly will hit a
+ * "port in use" error on the next start — that's by design; the message
+ * points the user at the stale sshd.
+ */
+export async function startSshd(): Promise<SshdFixture> {
+  if (process.platform === 'win32') {
+    throw new Error(
+      'WDIO sshd fixture not supported on Windows; use the Rust integration tests instead.',
+    );
+  }
+
+  const tmpDir = mkdtempSync(path.join(tmpdir(), 'mdviewer-wdio-sshd-'));
+  // Seed the shared writable markdown file specs 21/22/23/24 open.
+  writeFileSync(path.join(tmpDir, 'fixture.md'), '# original\n');
+
+  const identityFile = path.join(FIXTURE_ROOT, 'id_test');
+  const committedHostKey = path.join(FIXTURE_ROOT, 'test_host_key');
+  const committedAuthKeys = path.join(FIXTURE_ROOT, 'authorized_keys');
+
+  // Re-tighten the committed private-key perms — git can preserve mode
+  // bits across clones on most filesystems, but defense-in-depth on a
+  // test fixture costs nothing.
+  for (const p of [identityFile, committedHostKey]) {
+    try {
+      chmodSync(p, 0o600);
+    } catch {
+      // chmod can fail on filesystems that don't track unix perms (e.g.
+      // some CI cache mounts). Let sshd surface the real error if it cares.
+    }
+  }
+
+  // ---- Per-scenario directories ----------------------------------------
+  const happyDir = path.join(tmpDir, 'happy');
+  const mismatchDir = path.join(tmpDir, 'hostKeyMismatch');
+  const unauthorizedDir = path.join(tmpDir, 'unauthorized');
+  const passphraseDir = path.join(tmpDir, 'passphrasedKey');
+  for (const d of [happyDir, mismatchDir, unauthorizedDir, passphraseDir]) {
+    mkdirSync(d, { recursive: true });
+  }
+
+  // ---- hostKeyMismatch: ad-hoc divergent host key -----------------------
+  // The host key MUST differ from the committed test_host_key. We
+  // generate a fresh ed25519 keypair per fixture spawn so a stale
+  // known_hosts entry from a prior run can't accidentally satisfy this
+  // scenario.
+  const mismatchHostKey = path.join(mismatchDir, 'host_key_mismatch');
+  generateEd25519Key(mismatchHostKey);
+
+  // ---- unauthorized: empty authorized_keys ------------------------------
+  // The empty file is its own authoritative "no keys accepted" signal —
+  // sshd happily loads it (StrictModes=no in the template) and rejects
+  // every pubkey attempt with "Permission denied (publickey)".
+  const unauthorizedAuthKeys = path.join(unauthorizedDir, 'authorized_keys');
+  writeFileSync(unauthorizedAuthKeys, '', { mode: 0o600 });
+
+  // ---- passphrasedKey: new keypair with a known passphrase --------------
+  // The askpass modal echoes the typed passphrase back to ssh; ssh
+  // decrypts the key and proceeds. The passphrase is exposed on the
+  // returned fixture so spec 24 can drive the modal deterministically.
+  const passphrase = 'mdviewer-b5-passphrase';
+  const passphrasedKeyPath = path.join(passphraseDir, 'id_passphrased');
+  generateEd25519Key(passphrasedKeyPath, passphrase);
+  const passphrasedAuthKeys = path.join(passphraseDir, 'authorized_keys');
+  writeFileSync(passphrasedAuthKeys, readFileSync(`${passphrasedKeyPath}.pub`, 'utf8'), {
+    mode: 0o600,
+  });
+
+  // ---- Spawn all four sshds ---------------------------------------------
+  // Sequential spawn so a "port in use" failure surfaces against the
+  // specific scenario that hit it, rather than as a confused
+  // Promise.all rejection.
+  const spawned: Array<{ cleanup: () => Promise<void> }> = [];
+  const cleanupAll = async (): Promise<void> => {
+    await Promise.allSettled(spawned.map((s) => s.cleanup()));
     try {
       rmSync(tmpDir, { recursive: true, force: true });
     } catch {
-      // Best-effort: a tmpdir we couldn't remove on Windows-mounted FS
-      // doesn't break the next run because we mkdtemp a fresh one.
+      // Best-effort: a tmpdir we couldn't remove doesn't break the next
+      // run because we mkdtemp a fresh one.
     }
   };
 
+  try {
+    const happy = await spawnOneSshd({
+      port: SCENARIO_PORTS.happy,
+      hostKey: committedHostKey,
+      authorizedKeys: committedAuthKeys,
+      scenarioDir: happyDir,
+    });
+    spawned.push(happy);
+
+    const mismatch = await spawnOneSshd({
+      port: SCENARIO_PORTS.hostKeyMismatch,
+      hostKey: mismatchHostKey,
+      authorizedKeys: committedAuthKeys,
+      scenarioDir: mismatchDir,
+    });
+    spawned.push(mismatch);
+
+    const unauthorized = await spawnOneSshd({
+      port: SCENARIO_PORTS.unauthorized,
+      hostKey: committedHostKey,
+      authorizedKeys: unauthorizedAuthKeys,
+      scenarioDir: unauthorizedDir,
+    });
+    spawned.push(unauthorized);
+
+    const passphrased = await spawnOneSshd({
+      port: SCENARIO_PORTS.passphrasedKey,
+      hostKey: committedHostKey,
+      authorizedKeys: passphrasedAuthKeys,
+      scenarioDir: passphraseDir,
+    });
+    spawned.push(passphrased);
+  } catch (err) {
+    // If any spawn fails, tear down what we did get up. Re-throw the
+    // original error so the caller sees the root cause.
+    await cleanupAll();
+    throw err;
+  }
+  // Pull the per-scenario cleanups out by index for the sub-fixture
+  // bindings — every spawnOneSshd above pushed in scenario order.
+  const [happyCleanup, mismatchCleanup, unauthorizedCleanup, passphrasedCleanup] = spawned.map(
+    (s) => s.cleanup,
+  );
+
   return {
-    port,
     tmpDir,
     identityFile,
-    // Phase A's A12 fixture doesn't yet ship a separate passphrased
-    // keypair — the askpass-modal scenarios (spec 24) lean on a future
-    // fixture extension. Until that lands we expose the API shape with
-    // a sentinel passphrase + the same identity file so the immutable
-    // A1 spec file keeps compiling. The real spec assertions stay RED
-    // for spec 24 until the passphrased fixture follow-up.
-    passphrasedKey: {
-      passphrase: 'test-passphrase',
+    happy: {
+      port: SCENARIO_PORTS.happy,
       identityFile,
+      cleanup: happyCleanup,
     },
-    cleanup,
+    hostKeyMismatch: {
+      port: SCENARIO_PORTS.hostKeyMismatch,
+      cleanup: mismatchCleanup,
+    },
+    unauthorized: {
+      port: SCENARIO_PORTS.unauthorized,
+      identityFile,
+      cleanup: unauthorizedCleanup,
+    },
+    passphrasedKey: {
+      port: SCENARIO_PORTS.passphrasedKey,
+      passphrase,
+      identityFile: passphrasedKeyPath,
+      cleanup: passphrasedCleanup,
+    },
+    cleanup: cleanupAll,
   };
 }

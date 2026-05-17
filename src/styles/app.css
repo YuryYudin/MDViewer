@@ -1261,3 +1261,36 @@ body {
   opacity: 0.6;
   cursor: not-allowed;
 }
+
+/* B5: global toast surface (`[data-region="toast"]`).
+   Mounted by Workspace.ts as a sibling to the workspace shell. Producers
+   dispatch `mdviewer:toast` events into this surface — the host stays
+   mounted, individual `<div role="alert">` children come and go.
+   Anchored bottom-center so the SSH error/auth-cancelled messages don't
+   collide with the bottom-right Drive-detect toast. */
+.toast-host {
+  position: fixed;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  pointer-events: none;
+  z-index: 1100;
+}
+.toast-host .toast {
+  pointer-events: auto;
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 8px 14px;
+  font-family: var(--sans);
+  font-size: 13px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+  max-width: 560px;
+}
+.toast-host .toast[data-level="error"] {
+  border-color: var(--danger, #c53030);
+}

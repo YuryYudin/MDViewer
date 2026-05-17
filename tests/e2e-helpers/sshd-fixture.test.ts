@@ -103,21 +103,49 @@ import type { SshdFixture } from '../../e2e/helpers/sshd-fixture';
 describe('sshd-fixture: SshdFixture shape', () => {
   it('SshdFixture type matches what A1 specs destructure', () => {
     // Type-level shape check — the immutable A1 spec files (21/22/23/24)
-    // destructure `port`, `tmpDir`, `cleanup`, `identityFile`, and
-    // `passphrasedKey.{passphrase,identityFile}`. The `satisfies` clause
-    // below fails to compile if the interface regresses, which is a
-    // strictly stronger guarantee than the previous source-text regex
-    // check: tsc enforces both shape AND types, whereas regex was
-    // happy with stale `// port: ...` comments etc.
+    // destructure:
+    //   * `fixture.tmpDir`, `fixture.identityFile`, `fixture.cleanup`
+    //     (top-level, used by specs 21/22/23/24)
+    //   * `fixture.passphrasedKey.passphrase` (spec 24's askpass-modal
+    //     scenarios; the password is the round-trip the modal must echo)
+    // B5 gap 8 adds per-scenario sub-fixtures (`happy`, `hostKeyMismatch`,
+    // `unauthorized`, `passphrasedKey`) bound to the literal spec ports
+    // 2222-2225 so each scenario hits a sshd configured for that exact
+    // failure mode. Top-level `identityFile` / `cleanup` / `tmpDir` stay
+    // intact because the specs are IMMUTABLE — adding new fields is fine,
+    // renaming or removing existing ones breaks the contract.
     const _shape = {
-      port: 22,
       tmpDir: '/tmp/x',
       identityFile: '/tmp/key',
-      passphrasedKey: { identityFile: '/tmp/k', passphrase: 'p' },
+      happy: { port: 2222, identityFile: '/tmp/key', cleanup: async () => {} },
+      hostKeyMismatch: { port: 2223, cleanup: async () => {} },
+      unauthorized: { port: 2224, identityFile: '/tmp/key', cleanup: async () => {} },
+      passphrasedKey: {
+        port: 2225,
+        identityFile: '/tmp/k',
+        passphrase: 'p',
+        cleanup: async () => {},
+      },
       cleanup: async () => {},
     } satisfies SshdFixture;
     // Runtime: keep one no-op assertion to anchor the test name.
-    expect(_shape.port).toBe(22);
+    expect(_shape.happy.port).toBe(2222);
+    expect(_shape.hostKeyMismatch.port).toBe(2223);
+    expect(_shape.unauthorized.port).toBe(2224);
+    expect(_shape.passphrasedKey.port).toBe(2225);
+  });
+});
+
+describe('sshd-fixture: scenarioPorts constant', () => {
+  it('exports the spec-required literal port numbers', async () => {
+    // The immutable A1 specs hardcode the port numbers 2222-2225. Anchor
+    // them in a single exported constant so any future renumbering blows
+    // up here (not deep inside startSshd's spawn loop).
+    const { SCENARIO_PORTS } = await import('../../e2e/helpers/sshd-fixture');
+    expect(SCENARIO_PORTS.happy).toBe(2222);
+    expect(SCENARIO_PORTS.hostKeyMismatch).toBe(2223);
+    expect(SCENARIO_PORTS.unauthorized).toBe(2224);
+    expect(SCENARIO_PORTS.passphrasedKey).toBe(2225);
   });
 });
 

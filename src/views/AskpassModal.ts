@@ -144,6 +144,18 @@ export function mountAskpassModal(props: AskpassModalProps): () => void {
     const reqId = pending.reqId;
     hide();
     void ipc.sshPasswordResponse(reqId, null);
+    // B5: spec 24 contract — the askpass cancel path must surface
+    // "auth cancelled" via the global toast region. Ssh terminates
+    // shortly after the null response and the open promise rejects,
+    // but the user-visible signal is the toast — that's what the spec
+    // polls for. Dispatched on `document` so the Toast view (mounted
+    // by Workspace) picks it up regardless of where the cancel click
+    // originated.
+    document.dispatchEvent(
+      new CustomEvent('mdviewer:toast', {
+        detail: { message: 'auth cancelled', level: 'error' },
+      }),
+    );
   });
 
   submitBtn.addEventListener('click', () => {
