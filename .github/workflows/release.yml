@@ -130,6 +130,11 @@ jobs:
   android:
     name: Bundle (Android)
     runs-on: ubuntu-latest
+    # Pin to the firebase-distribution environment so the Upload-to-Firebase
+    # step below can read FIREBASE_ANDROID_APP_ID / FIREBASE_SERVICE_ACCOUNT
+    # / FIREBASE_TESTER_GROUP. The environment's branch policy restricts
+    # deployment to `main`, which matches tag pushes (tags from main).
+    environment: firebase-distribution
     steps:
       - uses: actions/checkout@v4
         with:
@@ -227,6 +232,39 @@ jobs:
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Push the same signed APK to Firebase App Distribution so testers
+      # get an in-app update prompt without waiting for the human to flip
+      # the GitHub draft to Published. The environment-scoped secrets
+      # (firebase-distribution) provide:
+      #   - FIREBASE_ANDROID_APP_ID — the App Distribution app identifier
+      #     (1:<project_number>:android:<hash>)
+      #   - FIREBASE_SERVICE_ACCOUNT — JSON service-account key with the
+      #     `firebase.distributions.publish` role on this app
+      #   - FIREBASE_TESTER_GROUP — the named tester group to distribute to
+      # Release notes are pulled from the tag's annotated message via
+      # `git for-each-ref` so testers see the same changelog GitHub shows.
+      - name: Extract tag release notes for Firebase
+        id: tag_notes
+        run: |
+          notes="$(git for-each-ref refs/tags/${{ github.ref_name }} --format='%(contents)' 2>/dev/null | head -c 1000)"
+          if [ -z "$notes" ]; then
+            notes="MDViewer ${{ github.ref_name }} — see https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }} for the full changelog."
+          fi
+          {
+            echo "notes<<EOF"
+            echo "$notes"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload signed APK to Firebase App Distribution
+        uses: wzieba/Firebase-Distribution-Github-Action@v1
+        with:
+          appId: ${{ secrets.FIREBASE_ANDROID_APP_ID }}
+          serviceCredentialsFileContent: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          groups: ${{ secrets.FIREBASE_TESTER_GROUP }}
+          file: android/app/build/outputs/apk/release/mdviewer-android-${{ github.ref_name }}.apk
+          releaseNotes: ${{ steps.tag_notes.outputs.notes }}
 
   # Sentinel "the draft is complete" gate. `needs: [bundle, android]` means
   # this job only runs (and the workflow's overall status only goes green)
