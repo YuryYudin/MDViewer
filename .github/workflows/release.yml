@@ -271,6 +271,44 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
+      # Sanity-check the Firebase secrets BEFORE handing them to the
+      # distribution action — wzieba's action surfaces a generic "Failed
+      # to authenticate, have you run firebase login?" on every failure
+      # mode, which makes debugging the actual cause (wrong format, IAM
+      # role missing, expired key) impossible from the logs alone.
+      # This step prints non-sensitive diagnostics (first char, length,
+      # key presence) so a malformed secret shows up immediately.
+      - name: Sanity-check Firebase secrets
+        env:
+          SA_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          APP_ID: ${{ secrets.FIREBASE_ANDROID_APP_ID }}
+          GROUP: ${{ secrets.FIREBASE_TESTER_GROUP }}
+        run: |
+          set -e
+          if [ -z "$SA_JSON" ]; then echo "::error::FIREBASE_SERVICE_ACCOUNT is empty"; exit 1; fi
+          if [ -z "$APP_ID" ]; then echo "::error::FIREBASE_ANDROID_APP_ID is empty"; exit 1; fi
+          if [ -z "$GROUP" ]; then echo "::error::FIREBASE_TESTER_GROUP is empty"; exit 1; fi
+          first_char="$(printf '%s' "$SA_JSON" | head -c 1)"
+          if [ "$first_char" != "{" ]; then
+            echo "::error::FIREBASE_SERVICE_ACCOUNT does not start with '{' (saw '$first_char'). Expected raw JSON — not base64, not a path. See https://github.com/YuryYudin/MDViewer/blob/main/.github/workflows/release.yml for the format guide."
+            exit 1
+          fi
+          # Verify it's valid JSON without leaking content; jq is available on ubuntu-latest.
+          if ! printf '%s' "$SA_JSON" | jq -e 'type == "object"' >/dev/null 2>&1; then
+            echo "::error::FIREBASE_SERVICE_ACCOUNT is not valid JSON. Re-paste the service account key file content verbatim."
+            exit 1
+          fi
+          # Verify expected fields are present (without printing values).
+          for field in type project_id private_key client_email; do
+            if ! printf '%s' "$SA_JSON" | jq -e ".$field // empty" >/dev/null 2>&1; then
+              echo "::error::FIREBASE_SERVICE_ACCOUNT is missing required field: $field"
+              exit 1
+            fi
+          done
+          echo "FIREBASE_SERVICE_ACCOUNT looks well-formed (object with type/project_id/private_key/client_email)."
+          echo "FIREBASE_ANDROID_APP_ID prefix: $(echo "$APP_ID" | cut -c1-6)…"
+          echo "FIREBASE_TESTER_GROUP: $GROUP"
+
       - name: Upload signed APK to Firebase App Distribution
         uses: wzieba/Firebase-Distribution-Github-Action@v1
         with:
