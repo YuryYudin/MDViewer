@@ -41,7 +41,7 @@ jobs:
             label: Linux
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: actions/setup-node@v4
         with:
@@ -136,7 +136,7 @@ jobs:
     # deployment to `main`, which matches tag pushes (tags from main).
     environment: firebase-distribution
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           # versionName resolves via `git describe --tags --abbrev=0` in
           # `app/build.gradle.kts`. Default depth=1 has no tags, so the
