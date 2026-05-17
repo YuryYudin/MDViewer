@@ -87,18 +87,29 @@ jobs:
       # Windows uses the russh in-process auth callback (no helper bin
       # ever invoked), so the step is skipped there — the placeholder
       # written by build.rs is sufficient for the MSI bundler.
-      - name: Build mdviewer-askpass helper (Unix)
-        if: matrix.os != 'windows-latest'
+      - name: Build mdviewer-askpass helper
         working-directory: src-tauri
         shell: bash
         run: |
+          # The helper bin has a #[cfg(unix)] real implementation and a
+          # #[cfg(not(unix))] stub `main` that exits non-zero — so the bin
+          # target compiles on every platform. We build it on Windows too
+          # because Tauri's MSI bundler (WiX `light.exe`) rejects 0-byte
+          # externalBin placeholders, and there's no way to drop a platform-
+          # specific externalBin entry from a single tauri.conf.json.
+          #
           # cargo runs from src-tauri but writes to the workspace's
           # target/ directory at the repo root — hence the `../target/`
-          # prefix on the cp source path.
+          # prefix on the cp source path. Windows artifacts have `.exe`.
           cargo build --release --bin mdviewer-askpass --locked --target ${{ matrix.target }}
           mkdir -p binaries
-          cp ../target/${{ matrix.target }}/release/mdviewer-askpass \
-             binaries/mdviewer-askpass-${{ matrix.target }}
+          if [[ "${{ matrix.target }}" == *"windows"* ]]; then
+            cp "../target/${{ matrix.target }}/release/mdviewer-askpass.exe" \
+               "binaries/mdviewer-askpass-${{ matrix.target }}.exe"
+          else
+            cp "../target/${{ matrix.target }}/release/mdviewer-askpass" \
+               "binaries/mdviewer-askpass-${{ matrix.target }}"
+          fi
 
       # tauri-action runs `tauri build`, picks up bundle.targets from
       # tauri.conf.json (overridden via --bundles), and uploads each
