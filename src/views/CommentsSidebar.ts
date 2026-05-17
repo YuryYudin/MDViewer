@@ -72,6 +72,10 @@ export function mountCommentsSidebar(
   // of scrolling once content exceeded the viewport.
   const scrollHost = document.createElement('div');
   scrollHost.setAttribute('data-view', 'sidebar-comments');
+  // B5: spec 21 asserts `[data-testid="comments-sidebar"]` is mounted on
+  // every doc (local + remote). The legacy `data-view` selector stays
+  // alongside the testid so existing CSS/unit-test selectors don't drift.
+  scrollHost.setAttribute('data-testid', 'comments-sidebar');
   root.appendChild(scrollHost);
 
   // Header row with a close (×) button. Clicking dispatches the same

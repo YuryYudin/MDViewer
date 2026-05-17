@@ -230,7 +230,7 @@ describe('Conflict', () => {
     const banner = root.querySelector('.conflict-banner');
     expect(banner).toBeTruthy();
     expect(banner?.textContent).toMatch(/remote/i);
-    expect(banner?.getAttribute('data-source')).toBe('SshHashMismatch');
+    expect(banner?.getAttribute('data-conflict-source')).toBe('SshHashMismatch');
   });
 
   it('omits the conflict banner for plain local conflicts', async () => {

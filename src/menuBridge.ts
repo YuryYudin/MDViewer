@@ -30,10 +30,10 @@ export const MENU_ACTION_TO_EVENT: Readonly<Record<string, string>> = Object.fre
   'new-document': 'mdviewer:new-document',
   'close-tab': 'mdviewer:close-tab',
   'open-settings': 'mdviewer:open-settings',
-  // The keymap dispatches `mdviewer:save-active` (not save-file) — keep
-  // the menu in line with that single source of truth so save handlers
-  // don't have to listen on two channels.
-  'save-file': 'mdviewer:save-active',
+  // B5: spec contract — specs 23/24 dispatch `mdviewer:save-document`.
+  // Renamed from the legacy `save-active` so the menu, keymap, and
+  // WDIO suite converge on the same single event name.
+  'save-file': 'mdviewer:save-document',
   'toggle-edit': 'mdviewer:toggle-edit',
   'toggle-sidebar': 'mdviewer:toggle-sidebar',
   // View → Zoom items. The Rust side (`menu_id_to_action`) maps the menu

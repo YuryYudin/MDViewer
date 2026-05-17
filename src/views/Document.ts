@@ -338,6 +338,20 @@ export async function mountDocument(
     else void enterView();
   });
 
+  // B5: `mdviewer:save-document` is the canonical save event the keymap,
+  // menu bridge, and WDIO specs (23/24) all dispatch. While in Edit mode
+  // we flush the EditView's pending bytes via `forceSave` so the spec's
+  // "Save the dirty buffer" assertion sees the same bytes the next
+  // independent SSH read returns. Outside Edit mode the event is a no-op
+  // (the only persistable surface is the editor — View mode has nothing
+  // to flush). Listener attached to `document` so the keymap's
+  // dispatchEvent at document level reaches it.
+  const onSaveDocument = (): void => {
+    if (currentMode !== 'edit' || !editView) return;
+    void editView.forceSave();
+  };
+  document.addEventListener('mdviewer:save-document', onSaveDocument);
+
   function offsetsFromSelection():
     | { start: number; end: number; exact: string; prefix?: string; suffix?: string }
     | null {

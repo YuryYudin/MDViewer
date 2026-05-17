@@ -63,9 +63,15 @@ describe('AskpassModal', () => {
   it('renders an overlay hidden by default with the wireframe-03 controls', async () => {
     const mount = await importMount();
     mount({ root: document.body });
-    const overlay = document.querySelector('[data-testid="askpass-modal"]') as HTMLElement;
+    // B5: testid is only attached while the modal is *shown* — query the
+    // stable host attribute for the initial-mount check. The testid
+    // toggles in `show()` / `hide()` so spec 24's `!isExisting()` poll
+    // can resolve once the user dismisses the modal.
+    const overlay = document.querySelector('[data-region="askpass-host"]') as HTMLElement;
     expect(overlay).toBeTruthy();
     expect(overlay.style.display).toBe('none');
+    // Initial mount: no testid yet (modal dormant).
+    expect(overlay.hasAttribute('data-testid')).toBe(false);
     expect(overlay.querySelector('.askpass-title')).toBeTruthy();
     expect(overlay.querySelector('.askpass-prompt')).toBeTruthy();
     const input = overlay.querySelector('.askpass-input') as HTMLInputElement;
@@ -112,9 +118,12 @@ describe('AskpassModal', () => {
     input.value = 'hunter2';
     (document.querySelector('.askpass-submit') as HTMLButtonElement).click();
     expect(sshPasswordResponseMock).toHaveBeenCalledWith('x', 'hunter2');
-    // Modal hides after submission.
-    const overlay = document.querySelector('[data-testid="askpass-modal"]') as HTMLElement;
+    // Modal hides after submission. The testid is dropped (spec 24's
+    // `!isExisting()` poll resolves); the stable host attribute persists
+    // so the unit test can still locate the overlay for the display check.
+    const overlay = document.querySelector('[data-region="askpass-host"]') as HTMLElement;
     expect(overlay.style.display).toBe('none');
+    expect(document.querySelector('[data-testid="askpass-modal"]')).toBeNull();
   });
 
   it('cancel click sends null and hides the overlay', async () => {
@@ -123,8 +132,9 @@ describe('AskpassModal', () => {
     askpassHandler!({ reqId: 'x', prompt: 'P:', isPassword: true });
     (document.querySelector('.askpass-cancel') as HTMLButtonElement).click();
     expect(sshPasswordResponseMock).toHaveBeenCalledWith('x', null);
-    const overlay = document.querySelector('[data-testid="askpass-modal"]') as HTMLElement;
+    const overlay = document.querySelector('[data-region="askpass-host"]') as HTMLElement;
     expect(overlay.style.display).toBe('none');
+    expect(document.querySelector('[data-testid="askpass-modal"]')).toBeNull();
   });
 
   it('Escape key triggers cancel (sends null)', async () => {
@@ -186,8 +196,12 @@ describe('AskpassModal', () => {
   it('returned dispose function unsubscribes and removes the overlay', async () => {
     const mount = await importMount();
     const dispose = mount({ root: document.body });
-    expect(document.querySelector('[data-testid="askpass-modal"]')).toBeTruthy();
+    // B5: testid toggles with show/hide — initial mount is dormant, so
+    // the host attribute is the stable selector for the "did the overlay
+    // mount" check. Dispose() removes the whole overlay node.
+    expect(document.querySelector('[data-region="askpass-host"]')).toBeTruthy();
     dispose();
+    expect(document.querySelector('[data-region="askpass-host"]')).toBeNull();
     expect(document.querySelector('[data-testid="askpass-modal"]')).toBeNull();
     // After dispose, the captured handler ref is cleared so a stray event
     // (e.g. fired before the unsubscribe round-trip completes) can't render

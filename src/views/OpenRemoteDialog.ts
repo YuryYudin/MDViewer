@@ -79,6 +79,11 @@ export function mountOpenRemoteDialog(
   const overlay = document.createElement('div');
   overlay.className = 'open-remote-overlay modal-overlay';
   overlay.setAttribute('data-testid', 'open-remote-dialog');
+  // B5: spec 22 polls `dialog.getAttribute('data-state')` for the wireframe-02
+  // tri-state lifecycle (host-entry → browsing → error). Seeded with
+  // the initial render's state.kind; updated inside `render()` before
+  // each state transition so the polling waitUntil resolves promptly.
+  overlay.setAttribute('data-state', 'host-entry');
   overlay.innerHTML = `
     <div class="open-remote-panel modal-card" role="dialog" aria-modal="true" aria-label="Open from remote">
       <header>
@@ -109,6 +114,12 @@ export function mountOpenRemoteDialog(
   overlay.querySelector('.dialog-close')?.addEventListener('click', close);
 
   function render(): void {
+    // Mirror state.kind onto the overlay so spec 22's
+    // `dialog.getAttribute('data-state')` poll resolves as soon as the
+    // dialog transitions. Order matters: set the attribute BEFORE
+    // rendering the body content so any synchronous spec poll that fires
+    // right after the kind change picks up the right state.
+    overlay.setAttribute('data-state', state.kind);
     switch (state.kind) {
       case 'host-entry':
         renderHostEntry();
@@ -124,9 +135,14 @@ export function mountOpenRemoteDialog(
 
   function renderHostEntry(): void {
     const suggestions = state.suggestions ?? [];
+    // B5: spec 22 selectors — `input#host` and `[data-action="connect"]`.
+    // The `id="host"` co-exists with the `.host-input` class so the
+    // existing unit-test selectors still resolve. The connect button
+    // gains `data-action="connect"` alongside the legacy `.connect-btn`
+    // class for the same reason.
     body.innerHTML = `
-      <label class="host-label">Host
-        <input class="host-input" type="text" placeholder="user@host[:port]"
+      <label class="host-label" for="host">Host
+        <input id="host" class="host-input" type="text" placeholder="user@host[:port]"
                list="recent-hosts" autocomplete="off" />
         <datalist id="recent-hosts">
           ${suggestions
@@ -135,7 +151,7 @@ export function mountOpenRemoteDialog(
         </datalist>
       </label>
       <div class="dialog-actions modal-actions">
-        <button class="connect-btn primary" type="button">Connect</button>
+        <button class="connect-btn primary" data-action="connect" type="button">Connect</button>
       </div>
     `;
     const input = body.querySelector('.host-input') as HTMLInputElement;
@@ -167,6 +183,13 @@ export function mountOpenRemoteDialog(
       state.focused < entries.length
         ? state.focused
         : 0;
+    // B5: spec 22 selectors — `[data-testid="remote-file-list"]` on the
+    // entries table, `.file-row` class on every row, `data-md="true"` on
+    // markdown files (so `[data-md]` filters them at-a-glance), and
+    // `data-kind="parent"` on the synthetic `..` row when one is present.
+    // The legacy `class="entries"`, `tr[role="option"]`, `[data-name]`,
+    // and `[data-is-dir]` selectors stay alongside so existing
+    // unit-test selectors keep matching.
     body.innerHTML = `
       <nav class="breadcrumb" aria-label="Path">
         ${segs
@@ -178,19 +201,24 @@ export function mountOpenRemoteDialog(
           )
           .join('')}
       </nav>
-      <table class="entries" role="listbox" tabindex="0">
+      <table class="entries" data-testid="remote-file-list" role="listbox" tabindex="0">
         <tbody>
           ${entries
             .map(
-              (e, i) => `
-            <tr role="option" data-name="${escapeAttr(e.name)}" data-is-dir="${e.isDir}"
-                aria-selected="${i === focused ? 'true' : 'false'}"
-                class="${i === focused ? 'focused' : ''}">
+              (e, i) => {
+                const isMd = !e.isDir && isMarkdownName(e.name);
+                const isParent = e.isDir && e.name === '..';
+                const kindAttr = isParent ? ' data-kind="parent"' : '';
+                const mdAttr = isMd ? ' data-md="true"' : '';
+                return `
+            <tr role="option" class="file-row${i === focused ? ' focused' : ''}" data-name="${escapeAttr(e.name)}" data-is-dir="${e.isDir}"${kindAttr}${mdAttr}
+                aria-selected="${i === focused ? 'true' : 'false'}">
               <td class="icon">${e.isDir ? '📁' : '📄'}</td>
               <td class="name">${escapeHtml(e.name)}</td>
               <td class="size">${e.isDir ? '' : formatSize(e.size)}</td>
             </tr>
-          `,
+          `;
+              },
             )
             .join('')}
         </tbody>

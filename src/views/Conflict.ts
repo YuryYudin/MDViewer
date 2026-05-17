@@ -75,10 +75,12 @@ export async function mountConflict(
     const banner = document.createElement('div');
     // Keep the legacy `drive-banner` class alongside `conflict-banner` so
     // pre-A8 CSS selectors and Workspace.test fixtures keep matching for
-    // the Drive variants. The new `data-source` attribute is the
-    // canonical hook for source-aware styling/tests.
+    // the Drive variants. The `data-conflict-source` attribute is the
+    // canonical hook for source-aware styling/tests — B5 renamed it from
+    // `data-source` to match the immutable spec 24 selector
+    // `[data-conflict-source="SshHashMismatch"]`.
     banner.className = 'drive-banner conflict-banner';
-    banner.setAttribute('data-source', args.source);
+    banner.setAttribute('data-conflict-source', args.source);
     // Mirror the legacy attribute for the two Drive variants so existing
     // selectors (e.g. tests/views/Workspace.test.ts's `data-drive-source`
     // assertions, e2e/19-drive-comments) keep passing.

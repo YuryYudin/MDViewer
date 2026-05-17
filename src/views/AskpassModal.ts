@@ -43,7 +43,18 @@ export function mountAskpassModal(props: AskpassModalProps): () => void {
   const overlay = document.createElement('div');
   overlay.className = 'askpass-overlay modal-overlay';
   overlay.style.display = 'none';
-  overlay.setAttribute('data-testid', 'askpass-modal');
+  // B5: the `data-testid="askpass-modal"` attribute is toggled
+  // visible↔hidden along with the overlay so spec 24's
+  // `await browser.waitUntil(async () => !(await askpass.isExisting()))`
+  // polling resolves once the user clicks Submit / Cancel.
+  // WDIO's isExisting() checks DOM presence, NOT CSS visibility — a
+  // display:none element still exists, so the only reliable way to make
+  // the "no longer mounted" poll resolve is to drop the testid attribute
+  // (`querySelector('[data-testid="askpass-modal"]')` returns null when
+  // the attribute is absent). A stable `data-region="askpass-host"`
+  // attribute stays on the overlay regardless so unit tests can still
+  // locate the host element on initial mount via that selector.
+  overlay.setAttribute('data-region', 'askpass-host');
 
   const panel = document.createElement('div');
   panel.className = 'askpass-panel modal-card';
@@ -72,12 +83,18 @@ export function mountAskpassModal(props: AskpassModalProps): () => void {
   const cancelBtn = document.createElement('button');
   cancelBtn.type = 'button';
   cancelBtn.className = 'askpass-cancel';
+  // B5: spec 24 selector — `[data-action="cancel"]`. The class is kept
+  // alongside so legacy unit-test selectors don't drift.
+  cancelBtn.setAttribute('data-action', 'cancel');
   cancelBtn.textContent = 'Cancel';
   actions.appendChild(cancelBtn);
 
   const submitBtn = document.createElement('button');
   submitBtn.type = 'button';
   submitBtn.className = 'askpass-submit primary';
+  // B5: spec 24 selector — `[data-action="submit"]`. Co-exists with the
+  // class for the same reason as the cancel button above.
+  submitBtn.setAttribute('data-action', 'submit');
   submitBtn.textContent = 'Submit';
   actions.appendChild(submitBtn);
 
@@ -93,6 +110,15 @@ export function mountAskpassModal(props: AskpassModalProps): () => void {
       ? 'SSH password required'
       : 'SSH key passphrase required';
     promptEl.textContent = req.prompt;
+    // B5: spec 24 contract — `data-kind` on the overlay is the canonical
+    // discriminator between the passphrase (variant A) and password
+    // (variant B) variants. The Rust side is the source of truth (the
+    // `isPassword` flag in the askpass payload) — we never pattern-match
+    // the prompt text to pick a variant.
+    overlay.setAttribute('data-kind', req.isPassword ? 'password' : 'passphrase');
+    // Toggle the spec-side testid on so `browser.$('[data-testid=...]')`
+    // resolves to the overlay once the modal is visible.
+    overlay.setAttribute('data-testid', 'askpass-modal');
     // Clear any previous value — a passphrase typed for key A must NEVER
     // survive into key B's prompt.
     input.value = '';
@@ -105,6 +131,12 @@ export function mountAskpassModal(props: AskpassModalProps): () => void {
   function hide(): void {
     pending = null;
     overlay.style.display = 'none';
+    // Drop the testid so spec 24's `!askpass.isExisting()` poll resolves
+    // (the element still lives in the DOM tree under the persistent
+    // `[data-region="askpass-host"]` selector, but queries by testid
+    // miss while the modal is dormant).
+    overlay.removeAttribute('data-testid');
+    overlay.removeAttribute('data-kind');
   }
 
   cancelBtn.addEventListener('click', () => {

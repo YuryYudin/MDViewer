@@ -349,6 +349,38 @@ export async function main(): Promise<void> {
           await tauriIpc.getSettings(),
         ).catch((err) => console.warn('drive-detect toast gate failed:', err));
       },
+      /**
+       * B5 / specs 21/23/24: drive an `ssh://` URL open through the same
+       * pipeline a real CLI argv would. Mirrors the production sshOpenUrl
+       * → openDocument(cache_path) handoff (see Workspace.openPathOrUrl)
+       * so the resulting tab is byte-identical to what the user would get
+       * via the StartPage "Open from remote…" button. On failure we
+       * surface the verbatim transport stderr through the toast region
+       * (spec 21 host-key-changed / spec 24 askpass-cancel both poll
+       * `[data-region="toast"]`) and re-throw so callers see the
+       * rejection too.
+       */
+      async openSshUrl(url: string): Promise<void> {
+        try {
+          const summary = await tauriIpc.sshOpenUrl(url);
+          const outcome = await tauriIpc.openDocument(summary.path);
+          const setActive = (root as unknown as {
+            __mdv_setActive?: (o: typeof outcome) => void;
+          }).__mdv_setActive;
+          if (setActive) setActive(outcome);
+          if (workspace) await workspace.refresh();
+        } catch (err) {
+          // The transport's verbatim stderr (host-key-verification-failed,
+          // Permission denied, auth cancelled, etc.) is the user-visible
+          // contract. Dispatch a toast event so the global toast region
+          // (mounted in Workspace) can render it.
+          const message = err instanceof Error ? err.message : String(err);
+          document.dispatchEvent(
+            new CustomEvent('mdviewer:toast', { detail: { message } }),
+          );
+          throw err;
+        }
+      },
       async importComments(tabId: string, incomingPath: string): Promise<void> {
         await tauriIpc.importComments({ tabId, incomingPath });
         // Re-fetching threads happens lazily on the next refresh, but the
@@ -392,7 +424,10 @@ export async function main(): Promise<void> {
         document.dispatchEvent(new CustomEvent('mdviewer:open-file'));
         break;
       case 'save_file':
-        document.dispatchEvent(new CustomEvent('mdviewer:save-active'));
+        // B5: spec contract — specs 23/24 dispatch `mdviewer:save-document`
+        // to drive the save flow. Renamed from the legacy `save-active`
+        // name; the menu bridge converges on the same event name below.
+        document.dispatchEvent(new CustomEvent('mdviewer:save-document'));
         break;
       case 'toggle_edit':
         document.dispatchEvent(new CustomEvent('mdviewer:toggle-edit'));
