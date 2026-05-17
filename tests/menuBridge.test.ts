@@ -28,12 +28,13 @@ describe('menuBridge', () => {
     expect(Object.isFrozen(MENU_ACTION_TO_EVENT)).toBe(true);
   });
 
-  it('keymap save-file aliases to mdviewer:save-active', () => {
-    // The keymap's save action dispatches save-active; if the menu used a
-    // different event name the save handler would have to listen on two
-    // channels. This test pins the alias so the indirection stays
-    // intentional, not accidental.
-    expect(MENU_ACTION_TO_EVENT['save-file']).toBe('mdviewer:save-active');
+  it('keymap save-file aliases to mdviewer:save-document', () => {
+    // The keymap's save action dispatches mdviewer:save-document; if the menu
+    // used a different event name the save handler would have to listen on
+    // two channels. This test pins the alias so the indirection stays
+    // intentional, not accidental. (Event renamed from save-active to
+    // save-document in B5 to match the immutable e2e spec contract.)
+    expect(MENU_ACTION_TO_EVENT['save-file']).toBe('mdviewer:save-document');
   });
 
   it('File → "Open from remote…" maps to mdviewer:open-remote (B2)', () => {

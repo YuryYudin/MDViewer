@@ -287,7 +287,7 @@ describe('main()', () => {
     await main();
 
     const cases: Array<{ key: string; event: string }> = [
-      { key: 's', event: 'mdviewer:save-active' },
+      { key: 's', event: 'mdviewer:save-document' },
       { key: 'e', event: 'mdviewer:toggle-edit' },
       { key: 'm', event: 'mdviewer:comment-on-selection' },
       { key: 'b', event: 'mdviewer:toggle-sidebar' },
