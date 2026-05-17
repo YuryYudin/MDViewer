@@ -32,7 +32,13 @@ fn main() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let binaries_dir = manifest_dir.join("binaries");
     std::fs::create_dir_all(&binaries_dir).expect("create src-tauri/binaries dir");
-    let helper_dest = binaries_dir.join(format!("mdviewer-askpass-{}", target_triple));
+    // Windows targets need the `.exe` suffix — tauri_build's externalBin
+    // resolver appends it on Windows. Without it, Windows release builds
+    // fail with `resource path 'binaries\mdviewer-askpass-...exe' doesn't
+    // exist` even though the placeholder under `binaries/` is present.
+    let suffix = if target_triple.contains("windows") { ".exe" } else { "" };
+    let helper_dest =
+        binaries_dir.join(format!("mdviewer-askpass-{}{}", target_triple, suffix));
 
     // Tauri's `externalBin` codegen resolves the suffixed file at compile
     // time. A 0-byte placeholder satisfies the existence check; cargo builds

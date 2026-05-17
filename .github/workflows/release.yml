@@ -92,9 +92,12 @@ jobs:
         working-directory: src-tauri
         shell: bash
         run: |
+          # cargo runs from src-tauri but writes to the workspace's
+          # target/ directory at the repo root — hence the `../target/`
+          # prefix on the cp source path.
           cargo build --release --bin mdviewer-askpass --locked --target ${{ matrix.target }}
           mkdir -p binaries
-          cp target/${{ matrix.target }}/release/mdviewer-askpass \
+          cp ../target/${{ matrix.target }}/release/mdviewer-askpass \
              binaries/mdviewer-askpass-${{ matrix.target }}
 
       # tauri-action runs `tauri build`, picks up bundle.targets from
