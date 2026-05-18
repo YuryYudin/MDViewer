@@ -248,8 +248,60 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
+      # Write the smoke-test script to a file in $GITHUB_WORKSPACE. This
+      # sidesteps two reactivecircus/android-emulator-runner quirks:
+      # (1) its `script:` input runs each line via `sh -c`, so shell
+      # variables don't persist across lines; (2) the per-line `sh -c`
+      # doesn't surface the inner script's stderr in a way `gh run view`
+      # can render. Sourcing a single file via `bash <path>` keeps the
+      # whole script in one process, and the file path under
+      # $GITHUB_WORKSPACE stays accessible to the upload-artifact step.
+      - name: Write smoke-test script
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          cat > "$GITHUB_WORKSPACE/smoke-release-apk.sh" <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          REF_NAME="${REF_NAME:?REF_NAME not set}"
+          APK="android/app/build/outputs/apk/release/mdviewer-android-${REF_NAME}.apk"
+          LOG="${GITHUB_WORKSPACE}/release-apk-logcat.txt"
+
+          echo "Installing signed release APK: $APK"
+          ls -la "$APK"
+          adb install -r -t "$APK"
+          adb logcat -c
+
+          # am start -W waits for the activity to surface; the exit code
+          # only reflects launch dispatch, not eventual liveness — hence
+          # the 8-second wait + ps check below.
+          adb shell am start -W -n dev.mdviewer/.MainActivity
+          echo "Waiting 8s for first-paint / late-crash window…"
+          sleep 8
+          adb logcat -d -t 600 > "$LOG" 2>&1 || true
+
+          if adb shell 'ps -A | grep -w dev.mdviewer' | grep -q dev.mdviewer; then
+            echo "::notice::Signed release APK launched and stayed alive for 8s — smoke test PASS."
+            exit 0
+          fi
+
+          echo "::error::Signed release APK CRASHED within 8s of launch."
+          echo "--- LOGCAT (last 200 lines) ---"
+          tail -n 200 "$LOG" || true
+          echo "--- END LOGCAT ---"
+          if grep -q "FATAL EXCEPTION" "$LOG"; then
+            echo "--- FATAL EXCEPTION context ---"
+            grep -A 60 "FATAL EXCEPTION" "$LOG" || true
+            echo "--- END FATAL EXCEPTION context ---"
+          fi
+          exit 1
+          SCRIPT
+          chmod +x "$GITHUB_WORKSPACE/smoke-release-apk.sh"
+
       - name: Release-APK smoke test (emulator)
         uses: reactivecircus/android-emulator-runner@v2
+        env:
+          REF_NAME: ${{ github.ref_name }}
         with:
           api-level: 33
           target: google_apis
@@ -259,49 +311,15 @@ jobs:
           # runners; the smoke test doesn't need GPU rendering.
           emulator-options: -no-window -no-audio -no-snapshot -no-boot-anim -accel on -gpu swiftshader_indirect
           disable-animations: true
-          # NB: reactivecircus/android-emulator-runner runs each line of
-          # `script:` in its own `sh -c` invocation, so shell variables
-          # don't persist across lines. Wrap the whole thing in one
-          # `bash -c '…'` to keep variables alive AND get bash semantics.
-          script: |
-            bash -c '
-              set -euo pipefail
-              APK="android/app/build/outputs/apk/release/mdviewer-android-${{ github.ref_name }}.apk"
-              echo "Installing signed release APK: $APK"
-              ls -la "$APK"
-              adb install -r -t "$APK"
-              adb logcat -c
-              # `am start -W` waits for the activity to surface; its exit
-              # code reflects only the launch dispatch, not the eventual
-              # liveness — hence the 8-second wait + ps check below.
-              adb shell am start -W -n dev.mdviewer/.MainActivity
-              echo "Waiting 8s for first-paint / late-crash window…"
-              sleep 8
-              adb logcat -d -t 600 > /tmp/release-apk-logcat.txt 2>&1 || true
-              # Liveness: ps -A | grep returns 0 iff dev.mdviewer is alive.
-              if adb shell "ps -A | grep -w dev.mdviewer" | grep -q dev.mdviewer; then
-                echo "::notice::Signed release APK launched and stayed alive for 8s — smoke test PASS."
-              else
-                echo "::error::Signed release APK CRASHED within 8s of launch. Logcat tail:"
-                echo "--- LOGCAT (last 200 lines) ---"
-                tail -n 200 /tmp/release-apk-logcat.txt || true
-                echo "--- END LOGCAT ---"
-                if grep -q "FATAL EXCEPTION" /tmp/release-apk-logcat.txt; then
-                  echo "--- FATAL EXCEPTION context ---"
-                  grep -A 60 "FATAL EXCEPTION" /tmp/release-apk-logcat.txt || true
-                  echo "--- END FATAL EXCEPTION context ---"
-                fi
-                exit 1
-              fi
-            '
+          script: bash "$GITHUB_WORKSPACE/smoke-release-apk.sh"
 
       - name: Upload release-APK smoke logcat (always)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: release-apk-smoke-logcat
-          path: /tmp/release-apk-logcat.txt
-          if-no-files-found: ignore
+          path: ${{ github.workspace }}/release-apk-logcat.txt
+          if-no-files-found: warn
 
       # Append the APK to the SAME draft Release `tauri-action` creates
       # from the bundle matrix. `softprops/action-gh-release@v2` is
