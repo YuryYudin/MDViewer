@@ -259,38 +259,41 @@ jobs:
           # runners; the smoke test doesn't need GPU rendering.
           emulator-options: -no-window -no-audio -no-snapshot -no-boot-anim -accel on -gpu swiftshader_indirect
           disable-animations: true
+          # NB: reactivecircus/android-emulator-runner runs each line of
+          # `script:` in its own `sh -c` invocation, so shell variables
+          # don't persist across lines. Wrap the whole thing in one
+          # `bash -c '…'` to keep variables alive AND get bash semantics.
           script: |
-            set -e
-            APK="android/app/build/outputs/apk/release/mdviewer-android-${{ github.ref_name }}.apk"
-            echo "Installing signed release APK: $APK"
-            adb install -r -t "$APK"
-            adb logcat -c   # clear log so we capture only launch + first 8s
-            # The LAUNCHER activity is dev.mdviewer/.MainActivity per
-            # AndroidManifest.xml. `am start -W` waits for the activity
-            # to be visible; the exit code reflects whether the launch
-            # itself succeeded (not whether the app later crashes).
-            adb shell am start -W -n dev.mdviewer/.MainActivity
-            echo "Waiting 8s for first-paint / late-crash window…"
-            sleep 8
-            adb logcat -d -t 600 > /tmp/release-apk-logcat.txt 2>&1 || true
-            # Liveness check: pidof returns 0 iff the process is alive.
-            # Use `ps -A | grep` as a more portable fallback for older
-            # API levels that lack a fully-featured pidof.
-            if adb shell "ps -A | grep -w dev.mdviewer" | grep -q dev.mdviewer; then
-              echo "::notice::Signed release APK launched and stayed alive for 8s — smoke test PASS."
-            else
-              echo "::error::Signed release APK CRASHED within 8s of launch. Logcat tail:"
-              echo "--- LOGCAT (last 200 lines) ---"
-              tail -n 200 /tmp/release-apk-logcat.txt || true
-              echo "--- END LOGCAT ---"
-              # Surface the FATAL EXCEPTION block specifically if present.
-              if grep -q "FATAL EXCEPTION" /tmp/release-apk-logcat.txt; then
-                echo "--- FATAL EXCEPTION context ---"
-                grep -A 60 "FATAL EXCEPTION" /tmp/release-apk-logcat.txt || true
-                echo "--- END FATAL EXCEPTION context ---"
+            bash -c '
+              set -euo pipefail
+              APK="android/app/build/outputs/apk/release/mdviewer-android-${{ github.ref_name }}.apk"
+              echo "Installing signed release APK: $APK"
+              ls -la "$APK"
+              adb install -r -t "$APK"
+              adb logcat -c
+              # `am start -W` waits for the activity to surface; its exit
+              # code reflects only the launch dispatch, not the eventual
+              # liveness — hence the 8-second wait + ps check below.
+              adb shell am start -W -n dev.mdviewer/.MainActivity
+              echo "Waiting 8s for first-paint / late-crash window…"
+              sleep 8
+              adb logcat -d -t 600 > /tmp/release-apk-logcat.txt 2>&1 || true
+              # Liveness: ps -A | grep returns 0 iff dev.mdviewer is alive.
+              if adb shell "ps -A | grep -w dev.mdviewer" | grep -q dev.mdviewer; then
+                echo "::notice::Signed release APK launched and stayed alive for 8s — smoke test PASS."
+              else
+                echo "::error::Signed release APK CRASHED within 8s of launch. Logcat tail:"
+                echo "--- LOGCAT (last 200 lines) ---"
+                tail -n 200 /tmp/release-apk-logcat.txt || true
+                echo "--- END LOGCAT ---"
+                if grep -q "FATAL EXCEPTION" /tmp/release-apk-logcat.txt; then
+                  echo "--- FATAL EXCEPTION context ---"
+                  grep -A 60 "FATAL EXCEPTION" /tmp/release-apk-logcat.txt || true
+                  echo "--- END FATAL EXCEPTION context ---"
+                fi
+                exit 1
               fi
-              exit 1
-            fi
+            '
 
       - name: Upload release-APK smoke logcat (always)
         if: always()
