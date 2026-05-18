@@ -229,6 +229,77 @@ jobs:
           mv android/app/build/outputs/apk/release/app-release.apk \
              "android/app/build/outputs/apk/release/mdviewer-android-${{ github.ref_name }}.apk"
 
+      # Release-APK smoke test on an emulator. The signed release APK
+      # differs from the debug APK in two material ways that the existing
+      # android.yml emulator job can't catch:
+      #   (1) R8 minification + ProGuard rules — a missing keep rule
+      #       NoSuchMethodErrors only at release-build runtime;
+      #   (2) signed release signingConfig — the wrong keystore alias or
+      #       a stale signing config crashes on first launch with a
+      #       crypto error.
+      # This step boots an emulator (KVM-accelerated), installs the
+      # signed APK, launches the LAUNCHER activity, waits 8s, then asserts
+      # the app process is still alive. Captures logcat as an artifact
+      # for post-mortem either way. Failure here BLOCKS Firebase
+      # distribution — we don't want to ship a crashing APK to testers.
+      - name: Enable KVM for emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Release-APK smoke test (emulator)
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 33
+          target: google_apis
+          arch: x86_64
+          profile: pixel_4
+          # Disable hardware acceleration features that flake on CI
+          # runners; the smoke test doesn't need GPU rendering.
+          emulator-options: -no-window -no-audio -no-snapshot -no-boot-anim -accel on -gpu swiftshader_indirect
+          disable-animations: true
+          script: |
+            set -e
+            APK="android/app/build/outputs/apk/release/mdviewer-android-${{ github.ref_name }}.apk"
+            echo "Installing signed release APK: $APK"
+            adb install -r -t "$APK"
+            adb logcat -c   # clear log so we capture only launch + first 8s
+            # The LAUNCHER activity is dev.mdviewer/.MainActivity per
+            # AndroidManifest.xml. `am start -W` waits for the activity
+            # to be visible; the exit code reflects whether the launch
+            # itself succeeded (not whether the app later crashes).
+            adb shell am start -W -n dev.mdviewer/.MainActivity
+            echo "Waiting 8s for first-paint / late-crash window…"
+            sleep 8
+            adb logcat -d -t 600 > /tmp/release-apk-logcat.txt 2>&1 || true
+            # Liveness check: pidof returns 0 iff the process is alive.
+            # Use `ps -A | grep` as a more portable fallback for older
+            # API levels that lack a fully-featured pidof.
+            if adb shell "ps -A | grep -w dev.mdviewer" | grep -q dev.mdviewer; then
+              echo "::notice::Signed release APK launched and stayed alive for 8s — smoke test PASS."
+            else
+              echo "::error::Signed release APK CRASHED within 8s of launch. Logcat tail:"
+              echo "--- LOGCAT (last 200 lines) ---"
+              tail -n 200 /tmp/release-apk-logcat.txt || true
+              echo "--- END LOGCAT ---"
+              # Surface the FATAL EXCEPTION block specifically if present.
+              if grep -q "FATAL EXCEPTION" /tmp/release-apk-logcat.txt; then
+                echo "--- FATAL EXCEPTION context ---"
+                grep -A 60 "FATAL EXCEPTION" /tmp/release-apk-logcat.txt || true
+                echo "--- END FATAL EXCEPTION context ---"
+              fi
+              exit 1
+            fi
+
+      - name: Upload release-APK smoke logcat (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-apk-smoke-logcat
+          path: /tmp/release-apk-logcat.txt
+          if-no-files-found: ignore
+
       # Append the APK to the SAME draft Release `tauri-action` creates
       # from the bundle matrix. `softprops/action-gh-release@v2` is
       # idempotent — if the bundle matrix wins the race and creates the
