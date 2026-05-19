@@ -132,6 +132,30 @@ android {
                 keyAlias = System.getenv("ANDROID_RELEASE_KEY_ALIAS")
                 keyPassword = System.getenv("ANDROID_RELEASE_KEY_PASSWORD")
             } else {
+                // Guard against the v0.4.2–v0.4.9 footgun: if a release task is
+                // requested on CI and the secret isn't wired, FAIL LOUDLY rather
+                // than silently fall back to the committed debug keystore.
+                // Firebase App Distribution's AppTester refuses to install APKs
+                // signed with the well-known default Android Studio debug cert
+                // (SHA-1 3b0439cf… — identical across every developer's machine
+                // worldwide, so the cert grants no provenance). Local
+                // `assembleRelease` without CI=true keeps the debug fallback so
+                // contributors can still smoke a release build locally.
+                val isCi = System.getenv("CI") == "true" ||
+                    System.getenv("GITHUB_ACTIONS") == "true"
+                val wantsRelease = gradle.startParameter.taskNames.any {
+                    it.contains("Release", ignoreCase = true)
+                }
+                if (isCi && wantsRelease) {
+                    throw GradleException(
+                        "ANDROID_RELEASE_KEYSTORE_BASE64 is empty in a CI release " +
+                            "build. Refusing to fall back to the committed debug " +
+                            "keystore — Firebase App Distribution rejects APKs " +
+                            "signed with the default Android Studio debug cert. " +
+                            "Provision the four ANDROID_RELEASE_* secrets in the " +
+                            "firebase-distribution environment.",
+                    )
+                }
                 logger.warn(
                     "ANDROID_RELEASE_KEYSTORE_BASE64 not set — release build will " +
                         "fall back to debug signing. CI must export the release " +

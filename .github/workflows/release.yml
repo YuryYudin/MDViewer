@@ -229,6 +229,36 @@ jobs:
           mv android/app/build/outputs/apk/release/app-release.apk \
              "android/app/build/outputs/apk/release/mdviewer-android-${{ github.ref_name }}.apk"
 
+      # Block the v0.4.2–v0.4.9 footgun before it can reach testers again.
+      # Each of those releases shipped an APK signed with the well-known
+      # default Android Studio debug cert because the gradle release-signing
+      # block silently fell back to `keystore/debug.keystore` when the
+      # ANDROID_RELEASE_KEYSTORE_BASE64 secret was missing. Firebase App
+      # Distribution's AppTester refuses to install APKs signed with that
+      # cert (the cert is identical across every developer's machine, so
+      # it grants no provenance) — tester-visible "install failed". The
+      # gradle-side guard in app/build.gradle.kts now throws on CI without
+      # the secret, but this step is a belt-and-braces check: even if some
+      # future variant bypasses gradle's signing config, an APK signed by
+      # `CN=Android Debug` fails the build before the smoke step runs.
+      - name: Verify APK is release-signed (reject debug cert)
+        run: |
+          set -euo pipefail
+          APKSIGNER="$(find "$ANDROID_SDK_ROOT/build-tools" -name apksigner -type f | sort -V | tail -1)"
+          APK="android/app/build/outputs/apk/release/mdviewer-android-${{ github.ref_name }}.apk"
+          if [ -z "$APKSIGNER" ]; then
+            echo "::error::apksigner not found under \$ANDROID_SDK_ROOT/build-tools"
+            exit 1
+          fi
+          CERT_DN="$("$APKSIGNER" verify --print-certs "$APK" 2>&1 | grep -m1 'Signer #1 certificate DN' || true)"
+          echo "APK signer DN: $CERT_DN"
+          if echo "$CERT_DN" | grep -qE 'CN=Android Debug'; then
+            echo "::error::APK is signed with the default Android Studio debug cert."
+            echo "::error::Firebase App Distribution rejects this — see android/app/build.gradle.kts release signingConfig."
+            echo "::error::Provision ANDROID_RELEASE_KEYSTORE_BASE64 (+ password/alias/key-password) in the firebase-distribution environment."
+            exit 1
+          fi
+
       # Release-APK smoke test on an emulator. The signed release APK
       # differs from the debug APK in two material ways that the existing
       # android.yml emulator job can't catch:
