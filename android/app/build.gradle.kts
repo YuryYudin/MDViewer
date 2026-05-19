@@ -123,9 +123,17 @@ android {
         create("release") {
             val ksB64 = System.getenv("ANDROID_RELEASE_KEYSTORE_BASE64")
             if (!ksB64.isNullOrBlank()) {
+                // Use the MIME decoder, not the strict RFC 4648 decoder
+                // (`Base64.getDecoder()`). `base64 mdviewer-release.jks`
+                // emits a 76-char-wrapped output by default on macOS/Linux,
+                // and those embedded newlines survive into a GitHub secret.
+                // The strict decoder rejects whitespace with
+                // `IllegalArgumentException: Input byte array has incorrect
+                // ending byte` — caught us once on v0.4.11. MIME decoder
+                // ignores CR/LF and is RFC-compliant for our use case.
                 val tmp = layout.buildDirectory.file("release-keystore.jks").get().asFile.apply {
                     parentFile.mkdirs()
-                    writeBytes(Base64.getDecoder().decode(ksB64))
+                    writeBytes(Base64.getMimeDecoder().decode(ksB64))
                 }
                 storeFile = tmp
                 storePassword = System.getenv("ANDROID_RELEASE_KEYSTORE_PASSWORD")
