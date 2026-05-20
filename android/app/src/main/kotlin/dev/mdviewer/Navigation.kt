@@ -1,5 +1,6 @@
 package dev.mdviewer
 
+import android.content.Intent
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -71,6 +72,28 @@ fun MdviewerNavHost(controller: NavHostController, startDestination: String) {
                 factory = RecentsViewModelFactory(ctx),
             )
             RecentsScreen(vm) { uri ->
+                // Persist the SAF read grant NOW, while we're still in the
+                // composition that received the ACTION_OPEN_DOCUMENT result
+                // and the activity-scoped temp grant is still active.
+                // Deferring this to DocumentRepository.readDocument breaks
+                // on providers like Google Drive's StorageBackend that
+                // require an explicitly-persisted grant before serving
+                // openInputStream — without this, the user sees
+                // "Permission Denial: ... requires that you obtain access
+                // using ACTION_OPEN_DOCUMENT or related APIs" even though
+                // the picker just succeeded. Transient URIs that refuse
+                // persistence (e.g. share-intent producers) throw
+                // SecurityException; the downstream read will surface a
+                // cleaner error if so.
+                try {
+                    ctx.contentResolver.takePersistableUriPermission(
+                        uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                    )
+                } catch (_: SecurityException) {
+                    // Transient grant; let readDocument's fallback path
+                    // handle reporting.
+                }
                 controller.navigate(
                     Routes.document(android.net.Uri.encode(uri.toString())),
                 )

@@ -1,5 +1,6 @@
 package dev.mdviewer
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -75,8 +76,28 @@ class MainActivity : ComponentActivity() {
      * as path separators by the route matcher.
      */
     private fun routeFor(destination: NavDestination): String = when (destination) {
-        is NavDestination.Document ->
+        is NavDestination.Document -> {
+            // Persist the read grant before the URI is round-tripped
+            // through a nav-arg string. The temp grant from the
+            // delivering Intent is alive on THIS activity's onCreate,
+            // but our destination composable re-parses the URI from a
+            // string and Drive's StorageBackend rejects reads that
+            // can't find an explicitly-persisted grant by URI string.
+            // See the matching fix in Navigation.kt's RecentsScreen
+            // onOpen callback for the picker-driven path.
+            try {
+                contentResolver.takePersistableUriPermission(
+                    destination.uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+            } catch (_: SecurityException) {
+                // External-sender ACTION_VIEW intents (file managers,
+                // chat apps) often deliver transient URIs that can't
+                // be persisted. readDocument's open() path still tries
+                // a fresh take + reports a clean error on failure.
+            }
             Routes.document(android.net.Uri.encode(destination.uri.toString()))
+        }
         NavDestination.ProfileSetup -> Routes.ProfileSetup
         NavDestination.Recents -> Routes.Recents
     }
