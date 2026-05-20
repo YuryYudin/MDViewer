@@ -250,8 +250,24 @@ jobs:
             echo "::error::apksigner not found under \$ANDROID_SDK_ROOT/build-tools"
             exit 1
           fi
-          CERT_DN="$("$APKSIGNER" verify --print-certs "$APK" 2>&1 | grep -m1 'Signer #1 certificate DN' || true)"
+          # `apksigner verify --print-certs` writes the Signer DN line to
+          # STDOUT, but a sibling warning line may land on STDERR — the v0.4.12
+          # run captured an empty CERT_DN because the grep ran before stderr
+          # was redirected reliably. Empty DN means "we couldn't even READ the
+          # cert" and must be a hard failure, otherwise the inner debug-cert
+          # check silently no-ops and any cert (including the default debug
+          # one) sails through. Capture stdout+stderr together, require a
+          # non-empty DN, AND match the debug-cert pattern.
+          APKSIG_OUT="$("$APKSIGNER" verify --print-certs "$APK" 2>&1)"
+          CERT_DN="$(echo "$APKSIG_OUT" | grep -m1 'Signer #1 certificate DN' || true)"
           echo "APK signer DN: $CERT_DN"
+          if [ -z "$CERT_DN" ]; then
+            echo "::error::apksigner did not report a Signer #1 DN — cannot verify the APK is release-signed."
+            echo "--- apksigner full output (for debugging) ---"
+            echo "$APKSIG_OUT"
+            echo "--- end apksigner output ---"
+            exit 1
+          fi
           if echo "$CERT_DN" | grep -qE 'CN=Android Debug'; then
             echo "::error::APK is signed with the default Android Studio debug cert."
             echo "::error::Firebase App Distribution rejects this — see android/app/build.gradle.kts release signingConfig."
