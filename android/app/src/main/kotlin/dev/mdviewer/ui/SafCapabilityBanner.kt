@@ -57,14 +57,21 @@ import dev.mdviewer.saf.SidecarMirror
 import kotlinx.coroutines.launch
 
 @Composable
-fun SafCapabilityBanner(onTap: () -> Unit = {}) {
+fun SafCapabilityBanner(
+    onTap: () -> Unit = {},
+    text: String = "Comments saved on device — tap to share back",
+    interactive: Boolean = true,
+) {
+    val base = Modifier
+        .fillMaxWidth()
+        .background(Color(0xFFFFF3CD))
     Text(
-        text = "Comments saved on device — tap to share back",
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(Color(0xFFFFF3CD))
-            .clickable(onClick = onTap)
-            .padding(12.dp),
+        text = text,
+        modifier = if (interactive) {
+            base.clickable(onClick = onTap).padding(12.dp)
+        } else {
+            base.padding(12.dp)
+        },
     )
 }
 
@@ -143,6 +150,19 @@ fun SafCapabilityBannerWithPromote(
         }
     }
 
+    // v0.4.18: Google Drive's storage provider does NOT support
+    // ACTION_OPEN_DOCUMENT_TREE — only ACTION_OPEN_DOCUMENT (single-file).
+    // Drive deliberately excludes itself from the tree picker because
+    // tree-style folder grants don't fit its offline-sync model. The
+    // user-visible bug (v0.4.17): the bottom-sheet "Grant access" button
+    // opened a tree picker showing only local folders, no Drive.
+    // Detecting Drive URIs by authority and skipping the sheet entirely
+    // — with banner copy that names the limitation honestly — is the
+    // best we can do without OAuth + Drive REST API (out of scope per
+    // the design doc's non-goals; would land in v2).
+    val docAuthority = docUri.authority.orEmpty()
+    val isDrive = docAuthority.startsWith("com.google.android.apps.docs")
+
     // v0.4.17: gate between the bottom-sheet (first contact for this doc)
     // and the always-on banner (after the sheet has been dismissed). The
     // Android design doc names the bottom-sheet as the primary surface —
@@ -171,10 +191,15 @@ fun SafCapabilityBannerWithPromote(
     // doc's parent URI as a hint would require resolving the parent
     // tree URI from the document URI, which is what the user is being
     // asked to grant in the first place — a chicken-and-egg setup.
-    if (asked) {
-        SafCapabilityBanner(onTap = { launcher.launch(null) })
-    } else {
-        GrantFolderAccessSheet(
+    when {
+        isDrive -> SafCapabilityBanner(
+            text = "Comments saved on this device. Google Drive doesn't support " +
+                "folder access from third-party apps, so comments can't sync back " +
+                "to the same folder as the document.",
+            interactive = false,
+        )
+        asked -> SafCapabilityBanner(onTap = { launcher.launch(null) })
+        else -> GrantFolderAccessSheet(
             docFilename = docFilename,
             onGrant = {
                 recordAsked()

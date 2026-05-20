@@ -171,15 +171,68 @@ class SelectionBridgeTest {
     }
 
     @Test
-    fun suppressing_action_mode_callback_returns_false_on_create() {
+    fun selectionchange_with_js_supplied_rect_publishes_with_rect() = runTest {
+        // v0.4.17 added a JS-bridge rect channel because the
+        // SuppressingActionModeCallback path didn't fire on user devices
+        // (selection was being cancelled before onGetContentRect could
+        // run). The JS bridge now ships the rect inline with the
+        // selectionchange message; the bridge must lift it onto the
+        // published Selection without needing the ActionMode path to
+        // also fire. Regression guard: if a future "simplification"
+        // drops the rect param from JsMessage.SelectionChanged, this
+        // test catches it before the popover silently stops rendering.
+        val bridge = SelectionBridge()
+        val rect = Rect(11, 22, 33, 44)
+        bridge.onJsMessage(
+            JsMessage.SelectionChanged(
+                text = "x",
+                srcStart = 0,
+                srcEnd = 1,
+                rect = rect,
+            ),
+        )
+
+        val event = bridge.state.first { it is SelectionEvent.Updated }
+        assertEquals(rect, (event as SelectionEvent.Updated).selection.rect)
+    }
+
+    @Test
+    fun js_bridge_parses_rect_keys_when_present() {
+        val received = mutableListOf<JsMessage>()
+        val js = SelectionJsBridge { received += it }
+        js.onMessage(
+            """
+            {"kind":"selectionchange","text":"x","srcStart":0,"srcEnd":1,
+             "rectLeft":11,"rectTop":22,"rectWidth":22,"rectHeight":22}
+            """.trimIndent(),
+        )
+        val expected = JsMessage.SelectionChanged(
+            text = "x", srcStart = 0, srcEnd = 1,
+            // rectWidth=22 → right = 11+22 = 33; rectHeight=22 → bottom = 22+22 = 44.
+            rect = Rect(11, 22, 33, 44),
+        )
+        assertEquals(listOf<JsMessage>(expected), received)
+    }
+
+    @Test
+    fun suppressing_action_mode_callback_keeps_selection_alive() {
         val bridge = SelectionBridge()
         val cb = SuppressingActionModeCallback(bridge)
 
-        // The whole point of Callback2 here is to suppress the system menu
-        // by short-circuiting onCreateActionMode + onPrepareActionMode so
-        // the WebView never gets to populate Copy / Share / Web Search.
-        assertEquals(false, cb.onCreateActionMode(null, null))
-        assertEquals(false, cb.onPrepareActionMode(null, null))
+        // REGRESSION GUARD (v0.4.17 → v0.4.18). onCreateActionMode MUST
+        // return true: WebView ties its text-selection lifetime to the
+        // ActionMode on most Android implementations, so a false return
+        // aborts BOTH the ActionMode and the underlying selection —
+        // user-visible as "long-press blinks and disappears", as
+        // reproduced on the v0.4.17 release. Menu suppression now
+        // happens via the menu?.clear() call inside the callback (a
+        // real Menu mock that asserts the clear() invocation would
+        // require stubbing Menu's 20+ method surface — disproportionate
+        // for the regression risk, since menu visibility is a visual
+        // verification anyway). The return-value contract is the
+        // load-bearing invariant.
+        assertEquals(true, cb.onCreateActionMode(null, null))
+        assertEquals(true, cb.onPrepareActionMode(null, null))
         assertEquals(false, cb.onActionItemClicked(null, null))
     }
 

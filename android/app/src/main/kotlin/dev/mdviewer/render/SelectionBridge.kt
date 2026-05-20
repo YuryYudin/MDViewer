@@ -227,9 +227,36 @@ class SelectionBridge {
 class SuppressingActionModeCallback(
     private val bridge: SelectionBridge,
 ) : ActionMode.Callback2() {
-    override fun onCreateActionMode(mode: ActionMode?, menu: Menu?): Boolean = false
+    /**
+     * MUST return true so the WebView keeps the underlying text selection
+     * alive. Returning false aborts the ActionMode, and the WebView's
+     * selection lifetime is tied to it on most Android implementations —
+     * the user sees the highlight "blink" and immediately disappear,
+     * which is exactly the v0.4.17 user-visible regression
+     * (issue: "selection still blinks and doesn't do anything").
+     *
+     * To still suppress the visible Copy / Share / Web Search bar we
+     * clear the menu in place. An action mode with an empty menu renders
+     * as an invisible no-op floating bar on most themes from Android 8.0+
+     * (the system collapses zero-item bars). The selection stays
+     * highlighted and onGetContentRect / our JS-bridge selectionchange
+     * path both fire normally.
+     */
+    override fun onCreateActionMode(mode: ActionMode?, menu: Menu?): Boolean {
+        menu?.clear()
+        return true
+    }
 
-    override fun onPrepareActionMode(mode: ActionMode?, menu: Menu?): Boolean = false
+    /**
+     * Re-clear on every prepare in case some platform code repopulates
+     * the menu after onCreateActionMode. Returning true tells the system
+     * the menu was modified so it re-measures the (empty) bar instead of
+     * reusing the previous layout.
+     */
+    override fun onPrepareActionMode(mode: ActionMode?, menu: Menu?): Boolean {
+        menu?.clear()
+        return true
+    }
 
     override fun onActionItemClicked(mode: ActionMode?, item: MenuItem?): Boolean = false
 
