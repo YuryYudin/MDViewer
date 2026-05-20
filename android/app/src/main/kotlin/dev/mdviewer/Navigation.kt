@@ -78,30 +78,56 @@ fun MdviewerNavHost(controller: NavHostController, startDestination: String) {
                 // Deferring this to DocumentRepository.readDocument breaks
                 // on providers like Google Drive's StorageBackend that
                 // require an explicitly-persisted grant before serving
-                // openInputStream — without this, the user sees
-                // "Permission Denial: ... requires that you obtain access
-                // using ACTION_OPEN_DOCUMENT or related APIs" even though
-                // the picker just succeeded. Transient URIs that refuse
-                // persistence (e.g. share-intent producers) throw
-                // SecurityException; the downstream read will surface a
-                // cleaner error if so.
+                // openInputStream.
+                //
+                // v0.4.16 diagnostic: a Toast surfaces the SecurityException
+                // message on failure so we can see WHY persist fails on
+                // user devices (the v0.4.15 silent-catch hid this). A
+                // failure here doesn't block navigation — the downstream
+                // read will produce a cleaner error if needed.
                 try {
                     ctx.contentResolver.takePersistableUriPermission(
                         uri,
                         Intent.FLAG_GRANT_READ_URI_PERMISSION,
                     )
-                } catch (_: SecurityException) {
-                    // Transient grant; let readDocument's fallback path
-                    // handle reporting.
+                } catch (e: SecurityException) {
+                    android.widget.Toast.makeText(
+                        ctx,
+                        "Persist failed: ${e.message ?: e.javaClass.simpleName}",
+                        android.widget.Toast.LENGTH_LONG,
+                    ).show()
                 }
+                // v0.4.16: pass the Uri as a Parcelable through
+                // SavedStateHandle on the CURRENT back-stack entry. The
+                // Document destination picks it up via previousBackStackEntry.
+                // This skips the encode-toString/decode-parse round-trip
+                // that previously stringified the URI through the route
+                // path arg — a subtle canonicalization difference there
+                // (especially under MIUI's framework variations) was the
+                // remaining suspect for why Drive's provider couldn't
+                // reconcile the post-roundtrip URI against its own grant
+                // store. Route arg stays as a fallback so the destination
+                // composable's signature doesn't change.
+                controller.currentBackStackEntry
+                    ?.savedStateHandle?.set("pickerUri", uri)
                 controller.navigate(
                     Routes.document(android.net.Uri.encode(uri.toString())),
                 )
             }
         }
         composable(Routes.Document) { entry ->
-            val encoded = entry.arguments?.getString("uri") ?: return@composable
-            val uri = android.net.Uri.parse(android.net.Uri.decode(encoded))
+            // Prefer the Parcelable URI stashed by the previous destination
+            // (RecentsScreen picker callback or MainActivity intent
+            // dispatch) — that bypasses the string encode/decode round-trip
+            // entirely. Fall back to the route arg for back-stack restore
+            // and any future entrypoint that hasn't been migrated.
+            val pickedUri: android.net.Uri? = controller.previousBackStackEntry
+                ?.savedStateHandle?.get<android.net.Uri>("pickerUri")
+            val uri = pickedUri ?: run {
+                val encoded = entry.arguments?.getString("uri")
+                    ?: return@composable
+                android.net.Uri.parse(android.net.Uri.decode(encoded))
+            }
             val ctx = LocalContext.current
             // E2: theme is now provided via LocalHtmlTheme by MdviewerApp,
             // which derives it from the persisted SettingsStore preference

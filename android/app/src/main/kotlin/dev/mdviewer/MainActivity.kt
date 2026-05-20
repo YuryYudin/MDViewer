@@ -90,11 +90,18 @@ class MainActivity : ComponentActivity() {
                     destination.uri,
                     Intent.FLAG_GRANT_READ_URI_PERMISSION,
                 )
-            } catch (_: SecurityException) {
+            } catch (e: SecurityException) {
                 // External-sender ACTION_VIEW intents (file managers,
-                // chat apps) often deliver transient URIs that can't
-                // be persisted. readDocument's open() path still tries
-                // a fresh take + reports a clean error on failure.
+                // chat apps) often deliver transient URIs that can't be
+                // persisted. v0.4.16 surfaces the message via Toast so
+                // user reports tell us whether persistence is failing
+                // (Drive flow regression) or just absent (transient
+                // share-intent producer).
+                android.widget.Toast.makeText(
+                    this,
+                    "Intent persist failed: ${e.message ?: e.javaClass.simpleName}",
+                    android.widget.Toast.LENGTH_LONG,
+                ).show()
             }
             Routes.document(android.net.Uri.encode(destination.uri.toString()))
         }
