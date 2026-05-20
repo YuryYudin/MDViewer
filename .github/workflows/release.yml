@@ -259,7 +259,12 @@ jobs:
           # one) sails through. Capture stdout+stderr together, require a
           # non-empty DN, AND match the debug-cert pattern.
           APKSIG_OUT="$("$APKSIGNER" verify --print-certs "$APK" 2>&1)"
-          CERT_DN="$(echo "$APKSIG_OUT" | grep -m1 'Signer #1 certificate DN' || true)"
+          # apksigner's "Signer DN" line format depends on build-tools version:
+          #   build-tools <= 34: `Signer #1 certificate DN: CN=...`
+          #   build-tools >= 35: `V2 Signer: certificate DN: CN=...`
+          # Match by the stable suffix `certificate DN:` to handle both
+          # (v0.4.13 ran on the newer format and the old regex no-matched).
+          CERT_DN="$(echo "$APKSIG_OUT" | grep -m1 'certificate DN:' || true)"
           echo "APK signer DN: $CERT_DN"
           if [ -z "$CERT_DN" ]; then
             echo "::error::apksigner did not report a Signer #1 DN — cannot verify the APK is release-signed."
