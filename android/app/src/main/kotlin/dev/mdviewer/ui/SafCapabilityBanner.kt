@@ -42,12 +42,15 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import dev.mdviewer.data.SettingsStore
 import dev.mdviewer.saf.SaveSidecarToSource
 import dev.mdviewer.saf.Sidecar
 import dev.mdviewer.saf.SidecarMirror
@@ -140,9 +143,44 @@ fun SafCapabilityBannerWithPromote(
         }
     }
 
+    // v0.4.17: gate between the bottom-sheet (first contact for this doc)
+    // and the always-on banner (after the sheet has been dismissed). The
+    // Android design doc names the bottom-sheet as the primary surface —
+    // the persistent banner is the fallback for the declined state. Keying
+    // by URI-hash means the same doc, picked again on a future open, does
+    // NOT re-prompt; switching to a different doc re-prompts because each
+    // open is a fresh consent moment. SHA-256 + Base64-URL keeps the
+    // preferences file from carrying clear-text Drive doc IDs.
+    val settings = remember(ctx) { SettingsStore(ctx.applicationContext) }
+    val askedSet by settings.grantPromoAsked.collectAsState(initial = emptySet())
+    val uriHash = remember(docUri) {
+        val sha = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(docUri.toString().toByteArray(Charsets.UTF_8))
+        android.util.Base64.encodeToString(
+            sha,
+            android.util.Base64.URL_SAFE or android.util.Base64.NO_PADDING or android.util.Base64.NO_WRAP,
+        )
+    }
+    val asked = uriHash in askedSet
+    val recordAsked = {
+        scope.launch { settings.recordGrantPromoAsked(uriHash) }
+        Unit
+    }
+
     // null = let the picker open at the default location. Passing the
     // doc's parent URI as a hint would require resolving the parent
     // tree URI from the document URI, which is what the user is being
     // asked to grant in the first place — a chicken-and-egg setup.
-    SafCapabilityBanner(onTap = { launcher.launch(null) })
+    if (asked) {
+        SafCapabilityBanner(onTap = { launcher.launch(null) })
+    } else {
+        GrantFolderAccessSheet(
+            docFilename = docFilename,
+            onGrant = {
+                recordAsked()
+                launcher.launch(null)
+            },
+            onDismiss = { recordAsked() },
+        )
+    }
 }

@@ -34,6 +34,7 @@ import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStoreFile
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -78,6 +79,13 @@ class SettingsStore(
     private val sidecarPatternKey = stringPreferencesKey("sidecar_pattern")
     private val showResolvedKey = booleanPreferencesKey("show_resolved")
 
+    // v0.4.17: tracks doc-URI hashes for which the user has already seen
+    // the "grant folder access?" bottom-sheet, so it doesn't re-prompt on
+    // every reopen of the same SingleUri document. Hashed (SHA-256, base64)
+    // rather than stored verbatim because Drive URIs include opaque doc-id
+    // strings we don't want to persist in the preferences file in clear.
+    private val promoAskedKey = stringSetPreferencesKey("grant_folder_promo_asked")
+
     /**
      * Theme as a Flow. Falls back to [ThemeMode.FollowSystem] on absent
      * keys AND on values we don't recognise — the latter keeps a forward-
@@ -118,6 +126,27 @@ class SettingsStore(
 
     suspend fun setSidecarPattern(pattern: String) {
         store.edit { it[sidecarPatternKey] = pattern }
+    }
+
+    /**
+     * Set of doc-URI hashes for which the grant-folder-access bottom-sheet
+     * has already been shown (regardless of user choice). Used by
+     * DocumentScreen to decide between sheet-on-first-open and the
+     * persistent "Comments saved on device" banner on later opens.
+     */
+    val grantPromoAsked: Flow<Set<String>> = store.data.map { prefs ->
+        prefs[promoAskedKey] ?: emptySet()
+    }
+
+    /**
+     * Record that the user has seen the grant-folder-access prompt for the
+     * given URI. Safe to call concurrently; DataStore serializes writes.
+     */
+    suspend fun recordGrantPromoAsked(uriHash: String) {
+        store.edit { prefs ->
+            val current = prefs[promoAskedKey] ?: emptySet()
+            prefs[promoAskedKey] = current + uriHash
+        }
     }
 
     suspend fun setShowResolved(value: Boolean) {

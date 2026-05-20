@@ -80,22 +80,17 @@ fun MdviewerNavHost(controller: NavHostController, startDestination: String) {
                 // require an explicitly-persisted grant before serving
                 // openInputStream.
                 //
-                // v0.4.16 diagnostic: a Toast surfaces the SecurityException
-                // message on failure so we can see WHY persist fails on
-                // user devices (the v0.4.15 silent-catch hid this). A
-                // failure here doesn't block navigation — the downstream
-                // read will produce a cleaner error if needed.
                 try {
                     ctx.contentResolver.takePersistableUriPermission(
                         uri,
                         Intent.FLAG_GRANT_READ_URI_PERMISSION,
                     )
-                } catch (e: SecurityException) {
-                    android.widget.Toast.makeText(
-                        ctx,
-                        "Persist failed: ${e.message ?: e.javaClass.simpleName}",
-                        android.widget.Toast.LENGTH_LONG,
-                    ).show()
+                } catch (_: SecurityException) {
+                    // Transient grant; let readDocument's fallback path
+                    // handle reporting. The v0.4.16 Toast was a one-shot
+                    // diagnostic that's no longer needed now that the
+                    // SavedStateHandle URI transport eliminated the
+                    // string-roundtrip regression class.
                 }
                 // v0.4.16: pass the Uri as a Parcelable through
                 // SavedStateHandle on the CURRENT back-stack entry. The

@@ -92,7 +92,31 @@ class SelectionJsBridge(
                     ?: return@runCatching null
                 val srcEnd = (obj["srcEnd"] as? JsonPrimitive)?.intOrNull
                     ?: return@runCatching null
-                JsMessage.SelectionChanged(text = text, srcStart = srcStart, srcEnd = srcEnd)
+                // Optional rect (added in v0.4.17). Older bridge.js builds
+                // omit the four rect* keys; treat null as "no rect from JS"
+                // and let the JVM fall back to ActionMode.onGetContentRect
+                // if that ever fires again.
+                val rectLeft = (obj["rectLeft"] as? JsonPrimitive)?.intOrNull
+                val rectTop = (obj["rectTop"] as? JsonPrimitive)?.intOrNull
+                val rectWidth = (obj["rectWidth"] as? JsonPrimitive)?.intOrNull
+                val rectHeight = (obj["rectHeight"] as? JsonPrimitive)?.intOrNull
+                val rect = if (
+                    rectLeft != null && rectTop != null &&
+                    rectWidth != null && rectHeight != null
+                ) {
+                    android.graphics.Rect(
+                        rectLeft,
+                        rectTop,
+                        rectLeft + rectWidth,
+                        rectTop + rectHeight,
+                    )
+                } else null
+                JsMessage.SelectionChanged(
+                    text = text,
+                    srcStart = srcStart,
+                    srcEnd = srcEnd,
+                    rect = rect,
+                )
             }
             "highlightTap" -> {
                 val tid = (obj["threadId"] as? JsonPrimitive)?.contentOrNull

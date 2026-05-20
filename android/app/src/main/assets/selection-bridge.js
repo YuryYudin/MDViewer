@@ -107,11 +107,30 @@
             return;
         }
 
+        // Bridge the selection's bounding-rect to the JVM in device pixels.
+        // The original v0.4.x design relied on
+        // ActionMode.Callback2.onGetContentRect, but our
+        // SuppressingActionModeCallback returns false from
+        // onCreateActionMode (to kill the system Copy/Share menu), which
+        // prevents the action mode from starting at all — so
+        // onGetContentRect never fires and the popover anchor stayed null.
+        // getBoundingClientRect() runs against the live Range here, so the
+        // rect is current with the throttled selectionchange event.
+        // CSS pixels × devicePixelRatio = device pixels, matching the
+        // coordinate space Compose uses for IntOffset on the overlay Box
+        // that fills the same WebView bounds.
+        var r = range.getBoundingClientRect();
+        var dpr = window.devicePixelRatio || 1;
+
         post({
             kind: 'selectionchange',
             text: sel.toString(),
             srcStart: srcStart,
             srcEnd: srcEnd,
+            rectLeft: Math.round(r.left * dpr),
+            rectTop: Math.round(r.top * dpr),
+            rectWidth: Math.round(r.width * dpr),
+            rectHeight: Math.round(r.height * dpr),
         });
     });
 

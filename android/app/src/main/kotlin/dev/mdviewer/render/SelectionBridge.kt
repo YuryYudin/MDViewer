@@ -122,6 +122,20 @@ sealed interface JsMessage {
         val text: String,
         val srcStart: Int,
         val srcEnd: Int,
+        /**
+         * v0.4.17 addition: selection rect in device pixels relative to the
+         * WebView viewport top-left, computed by the JS bridge via
+         * `range.getBoundingClientRect()`. Nullable for backward compat
+         * with older bridge.js payloads (none ship, but the JNI surface
+         * tolerates absent keys cleanly).
+         *
+         * Replaces the dead ActionMode.onGetContentRect channel —
+         * SuppressingActionModeCallback returns false from
+         * onCreateActionMode (to suppress the system menu), so the
+         * action mode never starts and the original rect signal never
+         * fired. Threading the rect through JS sidesteps the issue.
+         */
+        val rect: Rect? = null,
     ) : JsMessage
 
     /** A click landed on a span carrying `data-thread-id`. */
@@ -161,6 +175,12 @@ class SelectionBridge {
             }
             is JsMessage.SelectionChanged -> {
                 lastJsSelection = msg
+                // v0.4.17: prefer the rect the JS bridge supplies over the
+                // ActionMode one. ActionMode never fires today (callback
+                // suppression) but if the platform ever does deliver an
+                // onGetContentRect we don't want to overwrite a fresh JS
+                // rect with a stale ActionMode rect on a later event.
+                if (msg.rect != null) lastRect = msg.rect
                 publish()
             }
             is JsMessage.HighlightTap -> {
