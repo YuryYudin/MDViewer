@@ -138,16 +138,22 @@ class SelectionBridgeInstrumentedTest {
      * reading data-src-offset/data-src-end instead of combining them
      * with range.startOffset/range.endOffset.
      *
-     * Setup: span covers source positions 100..120 with text
-     * "InThisPostWellExplore" (20 chars matching the source range
-     * 1:1). Select chars 11..16 ("Explo") inside the text node →
-     * expect srcStart=100+11=111, srcEnd=100+16=116.
+     * Setup: span covers source positions 100..122 with text
+     * "InThisPostWellExplore!" (22 chars, matching the source range
+     * 1:1 — text content length = data-src-end - data-src-offset).
+     * Select chars 11..16 inside the text node, which is "ellEx"
+     * (i.e. tail of "Well" + head of "Explore"). The selection's text
+     * length distinguishes it from any whole-span result, and both
+     * offsets (111 and 116) differ from the span boundaries (100 and
+     * 122) — so the old whole-span arithmetic would have produced
+     * 100/122 (or text "InThisPostWellExplore!") and this test would
+     * have caught the regression.
      */
     @Test
     fun partial_selection_within_span_yields_precise_source_offsets() {
         val bridge = SelectionBridge()
         val partialHtml = """
-            <p><span id="t" data-src-offset="100" data-src-end="120">InThisPostWellExplore</span></p>
+            <p><span id="t" data-src-offset="100" data-src-end="122">InThisPostWellExplore!</span></p>
         """.trimIndent()
 
         var webView: WebView? = null
@@ -179,7 +185,9 @@ class SelectionBridgeInstrumentedTest {
                 (function() {
                     var span = document.getElementById('t');
                     var range = document.createRange();
-                    // Select chars 11..16 inside the text node ("Explo")
+                    // Select chars 11..16 inside "InThisPostWellExplore!" —
+                    // indices i=11..15 inclusive (end is exclusive) yield
+                    // "ellEx" (the tail of "Well" + the head of "Explore").
                     range.setStart(span.firstChild, 11);
                     range.setEnd(span.firstChild, 16);
                     var sel = window.getSelection();
@@ -199,10 +207,12 @@ class SelectionBridgeInstrumentedTest {
         } as SelectionEvent.Updated
 
         // The bridge should report the PRECISE source range, not the
-        // span's full 100..120 envelope.
+        // span's full 100..122 envelope. Both offsets differ from the
+        // span boundaries so the OLD whole-span arithmetic would have
+        // produced 100/122 and this assertion would have failed.
         assertEquals(111, event.selection.srcStart)
         assertEquals(116, event.selection.srcEnd)
-        assertEquals("Explo", event.selection.text)
+        assertEquals("ellEx", event.selection.text)
     }
 }
 
