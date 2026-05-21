@@ -128,6 +128,82 @@ class SelectionBridgeInstrumentedTest {
         assertEquals(0, event.selection.srcStart)
         assertEquals(5, event.selection.srcEnd)
     }
+
+    /**
+     * v0.4.19 regression guard. A partial selection WITHIN a single
+     * data-src-* span must produce precise source offsets — not the
+     * span's own start/end. Reproduces the v0.4.18 anchor-coverage bug
+     * where a comment posted on three selected words ended up anchored
+     * to the entire enclosing sentence span because the JS bridge was
+     * reading data-src-offset/data-src-end instead of combining them
+     * with range.startOffset/range.endOffset.
+     *
+     * Setup: span covers source positions 100..120 with text
+     * "InThisPostWellExplore" (20 chars matching the source range
+     * 1:1). Select chars 11..16 ("Explo") inside the text node →
+     * expect srcStart=100+11=111, srcEnd=100+16=116.
+     */
+    @Test
+    fun partial_selection_within_span_yields_precise_source_offsets() {
+        val bridge = SelectionBridge()
+        val partialHtml = """
+            <p><span id="t" data-src-offset="100" data-src-end="120">InThisPostWellExplore</span></p>
+        """.trimIndent()
+
+        var webView: WebView? = null
+        composeRule.setContent {
+            CaptureWebView(onCaptured = { webView = it }) {
+                MarkdownWebView(
+                    html = partialHtml,
+                    theme = HtmlTheme.Light,
+                    bridge = bridge,
+                )
+            }
+        }
+        composeRule.waitForIdle()
+        composeRule.waitUntil(timeoutMillis = 5_000) { webView != null }
+        composeRule.waitUntil(timeoutMillis = 5_000) {
+            var settled = false
+            composeRule.runOnUiThread {
+                webView?.evaluateJavascript(
+                    "(window.__mdvSelectionBridgeInstalled === true).toString()",
+                ) { result -> settled = result?.contains("true") == true }
+            }
+            Thread.sleep(50)
+            settled
+        }
+
+        composeRule.runOnUiThread {
+            webView?.evaluateJavascript(
+                """
+                (function() {
+                    var span = document.getElementById('t');
+                    var range = document.createRange();
+                    // Select chars 11..16 inside the text node ("Explo")
+                    range.setStart(span.firstChild, 11);
+                    range.setEnd(span.firstChild, 16);
+                    var sel = window.getSelection();
+                    sel.removeAllRanges();
+                    sel.addRange(range);
+                    document.dispatchEvent(new Event('selectionchange'));
+                })();
+                """.trimIndent(),
+                null,
+            )
+        }
+
+        val event = runBlocking {
+            withTimeout(5_000) {
+                bridge.state.first { it is SelectionEvent.Updated }
+            }
+        } as SelectionEvent.Updated
+
+        // The bridge should report the PRECISE source range, not the
+        // span's full 100..120 envelope.
+        assertEquals(111, event.selection.srcStart)
+        assertEquals(116, event.selection.srcEnd)
+        assertEquals("Explo", event.selection.text)
+    }
 }
 
 /**

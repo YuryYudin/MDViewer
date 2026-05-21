@@ -38,8 +38,13 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -61,18 +66,42 @@ fun SafCapabilityBanner(
     onTap: () -> Unit = {},
     text: String = "Comments saved on device — tap to share back",
     interactive: Boolean = true,
+    onDismiss: (() -> Unit)? = null,
 ) {
-    val base = Modifier
+    // v0.4.19: explicit dark-amber foreground for the light-yellow
+    // background so the banner reads correctly under BOTH light and
+    // dark themes. Compose's Text default color is the theme's
+    // onSurface, which is white in dark mode — illegible on this
+    // tonal background. The amber tone here is reused from the
+    // standard Material "amber 900" palette point.
+    val rowMod = Modifier
         .fillMaxWidth()
         .background(Color(0xFFFFF3CD))
-    Text(
-        text = text,
-        modifier = if (interactive) {
-            base.clickable(onClick = onTap).padding(12.dp)
-        } else {
-            base.padding(12.dp)
-        },
-    )
+        .let { if (interactive) it.clickable(onClick = onTap) else it }
+    Row(modifier = rowMod) {
+        Text(
+            text = text,
+            color = Color(0xFF332D00),
+            modifier = Modifier
+                .weight(1f)
+                .padding(start = 12.dp, top = 12.dp, bottom = 12.dp, end = 4.dp),
+        )
+        // v0.4.19: explicit close affordance so the banner is
+        // dismissible. Owner decides what dismiss means (persistent
+        // hide per-doc vs session-only); the banner just surfaces
+        // the action. When `onDismiss` is null the button hides so
+        // legacy call sites (and the bare-banner unit test) stay
+        // single-action.
+        if (onDismiss != null) {
+            IconButton(onClick = onDismiss) {
+                Icon(
+                    Icons.Default.Close,
+                    contentDescription = "Dismiss",
+                    tint = Color(0xFF332D00),
+                )
+            }
+        }
+    }
 }
 
 /**
@@ -173,6 +202,7 @@ fun SafCapabilityBannerWithPromote(
     // preferences file from carrying clear-text Drive doc IDs.
     val settings = remember(ctx) { SettingsStore(ctx.applicationContext) }
     val askedSet by settings.grantPromoAsked.collectAsState(initial = emptySet())
+    val dismissedSet by settings.grantBannerDismissed.collectAsState(initial = emptySet())
     val uriHash = remember(docUri) {
         val sha = java.security.MessageDigest.getInstance("SHA-256")
             .digest(docUri.toString().toByteArray(Charsets.UTF_8))
@@ -182,8 +212,13 @@ fun SafCapabilityBannerWithPromote(
         )
     }
     val asked = uriHash in askedSet
+    val dismissed = uriHash in dismissedSet
     val recordAsked = {
         scope.launch { settings.recordGrantPromoAsked(uriHash) }
+        Unit
+    }
+    val recordDismissed = {
+        scope.launch { settings.recordGrantBannerDismissed(uriHash) }
         Unit
     }
 
@@ -192,13 +227,21 @@ fun SafCapabilityBannerWithPromote(
     // tree URI from the document URI, which is what the user is being
     // asked to grant in the first place — a chicken-and-egg setup.
     when {
+        // Explicit close: render nothing for the rest of the doc's
+        // lifetime. The user's "stop showing me this" signal wins over
+        // every other state (asked, Drive, sheet-eligible).
+        dismissed -> Unit
         isDrive -> SafCapabilityBanner(
             text = "Comments saved on this device. Google Drive doesn't support " +
                 "folder access from third-party apps, so comments can't sync back " +
                 "to the same folder as the document.",
             interactive = false,
+            onDismiss = recordDismissed,
         )
-        asked -> SafCapabilityBanner(onTap = { launcher.launch(null) })
+        asked -> SafCapabilityBanner(
+            onTap = { launcher.launch(null) },
+            onDismiss = recordDismissed,
+        )
         else -> GrantFolderAccessSheet(
             docFilename = docFilename,
             onGrant = {

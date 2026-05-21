@@ -91,16 +91,42 @@
             return;
         }
 
-        var srcStart = parseInt(startSpan.getAttribute('data-src-offset'), 10);
-        var endAttr = endSpan.getAttribute('data-src-end');
-        var srcEnd = endAttr !== null
-            ? parseInt(endAttr, 10)
-            // No data-src-end on the end container; fall back to the
-            // start of its data-src-offset span. This is wrong by the span
-            // length but at least gives the JVM a non-NaN integer and the
-            // anchor algorithm degrades gracefully (it'll snap to the
-            // start of that span's range).
-            : parseInt(endSpan.getAttribute('data-src-offset'), 10);
+        // v0.4.19: combine the carrier span's data-src-offset with the
+        // Range's intra-text-node offset to get the PRECISE source
+        // position of the selection. The previous code used only the
+        // span's data-src-offset / data-src-end, which expanded the
+        // anchor to the entire span — visible to the user as a
+        // highlight covering the whole sentence/paragraph instead of
+        // the words they actually selected (reported on v0.4.18).
+        //
+        // The arithmetic is safe because mdviewer-core emits one
+        // <span data-src-offset=S data-src-end=E> per pulldown-cmark
+        // Text event, and that event's source range (S..E) covers the
+        // text content 1:1 (formatting markers like ** or _ live
+        // outside this span). So an N-char offset into the rendered
+        // text node corresponds to source position S+N. For non-text
+        // start/end containers (rare — usually only with image
+        // captions or empty paragraphs) we fall back to the span
+        // boundaries since startOffset is then a child index, not a
+        // character index.
+        var startSpanOffset = parseInt(startSpan.getAttribute('data-src-offset'), 10);
+        var srcStart;
+        if (range.startContainer.nodeType === 3 /* TEXT_NODE */) {
+            srcStart = startSpanOffset + range.startOffset;
+        } else {
+            srcStart = startSpanOffset;
+        }
+
+        var srcEnd;
+        if (range.endContainer.nodeType === 3 /* TEXT_NODE */) {
+            var endSpanOffset = parseInt(endSpan.getAttribute('data-src-offset'), 10);
+            srcEnd = endSpanOffset + range.endOffset;
+        } else {
+            var endAttr = endSpan.getAttribute('data-src-end');
+            srcEnd = endAttr !== null
+                ? parseInt(endAttr, 10)
+                : parseInt(endSpan.getAttribute('data-src-offset'), 10);
+        }
 
         if (isNaN(srcStart) || isNaN(srcEnd)) {
             post({ kind: 'selectionUnanchorable' });

@@ -86,6 +86,13 @@ class SettingsStore(
     // strings we don't want to persist in the preferences file in clear.
     private val promoAskedKey = stringSetPreferencesKey("grant_folder_promo_asked")
 
+    // v0.4.19: tracks URI hashes the user explicitly dismissed via the
+    // banner close button. Once dismissed, the banner doesn't return on
+    // re-open of the same doc — it's the user's "I get it, stop showing
+    // me" signal. Separate from the asked set so we can distinguish
+    // "shown" (declined sheet) from "told us to shut up" (closed banner).
+    private val bannerDismissedKey = stringSetPreferencesKey("grant_folder_banner_dismissed")
+
     /**
      * Theme as a Flow. Falls back to [ThemeMode.FollowSystem] on absent
      * keys AND on values we don't recognise — the latter keeps a forward-
@@ -146,6 +153,26 @@ class SettingsStore(
         store.edit { prefs ->
             val current = prefs[promoAskedKey] ?: emptySet()
             prefs[promoAskedKey] = current + uriHash
+        }
+    }
+
+    /**
+     * Set of doc-URI hashes for which the user has explicitly dismissed
+     * the saved-on-device banner via its close button. The banner stays
+     * hidden across reopens until the user re-grants tree access (which
+     * would flip the capability away from SingleUri anyway).
+     */
+    val grantBannerDismissed: Flow<Set<String>> = store.data.map { prefs ->
+        prefs[bannerDismissedKey] ?: emptySet()
+    }
+
+    /**
+     * Record that the user dismissed the banner for the given URI. Idempotent.
+     */
+    suspend fun recordGrantBannerDismissed(uriHash: String) {
+        store.edit { prefs ->
+            val current = prefs[bannerDismissedKey] ?: emptySet()
+            prefs[bannerDismissedKey] = current + uriHash
         }
     }
 
