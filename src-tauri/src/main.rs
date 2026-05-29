@@ -116,27 +116,47 @@ fn open_document(
             }),
         );
     }
+    // C1: a freshly-opened doc changes this window's active-doc-name, which is
+    // the label shown in the Window submenu — rebuild so the menu reflects it.
+    rebuild_menu(&app);
     Ok(outcome)
 }
 
 #[tauri::command]
-fn close_tab(window: tauri::Window, state: State<'_, Ws>, id: String) -> Result<(), String> {
+fn close_tab(
+    window: tauri::Window,
+    app: tauri::AppHandle,
+    state: State<'_, Ws>,
+    id: String,
+) -> Result<(), String> {
     // B2: window identity comes from the injected `tauri::Window`, never a
     // client argument. Close the tab within the calling window's scope.
     state
         .lock()
         .map_err(|e| e.to_string())?
         .close_tab_for(window.label(), &id)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    // C1: closing the active tab changes this window's active-doc-name (or
+    // drops it to the StartPage placeholder); rebuild the Window submenu.
+    rebuild_menu(&app);
+    Ok(())
 }
 
 #[tauri::command]
-fn activate_tab(window: tauri::Window, state: State<'_, Ws>, id: String) -> Result<(), String> {
+fn activate_tab(
+    window: tauri::Window,
+    app: tauri::AppHandle,
+    state: State<'_, Ws>,
+    id: String,
+) -> Result<(), String> {
     state
         .lock()
         .map_err(|e| e.to_string())?
         .activate_tab_for(window.label(), &id)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    // C1: the active tab is what the Window submenu names this window after.
+    rebuild_menu(&app);
+    Ok(())
 }
 
 #[tauri::command]
@@ -903,6 +923,9 @@ async fn drive_open_url(
     // tab strip / document body repaints. Broadcasting would force every
     // window to re-fetch its (unchanged) list.
     let _ = app.emit_to(label.as_str(), "workspace-changed", ());
+    // C1: the new Drive tab is now this window's active doc — refresh the
+    // Window submenu so its entry names the freshly-opened file.
+    rebuild_menu(&app);
     Ok(summary)
 }
 
@@ -1011,6 +1034,9 @@ async fn ssh_open_url(
     // B2: address the frontend nudge to the calling window so only its tab
     // strip + active document repaint once the new tab lands.
     let _ = app.emit_to(label.as_str(), "workspace-changed", ());
+    // C1: the new SSH tab is now this window's active doc — refresh the
+    // Window submenu so its entry names the freshly-opened file.
+    rebuild_menu(&app);
     Ok(summary)
 }
 
@@ -1394,6 +1420,62 @@ fn spawn_window(app: &tauri::AppHandle, label: &str) -> tauri::Result<WebviewWin
         .build()
 }
 
+/// C1: rebuild the application menu from the current window registry and
+/// re-apply it via `set_menu`. The app menu is set once at boot, so a stale
+/// Window submenu would linger after a spawn / close / active-doc-rename
+/// unless we re-apply — this is the single re-apply path every registry
+/// change funnels through. Best-effort: a missing workspace (shouldn't happen
+/// post-setup) falls back to an empty window list, and a `set_menu` failure
+/// is logged rather than fatal.
+fn rebuild_menu(app: &tauri::AppHandle) {
+    let windows = app
+        .try_state::<Ws>()
+        .and_then(|ws| ws.lock().ok().map(|g| g.list_windows()))
+        .unwrap_or_default();
+    match menu::build(app, &windows) {
+        Ok(m) => {
+            if let Err(e) = app.set_menu(m) {
+                tracing::warn!("rebuild_menu: set_menu failed: {e:?}");
+            }
+        }
+        Err(e) => tracing::warn!("rebuild_menu: menu::build failed: {e:?}"),
+    }
+}
+
+/// C1: spawn a fresh StartPage window via the `new_window` IPC command.
+///
+/// Self-contained per the C1 task brief: it reuses B2's `spawn_window` (so the
+/// StartPage renders identically to the main window), registers the new label
+/// with the workspace via A1's `Workspace::new_window`, rebuilds the Window
+/// submenu so the new window appears in it immediately, and focuses the fresh
+/// window. The frontend reaches this via `mdviewer:new-window` → raw
+/// `invoke('new_window')` (C2). D1 adds the typed binding + the OTHER window
+/// commands and must NOT re-register `new_window`.
+#[tauri::command]
+fn new_window(app: tauri::AppHandle, state: State<'_, Ws>) -> Result<(), String> {
+    // Unique label so two rapid clicks don't collide. Mirrors the restore
+    // loop's `win-{nanos}` scheme.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let label = format!("win-{nanos}");
+    let window = spawn_window(&app, &label).map_err(|e| e.to_string())?;
+    {
+        let mut ws = state.lock().map_err(|e| e.to_string())?;
+        ws.new_window(label.clone());
+    }
+    // Track lifecycle (geometry / focus / dirty-close guard) on the new window
+    // just like the restore loop does for spawned windows.
+    register_window_event_handler(&app, &window);
+    // C1: the registry changed — re-apply the menu so the new window's
+    // entry appears in the Window submenu.
+    rebuild_menu(&app);
+    // Bring the fresh StartPage window forward.
+    let _ = window.set_focus();
+    Ok(())
+}
+
 /// B2: compute the virtual-screen bounds (union work area) from the live
 /// monitor list so `clamp_geometry` can pull an off-screen restored window
 /// back onto a reachable display. Falls back to a single 1920x1080 origin
@@ -1608,6 +1690,19 @@ fn main() {
                 return;
             }
 
+            // C1: dynamic Window-submenu entries carry `window-select:<label>`
+            // ids. They are handled wholly Rust-side — parse the `<label>`
+            // suffix, look up the live WebviewWindow, and `set_focus()` to
+            // raise it. `menu_id_to_action` returns None for these ids (B3) so
+            // they never bridge into a frontend action; this branch runs
+            // first so the raise is unambiguous.
+            if let Some(label) = menu::window_select_label(id) {
+                if let Some(win) = app.get_webview_window(label) {
+                    let _ = win.set_focus();
+                }
+                return;
+            }
+
             // Native menu clicks → tauri event the WebView listener
             // translates into the existing mdviewer:* CustomEvents. The
             // pure id↔action mapping lives in `mdviewer_lib::menu` so it
@@ -1634,7 +1729,12 @@ fn main() {
             // — `set_menu` is cheap and does not depend on workspace state.
             // Failure to build the menu shouldn't take down the app, so we
             // log and continue with the platform default.
-            match menu::build(app.handle()) {
+            // The Window submenu lists open windows; at boot the only window
+            // is `main`, but the restore loop below may spawn more — we
+            // rebuild after restore via `rebuild_menu`. Build with an empty
+            // window list here so the static items still ship even if the
+            // workspace isn't reachable yet.
+            match menu::build(app.handle(), &[]) {
                 Ok(m) => {
                     if let Err(e) = app.set_menu(m) {
                         tracing::warn!("set_menu failed: {e:?}");
@@ -1865,6 +1965,11 @@ fn main() {
                 register_window_event_handler(&app.handle().clone(), &win);
             }
 
+            // C1: the restore loop above may have registered extra windows;
+            // rebuild the Window submenu now that the workspace is managed so
+            // every restored window appears in the menu from first paint.
+            rebuild_menu(&app.handle().clone());
+
             // Forward watcher events to the frontend. B2: route each event to
             // the window that owns the changed path (resolved via
             // `owning_window_label`) instead of broadcasting; drop the event
@@ -1919,6 +2024,10 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             app_info,
+            // C1: spawn a fresh StartPage window. Self-contained (spawn_window
+            // B2 + Workspace::new_window A1 + rebuild_menu C1). D1 adds the
+            // OTHER window commands and must NOT re-register new_window.
+            new_window,
             open_document,
             close_tab,
             activate_tab,

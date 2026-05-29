@@ -1242,3 +1242,94 @@ mod ssh_save_dispatch {
         );
     }
 }
+
+// ----------------------------------------------------------------------------
+// C1: Window menu lists + raises open windows.
+//
+// `new_window` is registered HERE (C1), not D1 — it's self-contained
+// (spawn_window from B2, Workspace::new_window from A1, this task's
+// rebuild_menu). D1 adds the OTHER window commands and must NOT re-register
+// new_window. The raise path is wholly Rust-side: `on_menu_event` parses the
+// `window-select:<label>` suffix and calls `set_focus()`. These source-smoke
+// checks mirror the existing `ipc_registration_includes_*` pattern (we can't
+// link main.rs's `#[tauri::command] fn`s into this crate).
+// ----------------------------------------------------------------------------
+
+#[test]
+fn ipc_registration_includes_new_window() {
+    let main_rs = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    )
+    .expect("read main.rs");
+    assert!(
+        main_rs.contains("fn new_window("),
+        "main.rs must declare `fn new_window(...)` (C1 owns this command)",
+    );
+    assert!(
+        main_rs.contains("            new_window,"),
+        "main.rs must register `new_window` in the invoke_handler! list",
+    );
+}
+
+#[test]
+fn c1_menu_rebuild_and_window_select_raise_wired() {
+    let main_rs = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    )
+    .expect("read main.rs");
+
+    // The menu must be rebuilt + re-applied on registry change. The helper
+    // calls list_windows() and set_menu(...).
+    assert!(
+        main_rs.contains("fn rebuild_menu("),
+        "main.rs must declare a rebuild_menu(app) helper",
+    );
+    assert!(
+        main_rs.contains("list_windows()"),
+        "rebuild_menu must read the window registry via list_windows()",
+    );
+    assert!(
+        main_rs.contains("set_menu("),
+        "rebuild_menu must re-apply the menu via set_menu(...)",
+    );
+
+    // The new_window command must spawn via B2's spawn_window, register via
+    // A1's Workspace::new_window, and rebuild the menu.
+    let body_start = main_rs
+        .find("fn new_window(")
+        .expect("main.rs must declare fn new_window(");
+    let body = &main_rs[body_start..];
+    assert!(
+        body.contains("spawn_window("),
+        "new_window must spawn a window via spawn_window (B2)",
+    );
+    assert!(
+        body.contains("rebuild_menu("),
+        "new_window must rebuild the Window menu after spawning",
+    );
+
+    // The on_menu_event raise path parses `window-select:` and calls set_focus.
+    assert!(
+        main_rs.contains("window_select_label("),
+        "on_menu_event must parse the window-select label via menu::window_select_label",
+    );
+    assert!(
+        main_rs.contains("set_focus()"),
+        "the window-select branch must raise the matching window via set_focus()",
+    );
+}
+
+/// The pure menu helpers C1 adds (submenu-entry builder + label parse) live
+/// in `mdviewer_lib::menu` so they can be exercised without an AppHandle.
+/// Pin the parse contract here too (the menu.rs unit suite owns the builder).
+#[test]
+fn window_select_label_helper_is_reachable() {
+    assert_eq!(
+        mdviewer_lib::menu::window_select_label("window-select:main"),
+        Some("main"),
+    );
+    assert_eq!(
+        mdviewer_lib::menu::window_select_label("window-select:"),
+        None,
+    );
+}
