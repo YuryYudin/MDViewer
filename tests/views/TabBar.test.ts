@@ -19,6 +19,7 @@ function makeIpc(): Ipc {
     appInfo: vi.fn(),
     renderMarkdown: vi.fn(),
     resolveAnchor: vi.fn(),
+    openInNewWindow: vi.fn().mockResolvedValue(undefined),
   } as unknown as Ipc;
 }
 
@@ -203,6 +204,132 @@ describe('TabBar', () => {
     document.addEventListener('mdviewer:open-file', handler, { once: true });
     (root.querySelector('[data-test="new-tab"]') as HTMLElement).click();
     expect(handler).toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------
+  // D2: per-tab right-click context menu (wireframe 02-tab-context-menu)
+  // -------------------------------------------------------------------
+
+  function rightClick(el: HTMLElement): void {
+    el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+  }
+
+  it('opens an in-DOM context menu on right-click of a tab', () => {
+    const root = document.createElement('div');
+    const state: WorkspaceState = {
+      tabs: [
+        { id: 't1', path: '/docs/a.md' },
+        { id: 't2', path: '/docs/b.md' },
+      ],
+      activeId: 't1',
+    };
+    mountTabBar(root, makeIpc(), state);
+    // No menu before the right-click.
+    expect(root.querySelector('[data-test="tab-context-menu"]')).toBeNull();
+
+    rightClick(root.querySelectorAll<HTMLElement>('[data-test="tab"]')[1]);
+
+    const menu = root.querySelector('[data-test="tab-context-menu"]');
+    expect(menu).toBeTruthy();
+    expect(menu!.querySelector('[data-test="ctx-open-new-window"]')).toBeTruthy();
+    expect(menu!.querySelector('[data-test="ctx-move-to-window"]')).toBeTruthy();
+    expect(menu!.querySelector('[data-test="ctx-close"]')).toBeTruthy();
+  });
+
+  it('scaffolds an empty Move to Window submenu (E1 populates it later)', () => {
+    const root = document.createElement('div');
+    const state: WorkspaceState = {
+      tabs: [{ id: 't1', path: '/docs/a.md' }],
+      activeId: 't1',
+    };
+    mountTabBar(root, makeIpc(), state);
+    rightClick(root.querySelector<HTMLElement>('[data-test="tab"]')!);
+    const submenu = root.querySelector('[data-test="move-to-window-submenu"]');
+    expect(submenu).toBeTruthy();
+    // Scaffold only: no concrete move targets are rendered here.
+    expect(submenu!.querySelectorAll('[data-test="move-target"]').length).toBe(0);
+  });
+
+  it('preventDefault is called on contextmenu so the OS menu does not appear', () => {
+    const root = document.createElement('div');
+    const state: WorkspaceState = {
+      tabs: [{ id: 't1', path: '/docs/a.md' }],
+      activeId: 't1',
+    };
+    mountTabBar(root, makeIpc(), state);
+    const ev = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+    root.querySelector<HTMLElement>('[data-test="tab"]')!.dispatchEvent(ev);
+    expect(ev.defaultPrevented).toBe(true);
+  });
+
+  it('Open in New Window invokes openInNewWindow with the tab path and dismisses the menu', async () => {
+    const root = document.createElement('div');
+    const ipc = makeIpc();
+    const state: WorkspaceState = {
+      tabs: [
+        { id: 't1', path: '/docs/a.md' },
+        { id: 't2', path: '/docs/b.md' },
+      ],
+      activeId: 't1',
+    };
+    mountTabBar(root, ipc, state);
+    rightClick(root.querySelectorAll<HTMLElement>('[data-test="tab"]')[1]);
+    (root.querySelector('[data-test="ctx-open-new-window"]') as HTMLElement).click();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(ipc.openInNewWindow).toHaveBeenCalledWith('/docs/b.md');
+    // Activating an item dismisses the menu.
+    expect(root.querySelector('[data-test="tab-context-menu"]')).toBeNull();
+  });
+
+  it('Close in the context menu calls closeTab and fires onAfterClose', async () => {
+    const root = document.createElement('div');
+    const ipc = makeIpc();
+    const state: WorkspaceState = {
+      tabs: [{ id: 't1', path: '/docs/a.md' }],
+      activeId: 't1',
+    };
+    const onAfterClose = vi.fn();
+    mountTabBar(root, ipc, state, { onAfterClose });
+    rightClick(root.querySelector<HTMLElement>('[data-test="tab"]')!);
+    (root.querySelector('[data-test="ctx-close"]') as HTMLElement).click();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(ipc.closeTab).toHaveBeenCalledWith('t1');
+    expect(onAfterClose).toHaveBeenCalled();
+    expect(root.querySelector('[data-test="tab-context-menu"]')).toBeNull();
+  });
+
+  it('dismisses the context menu on an outside click', () => {
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    const state: WorkspaceState = {
+      tabs: [{ id: 't1', path: '/docs/a.md' }],
+      activeId: 't1',
+    };
+    mountTabBar(root, makeIpc(), state);
+    rightClick(root.querySelector<HTMLElement>('[data-test="tab"]')!);
+    expect(root.querySelector('[data-test="tab-context-menu"]')).toBeTruthy();
+    document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(root.querySelector('[data-test="tab-context-menu"]')).toBeNull();
+    root.remove();
+  });
+
+  it('re-opening the context menu on another tab replaces the prior menu', () => {
+    const root = document.createElement('div');
+    const state: WorkspaceState = {
+      tabs: [
+        { id: 't1', path: '/docs/a.md' },
+        { id: 't2', path: '/docs/b.md' },
+      ],
+      activeId: 't1',
+    };
+    mountTabBar(root, makeIpc(), state);
+    const tabs = root.querySelectorAll<HTMLElement>('[data-test="tab"]');
+    rightClick(tabs[0]);
+    rightClick(tabs[1]);
+    // Only a single menu is mounted at a time.
+    expect(root.querySelectorAll('[data-test="tab-context-menu"]').length).toBe(1);
   });
 
   it('marks the active tab', () => {

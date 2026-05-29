@@ -248,6 +248,68 @@ body {
 }
 
 /* =====================================================================
+ * Tab context menu (wireframe 02-tab-context-menu)
+ *
+ * An in-DOM menu (not the OS menu) so it is testable and themeable. The
+ * `.floating` layer is absolutely positioned over the workspace; the `.menu`
+ * inside it mirrors the wireframe's structure/classes. The Move-to-Window
+ * `.submenu` is scaffolded empty here — E1 populates it from list_windows.
+ * ===================================================================== */
+.tab-context-menu-layer {
+  position: absolute;
+  top: 36px;
+  left: 8px;
+  z-index: 50;
+}
+.tab-context-menu-layer .menu {
+  min-width: 200px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 5px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
+  font-size: 13px;
+}
+.tab-context-menu-layer .menu .item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  color: var(--text);
+  cursor: default;
+}
+.tab-context-menu-layer .menu .item:hover,
+.tab-context-menu-layer .menu .item.hot {
+  background: var(--accent-soft, var(--surface-hover, rgba(127, 127, 127, 0.18)));
+}
+.tab-context-menu-layer .menu .item.danger {
+  color: var(--danger, #d23f3f);
+}
+.tab-context-menu-layer .menu .item .caret {
+  color: var(--text-faint);
+  margin-left: auto;
+}
+.tab-context-menu-layer .menu .sep {
+  height: 1px;
+  background: var(--border);
+  margin: 5px 4px;
+}
+/* Submenu is a scaffold (E1 fills it); keep it out of the layout flow until
+ * then so the empty placeholder doesn't reserve space in the parent item. */
+.tab-context-menu-layer .menu .submenu {
+  display: none;
+}
+.tab-context-menu-layer .menu .sub-head {
+  padding: 4px 10px;
+  color: var(--text-faint);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* =====================================================================
  * Start page (wireframe 01)
  * ===================================================================== */
 [data-view='start'] {
