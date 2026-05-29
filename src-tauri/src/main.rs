@@ -31,7 +31,7 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use tauri::{Emitter, Manager, State};
+use tauri::{Emitter, Manager, Runtime, State, WebviewWindow, WindowEvent};
 
 use mdviewer_lib::{
     // Parent-module imports (`self`) on document/anchor/conflict avoid the
@@ -69,15 +69,17 @@ fn app_info() -> BuildInfo {
 
 #[tauri::command]
 fn open_document(
+    window: tauri::Window,
     app: tauri::AppHandle,
     state: State<'_, Ws>,
     watcher: State<'_, Mutex<mdviewer_lib::watcher::Watcher>>,
     path: PathBuf,
 ) -> Result<OpenOutcome, String> {
+    let label = window.label().to_string();
     let outcome = {
         let mut ws = state.lock().map_err(|e| e.to_string())?;
         let outcome = ws
-            .open_document(&path, OpenOpts::default())
+            .open_document_for(&label, &path, OpenOpts::default())
             .map_err(|e| e.to_string())?;
 
         // Register the .md and its sidecar with the watcher so external
@@ -100,9 +102,11 @@ fn open_document(
         incoming,
     } = &outcome
     {
-        // Emit the show-conflict event from the IPC layer where AppHandle is
-        // in scope. Workspace itself stays handle-free for testability.
-        let _ = app.emit(
+        // B2: address the show-conflict event to the calling window (where
+        // the open was requested) rather than broadcasting it to every
+        // window. Workspace itself stays handle-free for testability.
+        let _ = app.emit_to(
+            label.as_str(),
             "show-conflict",
             serde_json::json!({
                 "tab_id": tab_id,
@@ -116,29 +120,33 @@ fn open_document(
 }
 
 #[tauri::command]
-fn close_tab(state: State<'_, Ws>, id: String) -> Result<(), String> {
+fn close_tab(window: tauri::Window, state: State<'_, Ws>, id: String) -> Result<(), String> {
+    // B2: window identity comes from the injected `tauri::Window`, never a
+    // client argument. Close the tab within the calling window's scope.
     state
         .lock()
         .map_err(|e| e.to_string())?
-        .close_tab(&id)
+        .close_tab_for(window.label(), &id)
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn activate_tab(state: State<'_, Ws>, id: String) -> Result<(), String> {
+fn activate_tab(window: tauri::Window, state: State<'_, Ws>, id: String) -> Result<(), String> {
     state
         .lock()
         .map_err(|e| e.to_string())?
-        .activate_tab(&id)
+        .activate_tab_for(window.label(), &id)
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn list_open_documents(state: State<'_, Ws>) -> Vec<TabSummary> {
+fn list_open_documents(window: tauri::Window, state: State<'_, Ws>) -> Vec<TabSummary> {
+    // B2: each window sees only its own tab list, derived from the injected
+    // window's label.
     state
         .lock()
         .unwrap()
-        .list_open_documents()
+        .list_open_documents_for(window.label())
         .iter()
         .map(|t| TabSummary {
             id: t.id.clone(),
@@ -154,11 +162,11 @@ fn list_open_documents(state: State<'_, Ws>) -> Vec<TabSummary> {
 /// open tab even when Rust restored a different active tab from
 /// session.json.
 #[tauri::command]
-fn get_active_tab_id(state: State<'_, Ws>) -> Option<String> {
+fn get_active_tab_id(window: tauri::Window, state: State<'_, Ws>) -> Option<String> {
     state
         .lock()
         .ok()
-        .and_then(|ws| ws.active_tab_id().map(|s| s.to_string()))
+        .and_then(|ws| ws.active_tab_id_for(window.label()).map(|s| s.to_string()))
 }
 
 #[tauri::command]
@@ -322,6 +330,7 @@ fn render_markdown(source: String) -> RenderResult {
 /// diff-merge UI.
 #[tauri::command]
 async fn save_document(
+    window: tauri::Window,
     state: State<'_, Ws>,
     watcher: State<'_, Mutex<Watcher>>,
     ssh: State<'_, SshAppState>,
@@ -329,6 +338,8 @@ async fn save_document(
     tab_id: String,
     body: String,
 ) -> Result<mdviewer_lib::document::SaveOutcome, String> {
+    // B2: address conflict events to the window that asked to save.
+    let window_label = window.label().to_string();
     use mdviewer_lib::document::SaveOutcome;
     use mdviewer_lib::drive::TabBackend;
     use mdviewer_lib::ssh::operations::SaveBackOutcome;
@@ -373,7 +384,8 @@ async fn save_document(
     // TS-side Workspace.ts listener accepts both spellings during the
     // bring-up so an A8/A9 cross-merge doesn't drop conflicts on the floor.
     let emit_drive_conflict = |local: &[u8], remote: &[u8], source: &mdviewer_lib::workspace::ConflictSource| {
-        let _ = app.emit(
+        let _ = app.emit_to(
+            window_label.as_str(),
             "show-conflict",
             serde_json::json!({
                 "tab_id": tab_id,
@@ -871,10 +883,12 @@ fn drive_status(state: State<'_, Ws>) -> DriveStatus {
 
 #[tauri::command]
 async fn drive_open_url(
+    window: tauri::Window,
     state: State<'_, Ws>,
     app: tauri::AppHandle,
     url: String,
 ) -> Result<TabSummary, String> {
+    let label = window.label().to_string();
     let mut ws = state.lock().map_err(|e| e.to_string())?;
     // C5 kill-switch: short-circuit before parsing or hitting Drive so a
     // user who has explicitly opted out gets the same friendly error here
@@ -882,14 +896,13 @@ async fn drive_open_url(
     if drive_kill_switch_active(&ws.settings_store().get()) {
         return Err(DRIVE_KILL_SWITCH_MSG.to_string());
     }
-    let summary = ws.drive_open_url(&url).map_err(|e| e.to_string())?;
+    // B2: open the Drive tab in the calling window's scope.
+    let summary = ws.drive_open_url_for(&label, &url).map_err(|e| e.to_string())?;
     drop(ws);
-    // Phase B implementation review fix #3: emit `workspace-changed` so
-    // main.ts's tab list / document body refresh path runs after a Drive
-    // tab opens. Mirrors the pattern used by `open_document` (and the
-    // single-instance / RunEvent::Opened paths) — without this, the new
-    // tab is created on the Rust side but the WebView never repaints.
-    let _ = app.emit("workspace-changed", ());
+    // B2: address `workspace-changed` to the calling window so only its
+    // tab strip / document body repaints. Broadcasting would force every
+    // window to re-fetch its (unchanged) list.
+    let _ = app.emit_to(label.as_str(), "workspace-changed", ());
     Ok(summary)
 }
 
@@ -972,11 +985,13 @@ pub struct SshAppState {
 
 #[tauri::command]
 async fn ssh_open_url(
+    window: tauri::Window,
     state: State<'_, Ws>,
     ssh: State<'_, SshAppState>,
     app: tauri::AppHandle,
     url: String,
 ) -> Result<mdviewer_lib::workspace::TabSummary, String> {
+    let label = window.label().to_string();
     let parsed = mdviewer_core::ssh_url::parse(&url).map_err(|e| e.to_string())?;
     // Async fetch FIRST without holding the workspace mutex. The IPC
     // handler runs on a Tauri worker; holding a `std::sync::MutexGuard`
@@ -987,14 +1002,15 @@ async fn ssh_open_url(
         .open_url(&parsed)
         .await
         .map_err(|e| e.to_string())?;
-    // Sync registration: re-acquire the lock and stash the tab.
+    // Sync registration: re-acquire the lock and stash the tab in the
+    // calling window's scope.
     let summary = {
         let mut ws = state.lock().map_err(|e| e.to_string())?;
-        ws.register_ssh_tab_from_outcome(parsed, outcome)
+        ws.register_ssh_tab_from_outcome_for(&label, parsed, outcome)
     };
-    // Mirror `drive_open_url`'s frontend nudge so main.ts repaints the tab
-    // strip + active document once the new tab lands.
-    let _ = app.emit("workspace-changed", ());
+    // B2: address the frontend nudge to the calling window so only its tab
+    // strip + active document repaint once the new tab lands.
+    let _ = app.emit_to(label.as_str(), "workspace-changed", ());
     Ok(summary)
 }
 
@@ -1128,7 +1144,14 @@ fn dispatch_cli_targets(
                 let _ = ws.register_ssh_tab_from_outcome(url, outcome);
                 tracing::info!("opened SSH from {}: {}", source_label, url_label);
             }
-            let _ = app_handle.emit("workspace-changed", ());
+            // B2: CLI / file-association opens route into the `main` window
+            // for now (E2 adds focused routing), so address the repaint nudge
+            // to `main` rather than broadcasting it to every window.
+            let _ = app_handle.emit_to(
+                mdviewer_lib::workspace::MAIN_LABEL,
+                "workspace-changed",
+                (),
+            );
         });
     }
 }
@@ -1297,6 +1320,184 @@ fn run_first_run_cli_prompt(app: &tauri::AppHandle) {
     }
 }
 
+// ----------------------------------------------------------------------------
+// B2: multi-window helpers.
+//
+// These three functions carry the only non-framework logic the window-scoping
+// rewrite adds, so they live as free functions that `main.rs`'s setup/event
+// wiring calls. `window_has_dirty_tab` and `restore_window_label` are pure and
+// unit-tested in `tests/ipc_registration.rs`; `focused_window` and
+// `spawn_window` touch the live Tauri window list and are exercised by the
+// e2e suite (S5/S7) since they need a real runtime.
+// ----------------------------------------------------------------------------
+
+/// B2: does any tab owned by window `label` have unsaved edits?
+///
+/// Pure over the `(workspace tabs, dirty predicate)` pair so it unit-tests
+/// without a live `Watcher`/`AppHandle`. `dirty_for` is the per-path dirty
+/// lookup — production passes `|p| watcher.is_unsaved(p)` (the same `unsaved`
+/// map `set_dirty` writes); tests pass an in-memory closure. The window's tab
+/// set comes from `list_open_documents_for(label)` so a tab moved to another
+/// window no longer counts against this one.
+fn window_has_dirty_tab(ws: &Workspace, label: &str, dirty_for: impl Fn(&Path) -> bool) -> bool {
+    ws.list_open_documents_for(label)
+        .iter()
+        .any(|t| dirty_for(&t.path))
+}
+
+/// B2: the stable label for the `index`-th restored window. The first window
+/// reuses the always-present `"main"` label so the v1→v2 migration target and
+/// the single-window delegating wrappers keep a known window; every later
+/// window gets a unique `win-{nanos+index}` label. `index` is folded into the
+/// suffix so two windows restored inside the same nanosecond still differ.
+fn restore_window_label(index: usize, nanos: u128) -> String {
+    if index == 0 {
+        mdviewer_lib::workspace::MAIN_LABEL.to_string()
+    } else {
+        format!("win-{}", nanos + index as u128)
+    }
+}
+
+/// B2: the currently-focused webview window, falling back to the workspace's
+/// most-recently-focused label (`mrf_label`) when the OS reports none focused
+/// (e.g. the app is backgrounded). Used by the menu-action emit so a menu
+/// click routes to the window the user is actually looking at instead of
+/// broadcasting to every window. Returns `None` only if neither a focused
+/// window nor the mrf label resolves to a live window.
+fn focused_window<R: Runtime>(app: &impl Manager<R>) -> Option<WebviewWindow<R>> {
+    let windows = app.webview_windows();
+    if let Some((_, w)) = windows.iter().find(|(_, w)| w.is_focused().unwrap_or(false)) {
+        return Some(w.clone());
+    }
+    // Fallback: the workspace's most-recently-focused label.
+    let mrf = app
+        .try_state::<Ws>()
+        .and_then(|ws| ws.lock().ok().map(|g| g.mrf_label().to_string()));
+    if let Some(label) = mrf {
+        if let Some(w) = windows.get(&label) {
+            return Some(w.clone());
+        }
+    }
+    // Last resort: any window (registry order isn't guaranteed, but a single
+    // arbitrary window beats dropping the menu action on the floor).
+    windows.into_values().next()
+}
+
+/// B2: spawn a fresh webview window with `label`, pointing at the same entry
+/// URL the main window uses (the default app index). Returns the live window
+/// so the restore loop can apply geometry to it.
+fn spawn_window(app: &tauri::AppHandle, label: &str) -> tauri::Result<WebviewWindow> {
+    tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::default())
+        .title("MDViewer")
+        .inner_size(1280.0, 800.0)
+        .min_inner_size(800.0, 600.0)
+        .build()
+}
+
+/// B2: compute the virtual-screen bounds (union work area) from the live
+/// monitor list so `clamp_geometry` can pull an off-screen restored window
+/// back onto a reachable display. Falls back to a single 1920x1080 origin
+/// rect when the monitor list is empty/unavailable (headless CI), which keeps
+/// restore best-effort rather than panicking.
+fn virtual_screen_bounds(app: &tauri::AppHandle) -> mdviewer_lib::session::VirtualScreenBounds {
+    use mdviewer_lib::session::VirtualScreenBounds;
+    let monitors = app.available_monitors().unwrap_or_default();
+    if monitors.is_empty() {
+        return VirtualScreenBounds { x: 0, y: 0, w: 1920, h: 1080 };
+    }
+    // Union every monitor's logical work rect. Positions are physical px;
+    // divide by scale factor to match the logical px geometry persisted in
+    // session.json.
+    let mut min_x = i32::MAX;
+    let mut min_y = i32::MAX;
+    let mut max_x = i32::MIN;
+    let mut max_y = i32::MIN;
+    for m in &monitors {
+        let scale = m.scale_factor();
+        let pos = m.position();
+        let size = m.size();
+        let lx = (pos.x as f64 / scale).round() as i32;
+        let ly = (pos.y as f64 / scale).round() as i32;
+        let lw = (size.width as f64 / scale).round() as i32;
+        let lh = (size.height as f64 / scale).round() as i32;
+        min_x = min_x.min(lx);
+        min_y = min_y.min(ly);
+        max_x = max_x.max(lx + lw);
+        max_y = max_y.max(ly + lh);
+    }
+    VirtualScreenBounds {
+        x: min_x,
+        y: min_y,
+        w: (max_x - min_x).max(1) as u32,
+        h: (max_y - min_y).max(1) as u32,
+    }
+}
+
+/// B2: register the per-window lifecycle handler (geometry tracking, focus
+/// tracking, dirty-tab close guard) on `window`. Called for the main window
+/// and every spawned restore window so all windows behave identically. The
+/// `app` handle is captured so the close-request branch can address
+/// `confirm-window-close` back to the window and read the managed Workspace +
+/// Watcher.
+fn register_window_event_handler(app: &tauri::AppHandle, window: &WebviewWindow) {
+    let label = window.label().to_string();
+    let app = app.clone();
+    window.clone().on_window_event(move |event| match event {
+        WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
+            // Read the window's live logical position + size and feed it into
+            // the workspace's per-window geometry, then eagerly persist so a
+            // crash doesn't lose the new placement. Best-effort throughout —
+            // a failed read just skips this tick.
+            if let Some(w) = app.get_webview_window(&label) {
+                let scale = w.scale_factor().unwrap_or(1.0);
+                if let (Ok(pos), Ok(size)) = (w.outer_position(), w.inner_size()) {
+                    let geo = mdviewer_lib::workspace::WindowGeometry {
+                        x: (pos.x as f64 / scale).round() as i32,
+                        y: (pos.y as f64 / scale).round() as i32,
+                        w: (size.width as f64 / scale).round() as u32,
+                        h: (size.height as f64 / scale).round() as u32,
+                    };
+                    if let Some(ws) = app.try_state::<Ws>() {
+                        if let Ok(mut g) = ws.lock() {
+                            g.set_window_geometry(&label, geo);
+                            g.persist_session_public();
+                        }
+                    }
+                }
+            }
+        }
+        WindowEvent::Focused(true) => {
+            if let Some(ws) = app.try_state::<Ws>() {
+                if let Ok(mut g) = ws.lock() {
+                    g.set_mrf_label(&label);
+                }
+            }
+        }
+        WindowEvent::CloseRequested { api, .. } => {
+            // Guard: if any tab in this window is dirty, prevent the OS
+            // titlebar close and let the frontend (C2) run the confirm flow.
+            let dirty = {
+                let ws = app.try_state::<Ws>();
+                let watcher = app.try_state::<Mutex<Watcher>>();
+                match (ws, watcher) {
+                    (Some(ws), Some(watcher)) => match (ws.lock(), watcher.lock()) {
+                        (Ok(g), Ok(w)) => {
+                            window_has_dirty_tab(&g, &label, |p| w.is_unsaved(p))
+                        }
+                        _ => false,
+                    },
+                    _ => false,
+                }
+            };
+            if dirty {
+                api.prevent_close();
+                let _ = app.emit_to(label.as_str(), "confirm-window-close", ());
+            }
+        }
+        _ => {}
+    });
+}
+
 fn main() {
     // C3: lightweight CLI dispatch before the Tauri runtime spins up. The
     // subcommand intentionally bypasses tauri::Builder so it can be used
@@ -1338,7 +1539,7 @@ fn main() {
                     targets,
                     "second invocation",
                 );
-                let _ = app.emit("workspace-changed", ());
+                let _ = app.emit_to(mdviewer_lib::workspace::MAIN_LABEL, "workspace-changed", ());
             }
             // Bring the main window forward so the user sees the new tab
             // even if the existing window was hidden behind another app.
@@ -1372,14 +1573,14 @@ fn main() {
             hasher.update(key);
             hasher.update(password.as_bytes());
             hasher.finalize().to_vec()
-        }).build())
-        // Persist window state (position + size, plus maximized/fullscreen
-        // flags) across restarts. The plugin saves on close and restores
-        // on launch — first-run picks up the defaults from
-        // `tauri.conf.json::app.windows[0]`. Tracked to the app config dir
-        // (`window-state.json`), which our `MDVIEWER_DATA_DIR` override
-        // already redirects for the e2e suite.
-        .plugin(tauri_plugin_window_state::Builder::default().build());
+        }).build());
+    // B2: the `tauri-plugin-window-state` builder call was removed here.
+    // Window geometry is now persisted by the per-window `on_window_event`
+    // handler (Moved/Resized → `set_window_geometry` → session.json) and
+    // restored by the per-window restore loop below — that is the sole
+    // geometry mechanism now. The Cargo dependency + the
+    // `window-state:default` capability permission are dropped by B3 against
+    // a tree where this builder line is already gone (clean build).
 
     // E2E hook (macOS-friendly via tauri-webdriver). Loaded only when the
     // crate is built with `--features e2e`; release bundles never expose
@@ -1411,8 +1612,21 @@ fn main() {
             // translates into the existing mdviewer:* CustomEvents. The
             // pure id↔action mapping lives in `mdviewer_lib::menu` so it
             // can be unit-tested without an AppHandle.
+            //
+            // B2 (S12): the menu bar is application-global on every platform,
+            // so a menu action must target the window the user is looking at
+            // — not broadcast to all windows. `focused_window` resolves the
+            // live-focused window (falling back to the workspace's
+            // most-recently-focused label) and we `emit_to` only that one.
             if let Some(action) = menu::menu_id_to_action(id) {
-                let _ = app.emit(menu::MENU_EVENT, action);
+                if let Some(win) = focused_window(app) {
+                    let _ = win.emit(menu::MENU_EVENT, action);
+                } else {
+                    // No window resolvable (shouldn't happen while a menu is
+                    // clickable) — fall back to a broadcast so the action
+                    // isn't silently dropped.
+                    let _ = app.emit(menu::MENU_EVENT, action);
+                }
             }
         })
         .setup(|app| {
@@ -1496,50 +1710,106 @@ fn main() {
                 ws.settings_store().get().appearance.startup_mode,
                 mdviewer_lib::settings::StartupMode::Restore
             ) {
-                // Replay the saved session — open each remembered tab in
-                // order, then re-activate the previously-active tab. A
-                // failure on any single path is logged and skipped (the
-                // file may have moved/been deleted since last launch);
-                // the rest still load. SessionStore::open already pruned
-                // missing paths at load time, so this is defense in depth.
-                // B1: the store is now v2 (per-window). B2 replaces this
-                // flatten with a real per-window restore loop; for now we
-                // concatenate every window's tabs in order and re-activate
-                // the first window's active tab so the build stays green.
+                // B2: per-window session restore. The v2 store carries one
+                // `WindowSession` per window (`tabs` / `active` / `geometry`).
+                // We:
+                //   1. Map each window to a stable label — the first reuses
+                //      the already-existing `"main"` window, every later one
+                //      spawns a fresh `win-{nanos+index}` window.
+                //   2. Apply `clamp_geometry` (against the live monitor work
+                //      area) so an off-screen restored window is pulled back.
+                //   3. Open each window's tabs in order (skipping synthetic
+                //      `drive-api://` paths) owned by that window's label, and
+                //      activate the saved `active` tab.
+                // A failure on any single path is logged and skipped (the file
+                // may have moved/been deleted); the rest still load.
                 let saved = ws.session_store().get();
-                let active_target = saved.windows.iter().find_map(|w| w.active.clone());
-                let open_tabs: Vec<PathBuf> =
-                    saved.windows.iter().flat_map(|w| w.tabs.iter().cloned()).collect();
-                for path in open_tabs {
-                    // Skip synthetic `drive-api://<file_id>` paths — those
-                    // tabs are reopened via `drive_open_url` (which the user
-                    // re-pastes), not the local-fs `open_document` flow.
-                    // Without this guard, `open_document` would try to
-                    // canonicalize + read the synthetic path and fail noisily.
-                    if path.to_string_lossy().starts_with("drive-api://") {
-                        continue;
+                let app_handle = app.handle().clone();
+                let bounds = virtual_screen_bounds(&app_handle);
+                let nanos = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos();
+
+                for (idx, win) in saved.windows.iter().enumerate() {
+                    let label = restore_window_label(idx, nanos);
+
+                    // Spawn the window (skip idx 0 — `"main"` already exists).
+                    if idx > 0 {
+                        match spawn_window(&app_handle, &label) {
+                            Ok(_) => {
+                                ws.new_window(label.clone());
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "restore: spawn window {label} failed: {e:?}; \
+                                     folding its tabs into main"
+                                );
+                                // Fall back to the main window so the tabs
+                                // aren't lost if the spawn fails (headless CI).
+                            }
+                        }
                     }
-                    match ws.open_document(&path, OpenOpts::default()) {
-                        Ok(_) => tracing::info!("restored from session: {}", path.display()),
-                        Err(e) => tracing::warn!(
-                            "session restore failed for {}: {e:?}",
-                            path.display()
-                        ),
+                    let target_label = if idx > 0
+                        && ws.list_windows().iter().any(|w| w.label == label)
+                    {
+                        label.clone()
+                    } else {
+                        mdviewer_lib::workspace::MAIN_LABEL.to_string()
+                    };
+
+                    // Clamp + place geometry for spawned windows. `main` keeps
+                    // whatever tauri.conf.json gave it unless a geometry was
+                    // saved; we still apply the clamp so a saved off-screen
+                    // main window is pulled back.
+                    if let Some(geo) = win.geometry {
+                        let clamped = mdviewer_lib::session::clamp_geometry(geo, bounds);
+                        if let Some(w) = app_handle.get_webview_window(&target_label) {
+                            use tauri::{LogicalPosition, LogicalSize};
+                            let _ = w.set_position(LogicalPosition::new(
+                                clamped.x as f64,
+                                clamped.y as f64,
+                            ));
+                            let _ = w.set_size(LogicalSize::new(
+                                clamped.w as f64,
+                                clamped.h as f64,
+                            ));
+                        }
+                        ws.set_window_geometry(&target_label, clamped);
                     }
-                }
-                // open_document leaves the LAST opened tab active; if the
-                // saved session pinned a different one, switch to it.
-                if let Some(target_path) = active_target {
-                    let canonical = target_path
-                        .canonicalize()
-                        .unwrap_or_else(|_| target_path.clone());
-                    let target_id = ws
-                        .list_open_documents()
-                        .iter()
-                        .find(|t| t.path == canonical)
-                        .map(|t| t.id.clone());
-                    if let Some(id) = target_id {
-                        let _ = ws.activate_tab(&id);
+
+                    // Open this window's tabs in order.
+                    for path in &win.tabs {
+                        if path.to_string_lossy().starts_with("drive-api://") {
+                            continue;
+                        }
+                        match ws.open_document_for(&target_label, path, OpenOpts::default()) {
+                            Ok(_) => tracing::info!(
+                                "restored {} into {}",
+                                path.display(),
+                                target_label
+                            ),
+                            Err(e) => tracing::warn!(
+                                "session restore failed for {} in {}: {e:?}",
+                                path.display(),
+                                target_label
+                            ),
+                        }
+                    }
+
+                    // Re-activate the saved active tab within this window.
+                    if let Some(target_path) = &win.active {
+                        let canonical = target_path
+                            .canonicalize()
+                            .unwrap_or_else(|_| target_path.clone());
+                        let target_id = ws
+                            .list_open_documents_for(&target_label)
+                            .iter()
+                            .find(|t| t.path == canonical)
+                            .map(|t| t.id.clone());
+                        if let Some(id) = target_id {
+                            let _ = ws.activate_tab_for(&target_label, &id);
+                        }
                     }
                 }
             }
@@ -1585,12 +1855,39 @@ fn main() {
             watcher.set_external_change_behavior(initial_behavior);
             app.manage(Mutex::new(watcher));
 
-            // Forward watcher events to the frontend on a dedicated thread.
-            // The receiver loop ends when the sender side is dropped (i.e.
-            // when the managed `Watcher` is dropped on app shutdown).
+            // B2: register the per-window lifecycle handler on every live
+            // window (the main window + any windows the restore loop spawned).
+            // Workspace + Watcher are both managed by now, so the handler's
+            // geometry/focus/close-guard branches can reach them. This is the
+            // sole geometry-persistence mechanism now that the window-state
+            // plugin is gone.
+            for (_, win) in app.webview_windows() {
+                register_window_event_handler(&app.handle().clone(), &win);
+            }
+
+            // Forward watcher events to the frontend. B2: route each event to
+            // the window that owns the changed path (resolved via
+            // `owning_window_label`) instead of broadcasting; drop the event
+            // if no window currently has the file open. The receiver loop
+            // ends when the sender side is dropped (managed `Watcher` drop on
+            // shutdown).
             std::thread::spawn(move || {
                 for ev in rx {
-                    let _ = app_handle.emit("external-change", &ev);
+                    let owner = {
+                        let ws_state = app_handle.state::<Mutex<Workspace>>();
+                        ws_state
+                            .lock()
+                            .ok()
+                            .and_then(|ws| ws.owning_window_for_watched(&ev.path).map(str::to_string))
+                    };
+                    if let Some(label) = owner {
+                        let _ = app_handle.emit_to(label.as_str(), "external-change", &ev);
+                    } else {
+                        tracing::debug!(
+                            "external-change for {:?} dropped: no window owns it",
+                            ev.path
+                        );
+                    }
                 }
             });
 
@@ -1683,7 +1980,7 @@ fn main() {
                 // Tell the WebView to re-fetch the open-doc list and re-paint
                 // its tab strip. main.ts listens for this event and calls
                 // workspace.refresh().
-                let _ = app.emit("workspace-changed", ());
+                let _ = app.emit_to(mdviewer_lib::workspace::MAIN_LABEL, "workspace-changed", ());
             }
             // Suppress the "unused" warnings on non-macOS platforms.
             #[cfg(not(any(target_os = "macos", target_os = "ios")))]

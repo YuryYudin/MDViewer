@@ -604,6 +604,18 @@ impl Workspace {
     /// first iteration populates them. This keeps the URL-paste flow snappy
     /// and unifies the comment-load path with the steady-state behavior.
     pub fn drive_open_url(&mut self, url: &str) -> Result<TabSummary, crate::drive::DriveError> {
+        self.drive_open_url_for(MAIN_LABEL, url)
+    }
+
+    /// B2: window-scoped Drive open. Same as `drive_open_url` but the new
+    /// DriveApi tab is owned by `label` and registered into that window's
+    /// order/active. The file_id de-dupe still spans all windows — a Drive
+    /// file already open in any window re-surfaces its existing tab.
+    pub fn drive_open_url_for(
+        &mut self,
+        label: &str,
+        url: &str,
+    ) -> Result<TabSummary, crate::drive::DriveError> {
         let file_id = crate::drive::parse_drive_url(url)?;
 
         // De-dupe: if an existing DriveApi tab already references this
@@ -656,8 +668,8 @@ impl Workspace {
         let synthetic_path = std::path::PathBuf::from(format!("drive-api://{}", file_id));
         let tab = Tab {
             id: id.clone(),
-            // A1: B2 threads the real caller label; default to main for now.
-            window_label: MAIN_LABEL.to_string(),
+            // B2: owned by the calling window's label.
+            window_label: label.to_string(),
             path: synthetic_path,
             source: source.clone(),
             render,
@@ -721,6 +733,19 @@ impl Workspace {
         url: SshUrl,
         outcome: crate::ssh::operations::OpenOutcome,
     ) -> TabSummary {
+        self.register_ssh_tab_from_outcome_for(MAIN_LABEL, url, outcome)
+    }
+
+    /// B2: window-scoped SSH tab registration. Same as
+    /// `register_ssh_tab_from_outcome` but the new tab is owned by `label`
+    /// and registered into that window's order/active. Cache-path de-dupe
+    /// still spans all windows.
+    pub fn register_ssh_tab_from_outcome_for(
+        &mut self,
+        label: &str,
+        url: SshUrl,
+        outcome: crate::ssh::operations::OpenOutcome,
+    ) -> TabSummary {
         // De-dupe against an already-open tab on the same cache path. The
         // cache mirror is deterministic for a given (host, port, user,
         // path) tuple so two `open_ssh_url` calls for the same URL collapse
@@ -757,8 +782,8 @@ impl Workspace {
         );
         let tab = Tab {
             id: id.clone(),
-            // A1: B2 threads the real caller label; default to main for now.
-            window_label: MAIN_LABEL.to_string(),
+            // B2: owned by the calling window's label.
+            window_label: label.to_string(),
             path: outcome.cache_path.clone(),
             source: source.clone(),
             render,
@@ -1193,6 +1218,14 @@ impl Workspace {
     /// Snapshot the current open-tab list and active tab into the session
     /// store. Called by `open_document`, `close_tab`, and `activate_tab`
     /// so the on-disk session.json always reflects the live state.
+    /// B2: public entry to the eager session save. The `on_window_event`
+    /// geometry handler calls this after `set_window_geometry` so a window
+    /// move/resize lands in session.json without waiting for the next
+    /// open/close. Delegates to the private `persist_session`.
+    pub fn persist_session_public(&self) {
+        self.persist_session();
+    }
+
     fn persist_session(&self) {
         // A1/B1: build per-window snapshots and save them via the v2 store.
         // One `WindowSession` per registered window, in registry order, each
@@ -1250,7 +1283,27 @@ impl Workspace {
             .collect()
     }
 
-    pub fn open_document(&mut self, path: &Path, _opts: OpenOpts) -> Result<OpenOutcome> {
+    /// A1 single-window delegating wrapper. Opens in the `main` window.
+    /// Kept so callers that don't carry a window label (tests, the CLI /
+    /// session-restore boot path that targets `main`) keep working.
+    pub fn open_document(&mut self, path: &Path, opts: OpenOpts) -> Result<OpenOutcome> {
+        self.open_document_for(MAIN_LABEL, path, opts)
+    }
+
+    /// B2: window-scoped open. Identical to the single-window `open_document`
+    /// except the freshly-created tab is owned by `label` and registered into
+    /// that window's `order`/`active` (instead of always `MAIN_LABEL`). The
+    /// already-open and conflict branches are unchanged — an existing tab
+    /// re-activates within its own owning window regardless of which window
+    /// asked. `label` should be a registered window; an unregistered label
+    /// still opens (the `order`/`active` entries are created on demand) which
+    /// matches `new_window`'s lazy-entry behavior.
+    pub fn open_document_for(
+        &mut self,
+        label: &str,
+        path: &Path,
+        _opts: OpenOpts,
+    ) -> Result<OpenOutcome> {
         let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
 
         // Detach the existing-tab snapshot before any &mut self mutation.
@@ -1364,8 +1417,8 @@ impl Workspace {
             id.clone(),
             Tab {
                 id: id.clone(),
-                // A1: B2 threads the real caller label; default to main for now.
-                window_label: MAIN_LABEL.to_string(),
+                // B2: the tab is owned by the calling window's label.
+                window_label: label.to_string(),
                 path: canonical.clone(),
                 source: source.clone(),
                 render,
@@ -1379,12 +1432,12 @@ impl Workspace {
                 etag: None,
             },
         );
-        // A1: register into the new tab's owning window (MAIN_LABEL today).
+        // B2: register into the calling window's order + make it active there.
         self.order
-            .entry(MAIN_LABEL.to_string())
+            .entry(label.to_string())
             .or_default()
             .push(id.clone());
-        self.active.insert(MAIN_LABEL.to_string(), Some(id.clone()));
+        self.active.insert(label.to_string(), Some(id.clone()));
         let _ = self.recents.push(&canonical);
         self.persist_session();
         Ok(OpenOutcome::Document(result))
@@ -1653,6 +1706,29 @@ impl Workspace {
         self.tabs
             .values()
             .find(|t| t.path == path)
+            .map(|t| t.window_label.as_str())
+    }
+
+    /// B2 watcher routing for a watched-file event. Resolves `path` (which may
+    /// be either a tab's `.md` OR that document's sidecar) to the owning
+    /// window's label, so the external-change forwarder can `emit_to` the one
+    /// window that has the file open. A sidecar path is matched by computing
+    /// each open tab's sidecar path under the active `sidecar_pattern` and
+    /// comparing — this keeps sidecar auto-reload events addressed to the
+    /// right window instead of being dropped because no tab's `.md` equals the
+    /// sidecar path. Returns `None` (drop the event) when no open tab owns
+    /// either the path or its sidecar.
+    pub fn owning_window_for_watched(&self, path: &Path) -> Option<&str> {
+        // Direct .md match first (the common case).
+        if let Some(label) = self.owning_window_label(path) {
+            return Some(label);
+        }
+        // Otherwise treat `path` as a sidecar and match it against each tab's
+        // computed sidecar path.
+        let pattern = self.settings.get().comments.sidecar_pattern;
+        self.tabs
+            .values()
+            .find(|t| sidecar_path(&t.path, &pattern) == path)
             .map(|t| t.window_label.as_str())
     }
 
