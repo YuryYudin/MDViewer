@@ -1,9 +1,17 @@
 import { describe, it, expect, vi } from 'vitest';
 import { mountTabBar } from '../../src/views/TabBar';
-import type { Ipc } from '../../src/ipc';
+import type { Ipc, WindowSummary } from '../../src/ipc';
 import type { WorkspaceState } from '../../src/views/Workspace';
 
-function makeIpc(): Ipc {
+// E1: the Move-to-Window submenu excludes the CURRENT window. TabBar resolves
+// the current label via `getCurrentWindow().label` (guarded for jsdom). Mock
+// the window API so the current label is deterministic in unit tests.
+const currentWindow = { label: 'main' };
+vi.mock('@tauri-apps/api/window', () => ({
+  getCurrentWindow: () => currentWindow,
+}));
+
+function makeIpc(overrides?: Partial<Ipc>): Ipc {
   return {
     listOpenDocuments: vi.fn(),
     listRecents: vi.fn(),
@@ -20,7 +28,26 @@ function makeIpc(): Ipc {
     renderMarkdown: vi.fn(),
     resolveAnchor: vi.fn(),
     openInNewWindow: vi.fn().mockResolvedValue(undefined),
+    // E1: defaults — two windows (current `main` + a `win-b` target), and a
+    // resolving move. Individual tests override via `overrides`.
+    listWindows: vi.fn().mockResolvedValue([
+      { label: 'main', active_doc_name: 'a.md', tab_count: 1, focused: true },
+      { label: 'win-b', active_doc_name: 'report.md', tab_count: 1, focused: false },
+    ] satisfies WindowSummary[]),
+    moveTab: vi.fn().mockResolvedValue(undefined),
+    ...overrides,
   } as unknown as Ipc;
+}
+
+/**
+ * Drain the task + microtask queues for the async submenu population to
+ * settle. `populateMoveToWindow` awaits `import('@tauri-apps/api/window')`
+ * which resolves on a macrotask, so a microtask-only flush is not enough.
+ */
+async function settle(): Promise<void> {
+  for (let i = 0; i < 5; i++) {
+    await new Promise((r) => setTimeout(r, 0));
+  }
 }
 
 describe('TabBar', () => {
@@ -236,7 +263,7 @@ describe('TabBar', () => {
     expect(menu!.querySelector('[data-test="ctx-close"]')).toBeTruthy();
   });
 
-  it('scaffolds an empty Move to Window submenu (E1 populates it later)', () => {
+  it('renders the Move to Window submenu container on right-click', () => {
     const root = document.createElement('div');
     const state: WorkspaceState = {
       tabs: [{ id: 't1', path: '/docs/a.md' }],
@@ -246,8 +273,6 @@ describe('TabBar', () => {
     rightClick(root.querySelector<HTMLElement>('[data-test="tab"]')!);
     const submenu = root.querySelector('[data-test="move-to-window-submenu"]');
     expect(submenu).toBeTruthy();
-    // Scaffold only: no concrete move targets are rendered here.
-    expect(submenu!.querySelectorAll('[data-test="move-target"]').length).toBe(0);
   });
 
   it('preventDefault is called on contextmenu so the OS menu does not appear', () => {
@@ -330,6 +355,171 @@ describe('TabBar', () => {
     rightClick(tabs[1]);
     // Only a single menu is mounted at a time.
     expect(root.querySelectorAll('[data-test="tab-context-menu"]').length).toBe(1);
+  });
+
+  // -------------------------------------------------------------------
+  // E1: Move to Window submenu — populate from list_windows (S4)
+  // (wireframe 03-move-to-window-submenu)
+  // -------------------------------------------------------------------
+
+  it('populates the submenu with only OTHER windows (current excluded), labeled by active_doc_name', async () => {
+    const root = document.createElement('div');
+    const ipc = makeIpc({
+      listWindows: vi.fn().mockResolvedValue([
+        { label: 'main', active_doc_name: 'a.md', tab_count: 1, focused: true },
+        { label: 'win-b', active_doc_name: 'report.md', tab_count: 1, focused: false },
+        { label: 'win-c', active_doc_name: 'notes.md', tab_count: 2, focused: false },
+      ] satisfies WindowSummary[]),
+    });
+    const state: WorkspaceState = {
+      tabs: [{ id: 't1', path: '/docs/a.md' }],
+      activeId: 't1',
+    };
+    mountTabBar(root, ipc, state);
+    rightClick(root.querySelector<HTMLElement>('[data-test="tab"]')!);
+    await settle();
+
+    const targets = root.querySelectorAll<HTMLElement>(
+      '[data-test="move-to-window-submenu"] [data-test="move-target"]',
+    );
+    // The current window (`main`) is excluded — only win-b and win-c remain.
+    expect(targets.length).toBe(2);
+    const labels = Array.from(targets).map((t) => t.textContent?.trim());
+    expect(labels).toEqual(expect.arrayContaining(['report.md', 'notes.md']));
+    // The current window must NOT appear as a move target.
+    const targetWindowLabels = Array.from(targets).map((t) =>
+      t.getAttribute('data-window-label'),
+    );
+    expect(targetWindowLabels).not.toContain('main');
+    expect(targetWindowLabels).toEqual(expect.arrayContaining(['win-b', 'win-c']));
+    expect(ipc.listWindows).toHaveBeenCalled();
+  });
+
+  it('uses a placeholder label for a target window with no active document', async () => {
+    const root = document.createElement('div');
+    const ipc = makeIpc({
+      listWindows: vi.fn().mockResolvedValue([
+        { label: 'main', active_doc_name: 'a.md', tab_count: 1, focused: true },
+        { label: 'win-b', active_doc_name: null, tab_count: 0, focused: false },
+      ] satisfies WindowSummary[]),
+    });
+    const state: WorkspaceState = {
+      tabs: [{ id: 't1', path: '/docs/a.md' }],
+      activeId: 't1',
+    };
+    mountTabBar(root, ipc, state);
+    rightClick(root.querySelector<HTMLElement>('[data-test="tab"]')!);
+    await settle();
+
+    const target = root.querySelector<HTMLElement>(
+      '[data-test="move-to-window-submenu"] [data-test="move-target"]',
+    );
+    expect(target).toBeTruthy();
+    // A placeholder (non-empty) label stands in for the empty window so the
+    // row is still pickable and not blank.
+    expect(target!.textContent?.trim().length).toBeGreaterThan(0);
+    expect(target!.getAttribute('data-window-label')).toBe('win-b');
+  });
+
+  it('picking a target invokes moveTab(tabId, targetLabel) and dismisses the menu', async () => {
+    const root = document.createElement('div');
+    const ipc = makeIpc();
+    const state: WorkspaceState = {
+      tabs: [{ id: 't1', path: '/docs/a.md' }],
+      activeId: 't1',
+    };
+    mountTabBar(root, ipc, state);
+    rightClick(root.querySelector<HTMLElement>('[data-test="tab"]')!);
+    await settle();
+
+    const target = root.querySelector<HTMLElement>(
+      '[data-test="move-target"][data-window-label="win-b"]',
+    )!;
+    target.click();
+    await settle();
+
+    expect(ipc.moveTab).toHaveBeenCalledWith('t1', 'win-b');
+    // Picking a target dismisses the menu.
+    expect(root.querySelector('[data-test="tab-context-menu"]')).toBeNull();
+  });
+
+  it('a move_tab rejection toasts the error and refreshes (no crash)', async () => {
+    const root = document.createElement('div');
+    const ipc = makeIpc({
+      moveTab: vi.fn().mockRejectedValue(new Error('unknown tab')),
+    });
+    const state: WorkspaceState = {
+      tabs: [{ id: 't1', path: '/docs/a.md' }],
+      activeId: 't1',
+    };
+    const onAfterClose = vi.fn();
+    const toast = vi.fn();
+    document.addEventListener('mdviewer:toast', toast);
+    mountTabBar(root, ipc, state, { onAfterClose });
+    rightClick(root.querySelector<HTMLElement>('[data-test="tab"]')!);
+    await settle();
+
+    const target = root.querySelector<HTMLElement>(
+      '[data-test="move-target"][data-window-label="win-b"]',
+    )!;
+    target.click();
+    await settle();
+
+    expect(ipc.moveTab).toHaveBeenCalledWith('t1', 'win-b');
+    // The rejection surfaces a toast …
+    expect(toast).toHaveBeenCalled();
+    const detail = (toast.mock.calls[0][0] as CustomEvent).detail;
+    expect(detail.level).toBe('error');
+    expect(String(detail.message)).toContain('unknown tab');
+    // … and refreshes the source strip so the UI matches backend truth.
+    expect(onAfterClose).toHaveBeenCalled();
+    document.removeEventListener('mdviewer:toast', toast);
+  });
+
+  it('disables the Move to Window item when only one window is open', async () => {
+    const root = document.createElement('div');
+    const ipc = makeIpc({
+      listWindows: vi.fn().mockResolvedValue([
+        { label: 'main', active_doc_name: 'a.md', tab_count: 1, focused: true },
+      ] satisfies WindowSummary[]),
+    });
+    const state: WorkspaceState = {
+      tabs: [{ id: 't1', path: '/docs/a.md' }],
+      activeId: 't1',
+    };
+    mountTabBar(root, ipc, state);
+    rightClick(root.querySelector<HTMLElement>('[data-test="tab"]')!);
+    await settle();
+
+    const moveItem = root.querySelector<HTMLElement>('[data-test="ctx-move-to-window"]')!;
+    expect(moveItem.getAttribute('aria-disabled')).toBe('true');
+    expect(moveItem.classList.contains('disabled')).toBe(true);
+    // No move targets when there is nowhere to move to.
+    expect(
+      root.querySelectorAll('[data-test="move-to-window-submenu"] [data-test="move-target"]')
+        .length,
+    ).toBe(0);
+  });
+
+  it('disables the Move to Window item when list_windows rejects (no crash)', async () => {
+    const root = document.createElement('div');
+    const ipc = makeIpc({
+      listWindows: vi.fn().mockRejectedValue(new Error('enumeration failed')),
+    });
+    const state: WorkspaceState = {
+      tabs: [{ id: 't1', path: '/docs/a.md' }],
+      activeId: 't1',
+    };
+    mountTabBar(root, ipc, state);
+    rightClick(root.querySelector<HTMLElement>('[data-test="tab"]')!);
+    await settle();
+
+    const moveItem = root.querySelector<HTMLElement>('[data-test="ctx-move-to-window"]')!;
+    expect(moveItem.getAttribute('aria-disabled')).toBe('true');
+    expect(
+      root.querySelectorAll('[data-test="move-to-window-submenu"] [data-test="move-target"]')
+        .length,
+    ).toBe(0);
   });
 
   it('marks the active tab', () => {

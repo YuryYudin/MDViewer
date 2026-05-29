@@ -1,4 +1,4 @@
-import type { Ipc } from '../ipc';
+import type { Ipc, WindowSummary } from '../ipc';
 import type { WorkspaceState } from './Workspace';
 
 /**
@@ -175,9 +175,12 @@ function openTabContextMenu(
   });
   menu.appendChild(openItem);
 
-  // "Move to Window ▸" — scaffold only. E1 populates the submenu from
-  // list_windows; here it is an empty placeholder so the structure (and its
-  // data-test hooks) exist for styling and for E1 to fill.
+  // "Move to Window ▸" — E1 populates the submenu from list_windows, listing
+  // only OTHER open windows (the current window is excluded — moving a tab to
+  // its own window is a no-op the user shouldn't be offered). Each target is
+  // labeled by the window's active_doc_name (with a placeholder when none).
+  // Picking a target calls move_tab(tab_id, to_window); a rejection toasts +
+  // refreshes rather than crashing.
   const moveItem = makeMenuItem('Move to Window', 'ctx-move-to-window');
   moveItem.classList.add('hot');
   moveItem.setAttribute('aria-haspopup', 'true');
@@ -189,9 +192,12 @@ function openTabContextMenu(
   submenu.setAttribute('data-test', 'move-to-window-submenu');
   submenu.setAttribute('role', 'menu');
   submenu.className = 'menu submenu';
-  // Intentionally empty — E1 fills it. No move-target rows here.
   moveItem.appendChild(submenu);
   menu.appendChild(moveItem);
+  // Populate asynchronously: list_windows is an IPC round-trip. The menu is
+  // already mounted (D2 structure), so we fill the submenu rows when they
+  // arrive. Failures here leave the item disabled rather than crashing.
+  void populateMoveToWindow(moveItem, submenu, ipc, tab, dismiss, callbacks);
 
   const sep = document.createElement('div');
   sep.className = 'sep';
@@ -233,6 +239,126 @@ function dismissTabContextMenu(root: HTMLElement): void {
     document.removeEventListener('click', existing.__onDocClick, true);
   }
   existing.remove();
+}
+
+/**
+ * E1: fill the Move-to-Window submenu with one row per OTHER open window.
+ *
+ * - Calls `list_windows` (D1) and filters out the current window so the user
+ *   can't "move" a tab to the window it already lives in. We identify the
+ *   current window by `getCurrentWindow().label`; under jsdom (unit tests) the
+ *   API is mocked, and in a no-runtime context the resolver returns null so we
+ *   fall back to the WindowSummary.focused flag.
+ * - Each row is labeled by the target's `active_doc_name` (a placeholder when
+ *   the window has no document) and carries `data-window-label` for the e2e
+ *   spec / move dispatch.
+ * - Picking a row dismisses the menu and invokes `move_tab(tab_id, to_window)`.
+ *   On rejection it toasts the error and refreshes the source strip
+ *   (`onAfterClose`) so the UI re-syncs with backend truth.
+ * - When there are no other windows, the Move-to-Window item is disabled
+ *   (greyed) per wireframe 03's single-window edge case.
+ */
+async function populateMoveToWindow(
+  moveItem: HTMLElement,
+  submenu: HTMLElement,
+  ipc: Ipc,
+  tab: { id: string; path: string },
+  dismiss: () => void,
+  callbacks?: TabBarCallbacks,
+): Promise<void> {
+  let windows: WindowSummary[];
+  let currentLabel: string | null;
+  try {
+    [windows, currentLabel] = await Promise.all([ipc.listWindows(), currentWindowLabel()]);
+  } catch {
+    // Couldn't enumerate windows — leave the item disabled rather than crash.
+    disableMoveItem(moveItem);
+    return;
+  }
+
+  // OTHER windows only. Prefer an explicit current-label match; if we couldn't
+  // resolve the label (no runtime), fall back to excluding the focused window
+  // (the IPC layer fills `focused`).
+  const others = windows.filter((w) =>
+    currentLabel != null ? w.label !== currentLabel : !w.focused,
+  );
+
+  if (others.length === 0) {
+    disableMoveItem(moveItem);
+    return;
+  }
+
+  for (const w of others) {
+    const row = document.createElement('div');
+    row.setAttribute('data-test', 'move-target');
+    row.setAttribute('role', 'menuitem');
+    row.setAttribute('data-window-label', w.label);
+    row.className = 'item';
+    const span = document.createElement('span');
+    span.className = 'item-label';
+    // textContent guards against a doc name containing markup. The placeholder
+    // keeps an empty window pickable (and non-blank) in the list.
+    span.textContent = w.active_doc_name ?? 'Empty window';
+    row.appendChild(span);
+    row.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      dismiss();
+      void moveTabToWindow(ipc, tab, w.label, callbacks);
+    });
+    submenu.appendChild(row);
+  }
+}
+
+/** Grey out the Move-to-Window item (single-window edge case). */
+function disableMoveItem(moveItem: HTMLElement): void {
+  moveItem.classList.add('disabled');
+  moveItem.setAttribute('aria-disabled', 'true');
+}
+
+/**
+ * Invoke `move_tab(tab_id, to_window)`. The relocate fires window-addressed
+ * `workspace-changed` events (B2 emits to both source and target) that the
+ * boot-time listeners refresh on — so on success we don't repaint here. On
+ * rejection (unknown tab/window, etc.) we toast the error and refresh the
+ * source strip via `onAfterClose` so the UI matches backend truth.
+ */
+async function moveTabToWindow(
+  ipc: Ipc,
+  tab: { id: string; path: string },
+  toWindow: string,
+  callbacks?: TabBarCallbacks,
+): Promise<void> {
+  try {
+    await ipc.moveTab(tab.id, toWindow);
+  } catch (e) {
+    document.dispatchEvent(
+      new CustomEvent('mdviewer:toast', {
+        detail: { message: `Move failed: ${errorText(e)}`, level: 'error' },
+      }),
+    );
+    if (callbacks?.onAfterClose) await callbacks.onAfterClose();
+  }
+}
+
+function errorText(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  if (typeof e === 'string') return e;
+  return String(e);
+}
+
+/**
+ * Resolve this window's label via the Tauri window API, loaded lazily and
+ * guarded so jsdom unit tests (which mock `@tauri-apps/api/window`) and any
+ * no-runtime context don't throw. Returns null when the runtime is absent —
+ * the caller then falls back to the WindowSummary.focused flag.
+ */
+async function currentWindowLabel(): Promise<string | null> {
+  try {
+    const { getCurrentWindow } = await import('@tauri-apps/api/window');
+    return getCurrentWindow().label;
+  } catch {
+    return null;
+  }
 }
 
 function makeMenuItem(label: string, testId: string): HTMLElement {
