@@ -1795,6 +1795,32 @@ fn new_window(app: tauri::AppHandle, state: State<'_, Ws>) -> Result<(), String>
     Ok(())
 }
 
+/// G2 (e2e only): spawn a fresh window with the EXACT caller-supplied label.
+///
+/// Mirrors the production `new_window` command but takes the label as an
+/// argument instead of generating `win-{nanos}`, so the multi-window e2e
+/// helpers can address a window by a known, stable label
+/// (`switchToWindow(label)` keys on it). Reuses the same `spawn_window` +
+/// `Workspace::new_window` + `register_window_event_handler` + `rebuild_menu`
+/// + `set_focus` lifecycle as `new_window`.
+///
+/// Gated on `--features e2e` and registered only under the same cfg in the
+/// invoke handler, so production (non-e2e) builds neither compile nor expose
+/// this command — the only window-spawning IPC they ship is `new_window`.
+#[cfg(feature = "e2e")]
+#[tauri::command]
+fn e2e_create_window(app: tauri::AppHandle, state: State<'_, Ws>, label: String) -> Result<(), String> {
+    let window = spawn_window(&app, &label).map_err(|e| e.to_string())?;
+    {
+        let mut ws = state.lock().map_err(|e| e.to_string())?;
+        ws.new_window(label.clone());
+    }
+    register_window_event_handler(&app, &window);
+    rebuild_menu(&app);
+    let _ = window.set_focus();
+    Ok(())
+}
+
 /// D1: project the workspace's pure per-window summaries onto the IPC wire
 /// shape, filling each `focused` flag from the live Tauri window list. Pure
 /// over `(summaries, focused_label)` so it unit-tests without an `AppHandle`;
@@ -2594,6 +2620,12 @@ fn main() {
             // B2 + Workspace::new_window A1 + rebuild_menu C1). D1 adds the
             // OTHER window commands and must NOT re-register new_window.
             new_window,
+            // G2: e2e-only command to spawn a window with an exact label so
+            // the multi-window e2e helpers can address it deterministically.
+            // Compiled + registered ONLY under `--features e2e`; absent from
+            // production builds.
+            #[cfg(feature = "e2e")]
+            e2e_create_window,
             // D1: the remaining window IPC surface (new_window is C1's above).
             close_window,
             list_windows,
