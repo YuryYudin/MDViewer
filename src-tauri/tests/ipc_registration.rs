@@ -932,6 +932,128 @@ mod window_scoping {
         assert!(g.list_open_documents_for(MAIN_LABEL).is_empty());
     }
 
+    /// phase-F review fix: the SSH branch of `dispatch_cli_targets_new_window`
+    /// must relocate an ALREADY-OPEN remote doc into the freshly-spawned window
+    /// exactly like the Local branch — not leave it in its original window.
+    /// This drives the real path: open an ssh:// URL in `main`, then predict
+    /// its cache path via `cache_path_for_url(ops.cache_base(), &url)` (no
+    /// fetch), resolve one-owner, and `move_tab` into the spawned window. The
+    /// result must be one tab total, gone from `main`.
+    #[tokio::test]
+    async fn f1_new_window_ssh_relocates_already_open_tab_into_new_window() {
+        use async_trait::async_trait;
+        use mdviewer_core::ssh_url::SshUrl;
+        use mdviewer_lib::ssh::operations::{cache_path_for_url, Operations};
+        use mdviewer_lib::ssh::transport::{
+            DirEntry, SshStat, SshTransport, TransportError,
+        };
+        use std::sync::Arc;
+
+        struct FetchOnce {
+            bytes: Vec<u8>,
+        }
+        #[async_trait]
+        impl SshTransport for FetchOnce {
+            async fn fetch(&self, _url: &SshUrl) -> Result<Vec<u8>, TransportError> {
+                Ok(self.bytes.clone())
+            }
+            async fn push(&self, _url: &SshUrl, _bytes: &[u8]) -> Result<(), TransportError> {
+                Ok(())
+            }
+            async fn list_dir(&self, _url: &SshUrl) -> Result<Vec<DirEntry>, TransportError> {
+                Ok(vec![])
+            }
+            async fn stat(&self, _url: &SshUrl) -> Result<SshStat, TransportError> {
+                Ok(SshStat { size: 0, is_dir: false, mtime: None })
+            }
+        }
+
+        let data_dir = tempfile::tempdir().expect("data dir");
+        let cache_dir = tempfile::tempdir().expect("cache dir");
+        let transport = Arc::new(FetchOnce { bytes: b"# remote\n".to_vec() });
+        let ops = Operations::new(transport, cache_dir.path().to_path_buf());
+        let url = SshUrl {
+            user: Some("alice".into()),
+            host: "host.example".into(),
+            port: 22,
+            path: "/notes/file.md".into(),
+        };
+
+        let mut ws = mdviewer_lib::workspace::Workspace::new(data_dir.path()).expect("workspace");
+        // Doc starts open in main (SSH tab stored under its cache path).
+        let _summary = ws.open_ssh_url(url.clone(), &ops).await.expect("open ssh ok");
+        let open_tab_path = {
+            let docs = ws.list_open_documents_for(MAIN_LABEL);
+            assert_eq!(docs.len(), 1);
+            docs[0].path.clone()
+        };
+
+        // `mdviewer -w ssh://...` spawns a fresh window.
+        let new_label = "win-spawned".to_string();
+        ws.new_window(new_label.clone());
+
+        // Predict the cache path WITHOUT a fetch and run the one-owner decision,
+        // exactly as the new-window SSH loop does.
+        let cache_path = cache_path_for_url(ops.cache_base(), &url);
+        assert_eq!(
+            cache_path, open_tab_path,
+            "predicted cache path must equal the open tab's stored path"
+        );
+        let resolution = ws.open_in_new_window_resolve(&cache_path);
+        match new_window_target_action(&resolution, &new_label) {
+            NewWindowTargetAction::Relocate { tab_id } => {
+                ws.move_tab(&tab_id, &new_label).unwrap();
+            }
+            NewWindowTargetAction::Open => {
+                panic!("SSH doc was open in main; expected Relocate")
+            }
+        }
+
+        // Never duplicated, and actually RELOCATED: gone from main, sole tab in
+        // the new window.
+        assert!(
+            ws.list_open_documents_for(MAIN_LABEL).is_empty(),
+            "relocated SSH tab must leave the source window"
+        );
+        let dest = ws.list_open_documents_for(&new_label);
+        assert_eq!(dest.len(), 1, "exactly one SSH tab in the new window — no duplicate");
+        assert_eq!(dest[0].path, cache_path);
+    }
+
+    /// phase-F review fix (source-level smoke): pin that the PRODUCTION
+    /// `dispatch_cli_targets_new_window` SSH loop predicts the cache path and
+    /// relocates an already-open tab via `move_tab` — not just the test mirror.
+    /// A regression that drops the relocate (reverting to register-only
+    /// de-dupe, which leaves the tab in its original window) trips this. The
+    /// DEFAULT (non -w) focused-window SSH loop in `dispatch_cli_targets` must
+    /// NOT gain a relocate, so we also assert the relocate seam appears exactly
+    /// once across main.rs's SSH dispatch.
+    #[test]
+    fn dispatch_new_window_ssh_loop_relocates_via_move_tab() {
+        let main_rs = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+        )
+        .expect("read main.rs");
+        let start = main_rs
+            .find("fn dispatch_cli_targets_new_window(")
+            .expect("main.rs declares fn dispatch_cli_targets_new_window");
+        // Slice to the next top-level fn so we only inspect this function body.
+        let body_after = &main_rs[start..];
+        let end = body_after[1..]
+            .find("\nfn ")
+            .map(|i| start + 1 + i)
+            .unwrap_or(main_rs.len());
+        let body = &main_rs[start..end];
+        assert!(
+            body.contains("cache_path_for_url(") && body.contains(".cache_base()"),
+            "new-window SSH loop must predict the cache path via cache_path_for_url(ops.cache_base(), &url)",
+        );
+        assert!(
+            body.contains("open_in_new_window_resolve(") && body.contains("move_tab("),
+            "new-window SSH loop must relocate an already-open SSH tab via move_tab (one-owner)",
+        );
+    }
+
     /// D1: mirror of main.rs's pure `window_summaries_with_focus` — project the
     /// per-window summaries onto the IPC wire shape, marking exactly the
     /// `focused_label` window focused. The production `list_windows` handler
