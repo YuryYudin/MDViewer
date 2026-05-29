@@ -40,10 +40,10 @@ mdviewer-core = { path = "../crates/mdviewer-core" }
 tauri = { version = "2", features = ["devtools"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
-# Persists window position + size on close and restores on next start.
-# Cross-platform — Tauri-official plugin, writes to the app config dir
-# (which our `MDVIEWER_DATA_DIR` override already redirects for tests).
-tauri-plugin-window-state = "2"
+# B3: dropped `tauri-plugin-window-state`. Multi-window geometry is now owned
+# directly by `session.rs` (B1) + the `on_window_event` handler (B2), which
+# persist one entry per window in `session.json` — the plugin only modelled a
+# single window and wrote a separate `window-state.json` we no longer read.
 # Funnels every secondary `mdviewer …` invocation into the running
 # instance instead of spawning a duplicate window. The callback receives
 # the second invocation's argv + cwd; we route them through the same

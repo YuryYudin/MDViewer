@@ -39,8 +39,21 @@ pub const MENU_ID_UNINSTALL_CLI: &str = "menu-uninstall-cli";
 /// The `menu-install-cli` / `menu-uninstall-cli` ids also return None
 /// because their handler runs Rust-side (no frontend involvement).
 pub fn menu_id_to_action(id: &str) -> Option<&'static str> {
+    // C1 adds a dynamic Window menu whose entries carry `window-select:<label>`
+    // ids; those are parsed Rust-side in main.rs (it splits off the label and
+    // focuses that window) and must never bridge into a frontend action. Pin
+    // that here explicitly rather than relying on the catch-all so the
+    // contract is intentional, not incidental.
+    if id.starts_with("window-select:") {
+        return None;
+    }
     match id {
         "menu-open-file" => Some("open-file"),
+        // B3: File → "New Window" (CmdOrCtrl+Shift+N). Maps to the
+        // `new-window` action string, which `menuBridge.ts` forwards as the
+        // `mdviewer:new-window` CustomEvent; the Workspace handler then calls
+        // the `new_window` IPC (C1) to spawn a second window on the StartPage.
+        "menu-new-window" => Some("new-window"),
         "menu-new-document" => Some("new-document"),
         "menu-close-tab" => Some("close-tab"),
         "menu-open-settings" => Some("open-settings"),
@@ -121,6 +134,18 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .build()?;
 
     let file_menu = SubmenuBuilder::new(app, "File")
+        // B3: spawn a second native window on the StartPage. CmdOrCtrl+Shift+N
+        // pairs with "New Document"'s CmdOrCtrl+N (the shifted variant is the
+        // window-level analogue of the tab-level "New Document"). The id
+        // `menu-new-window` maps to the `new-window` action; the spawn itself
+        // is wired in the frontend (mdviewer:new-window → `new_window` IPC, C1).
+        .item(&MenuItem::with_id(
+            app,
+            "menu-new-window",
+            "New Window",
+            true,
+            Some("CmdOrCtrl+Shift+N"),
+        )?)
         .item(&MenuItem::with_id(
             app,
             "menu-new-document",
@@ -260,6 +285,25 @@ mod tests {
     #[test]
     fn menu_id_action_mapping_includes_open_remote() {
         assert_eq!(menu_id_to_action("menu-open-remote"), Some("open-remote"));
+    }
+
+    /// B3: File → "New Window" (CmdOrCtrl+Shift+N, id `menu-new-window`)
+    /// bridges to the frontend's `mdviewer:new-window` CustomEvent via the
+    /// `new-window` action string. The dynamic Window-menu entries that C1
+    /// adds use `window-select:<label>` ids; those are parsed Rust-side in
+    /// main.rs and must NOT translate into a frontend action here, so the
+    /// static map returns None for any such id.
+    #[test]
+    fn menu_id_action_mapping_includes_new_window() {
+        assert_eq!(menu_id_to_action("menu-new-window"), Some("new-window"));
+    }
+
+    #[test]
+    fn window_select_ids_return_none() {
+        assert_eq!(menu_id_to_action("window-select:win-123"), None);
+        assert_eq!(menu_id_to_action("window-select:main"), None);
+        // Even an empty-suffix or bare prefix must not bridge.
+        assert_eq!(menu_id_to_action("window-select:"), None);
     }
 
     /// The View-menu zoom items map to kebab-case action strings that the
