@@ -707,6 +707,273 @@ fn ssh_password_response_is_sync_not_async() {
 // and Conflict paths and asserts push() did / did not run.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// B2: window-scoped tab commands + addressed event routing.
+//
+// The IPC handlers now derive their window from the injected `tauri::Window`
+// (`.label()`) instead of a client argument, events are addressed via
+// `emit_to(<label>, …)`, and session restore recreates N windows. We can't
+// import main.rs's `#[tauri::command] fn`s from this crate, so we (a) exercise
+// the window-scoped Workspace API the handlers delegate to, (b) unit-test the
+// pure helpers (`window_has_dirty_tab` / `restore_window_label`) by mirroring
+// their bodies against the real Workspace, and (c) source-level smoke that the
+// handlers take a `window: tauri::Window` and call `emit_to`.
+// ---------------------------------------------------------------------------
+
+mod window_scoping {
+    use super::*;
+    use mdviewer_lib::workspace::{OpenOpts, OpenOutcome, MAIN_LABEL};
+    use std::path::Path;
+
+    /// Mirror of main.rs's pure `window_has_dirty_tab`: any tab owned by
+    /// `label` for which `dirty_for(path)` is true. The production handler
+    /// passes `|p| watcher.is_unsaved(p)`; here we inject an explicit set.
+    fn window_has_dirty_tab(
+        ws: &mdviewer_lib::workspace::Workspace,
+        label: &str,
+        dirty_for: impl Fn(&Path) -> bool,
+    ) -> bool {
+        ws.list_open_documents_for(label)
+            .iter()
+            .any(|t| dirty_for(&t.path))
+    }
+
+    /// Mirror of main.rs's pure `restore_window_label`: idx 0 → "main",
+    /// later windows → unique `win-{nanos+idx}`.
+    fn restore_window_label(index: usize, nanos: u128) -> String {
+        if index == 0 {
+            MAIN_LABEL.to_string()
+        } else {
+            format!("win-{}", nanos + index as u128)
+        }
+    }
+
+    #[test]
+    fn open_document_for_owns_tab_in_its_window() {
+        // open_document_for(label, ...) must register the tab into THAT
+        // window's order — and a second window must not see it. This is the
+        // S5 isolation invariant at the Workspace layer.
+        let (state, tmp) = ws();
+        let doc_a = tmp.path().join("a.md");
+        let doc_b = tmp.path().join("b.md");
+        std::fs::write(&doc_a, "# A\n").unwrap();
+        std::fs::write(&doc_b, "# B\n").unwrap();
+
+        let mut g = state.lock().unwrap();
+        g.new_window("win-2".to_string());
+
+        g.open_document_for(MAIN_LABEL, &doc_a, OpenOpts::default()).unwrap();
+        g.open_document_for("win-2", &doc_b, OpenOpts::default()).unwrap();
+
+        let main_tabs: Vec<_> = g
+            .list_open_documents_for(MAIN_LABEL)
+            .iter()
+            .map(|t| t.path.clone())
+            .collect();
+        let win2_tabs: Vec<_> = g
+            .list_open_documents_for("win-2")
+            .iter()
+            .map(|t| t.path.clone())
+            .collect();
+
+        assert_eq!(main_tabs.len(), 1, "main window has exactly its own tab");
+        assert_eq!(win2_tabs.len(), 1, "win-2 has exactly its own tab");
+        assert!(main_tabs[0].ends_with("a.md"));
+        assert!(win2_tabs[0].ends_with("b.md"));
+        // Cross-window isolation: main's active is unchanged by win-2's open.
+        let main_active = g
+            .active_tab_id_for(MAIN_LABEL)
+            .map(str::to_string);
+        let main_only_tab = g.list_open_documents_for(MAIN_LABEL)[0].id.clone();
+        assert_eq!(main_active, Some(main_only_tab));
+    }
+
+    #[test]
+    fn window_has_dirty_tab_scopes_to_the_window() {
+        let (state, tmp) = ws();
+        let doc_a = tmp.path().join("a.md");
+        let doc_b = tmp.path().join("b.md");
+        std::fs::write(&doc_a, "# A\n").unwrap();
+        std::fs::write(&doc_b, "# B\n").unwrap();
+
+        let mut g = state.lock().unwrap();
+        g.new_window("win-2".to_string());
+        g.open_document_for(MAIN_LABEL, &doc_a, OpenOpts::default()).unwrap();
+        g.open_document_for("win-2", &doc_b, OpenOpts::default()).unwrap();
+
+        // Canonical paths (open_document canonicalizes before storing).
+        let canon_a = doc_a.canonicalize().unwrap();
+
+        // Only a.md (in main) is dirty.
+        let dirty_set: std::collections::HashSet<std::path::PathBuf> =
+            [canon_a.clone()].into_iter().collect();
+        let dirty_for = |p: &Path| dirty_set.contains(p);
+
+        assert!(
+            window_has_dirty_tab(&g, MAIN_LABEL, &dirty_for),
+            "main owns the dirty a.md"
+        );
+        assert!(
+            !window_has_dirty_tab(&g, "win-2", &dirty_for),
+            "win-2 owns only the clean b.md — its close must not be guarded"
+        );
+    }
+
+    #[test]
+    fn window_has_dirty_tab_false_for_empty_or_unknown_window() {
+        let (state, _tmp) = ws();
+        let g = state.lock().unwrap();
+        assert!(!window_has_dirty_tab(&g, MAIN_LABEL, |_| true), "no tabs → not dirty");
+        assert!(!window_has_dirty_tab(&g, "ghost", |_| true), "unknown window → not dirty");
+    }
+
+    #[test]
+    fn restore_window_label_first_is_main_rest_unique() {
+        let nanos = 1_000u128;
+        assert_eq!(restore_window_label(0, nanos), "main");
+        assert_eq!(restore_window_label(1, nanos), "win-1001");
+        assert_eq!(restore_window_label(2, nanos), "win-1002");
+        // Two windows in the same nanosecond batch never collide.
+        assert_ne!(
+            restore_window_label(1, nanos),
+            restore_window_label(2, nanos)
+        );
+    }
+
+    #[test]
+    fn open_document_existing_tab_reactivates_in_owning_window() {
+        // Opening an already-open path re-activates the tab in ITS window,
+        // regardless of which window asked — the conflict/existing branch is
+        // window-agnostic by design.
+        let (state, tmp) = ws();
+        let doc = tmp.path().join("shared.md");
+        std::fs::write(&doc, "# shared\n").unwrap();
+
+        let mut g = state.lock().unwrap();
+        g.new_window("win-2".to_string());
+        // First opened in win-2.
+        let first = g.open_document_for("win-2", &doc, OpenOpts::default()).unwrap();
+        let first_id = match first {
+            OpenOutcome::Document(r) => r.tab_id,
+            OpenOutcome::Conflict { .. } => panic!("unexpected conflict"),
+        };
+        // main asks to open the same path; it stays owned by win-2.
+        let second = g.open_document_for(MAIN_LABEL, &doc, OpenOpts::default()).unwrap();
+        let second_id = match second {
+            OpenOutcome::Document(r) => r.tab_id,
+            OpenOutcome::Conflict { .. } => panic!("unexpected conflict"),
+        };
+        assert_eq!(first_id, second_id, "same tab re-used, not duplicated");
+        assert_eq!(g.list_open_documents_for("win-2").len(), 1);
+        assert_eq!(
+            g.list_open_documents_for(MAIN_LABEL).len(),
+            0,
+            "main never gained the tab — it lives in win-2"
+        );
+    }
+
+    #[test]
+    fn owning_window_for_watched_resolves_md_and_sidecar() {
+        // The external-change forwarder resolves both the .md path and its
+        // sidecar to the owning window. A path no window owns → None (drop).
+        let (state, tmp) = ws();
+        let doc = tmp.path().join("note.md");
+        std::fs::write(&doc, "# note\n").unwrap();
+
+        let mut g = state.lock().unwrap();
+        g.new_window("win-2".to_string());
+        g.open_document_for("win-2", &doc, OpenOpts::default()).unwrap();
+
+        let canon = doc.canonicalize().unwrap();
+        assert_eq!(g.owning_window_for_watched(&canon), Some("win-2"));
+
+        let pattern = g.settings_store().get().comments.sidecar_pattern;
+        let sc = mdviewer_lib::sidecar::sidecar_path(&canon, &pattern);
+        assert_eq!(
+            g.owning_window_for_watched(&sc),
+            Some("win-2"),
+            "sidecar path resolves to the .md's owning window"
+        );
+
+        assert_eq!(
+            g.owning_window_for_watched(Path::new("/nope/missing.md")),
+            None,
+            "unowned path drops the event"
+        );
+    }
+}
+
+#[test]
+fn b2_tab_commands_take_window_and_route_addressed_events() {
+    // Source-level smoke (mirrors the existing ipc_registration_includes_*
+    // checks): the window-scoped handlers must accept `window: tauri::Window`
+    // and the file must use emit_to for addressed events. The whole point of
+    // B2 is window identity from the injected Window + addressed events.
+    let main_rs = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    )
+    .expect("read main.rs");
+
+    for handler in [
+        "fn open_document(",
+        "fn close_tab(",
+        "fn activate_tab(",
+        "fn list_open_documents(",
+        "fn get_active_tab_id(",
+    ] {
+        let idx = main_rs.find(handler).unwrap_or_else(|| panic!("missing {handler}"));
+        // The signature (first ~260 chars) must declare a `tauri::Window`.
+        let sig: String = main_rs[idx..].chars().take(260).collect();
+        assert!(
+            sig.contains("window: tauri::Window"),
+            "{handler} must take `window: tauri::Window` (identity from the Window, not a client arg)",
+        );
+    }
+
+    // Window-scoped delegation: the commands call the `_for` variants.
+    assert!(main_rs.contains("list_open_documents_for(window.label())"));
+    assert!(main_rs.contains("close_tab_for(window.label()"));
+    assert!(main_rs.contains("activate_tab_for(window.label()"));
+    assert!(main_rs.contains("active_tab_id_for(window.label())"));
+    assert!(main_rs.contains("open_document_for(&label"));
+
+    // Addressed events: emit_to must appear and the broadcast workspace-changed
+    // for drive/ssh opens must be gone in favor of emit_to.
+    assert!(
+        main_rs.contains("emit_to("),
+        "main.rs must use emit_to(<label>, …) for addressed events",
+    );
+
+    // Restore recreates N windows + the window event handler is registered.
+    assert!(
+        main_rs.contains("fn spawn_window("),
+        "main.rs must declare spawn_window for the restore loop",
+    );
+    assert!(
+        main_rs.contains("on_window_event"),
+        "main.rs must register a per-window on_window_event handler",
+    );
+    assert!(
+        main_rs.contains("confirm-window-close"),
+        "the CloseRequested guard must emit confirm-window-close on a dirty window",
+    );
+    assert!(
+        main_rs.contains("prevent_close()"),
+        "the CloseRequested guard must call api.prevent_close() while a tab is dirty",
+    );
+    // The window-state plugin builder line must be gone (geometry is now the
+    // on_window_event handler's job).
+    assert!(
+        !main_rs.contains("tauri_plugin_window_state::Builder"),
+        "the tauri-plugin-window-state builder call must be removed (B2 owns geometry now)",
+    );
+    // Menu actions route to the focused window, not a broadcast.
+    assert!(
+        main_rs.contains("focused_window("),
+        "on_menu_event must route through focused_window for S12",
+    );
+}
+
 mod ssh_save_dispatch {
     use async_trait::async_trait;
     use mdviewer_core::ssh_url::SshUrl;

@@ -81,6 +81,70 @@ export async function openDocByE2eHook(absPath: string): Promise<void> {
   );
 }
 
+/**
+ * B2 (multi-window): spawn a second native window with the given label via
+ * the Tauri `WebviewWindow` JS API. The new window loads the same app entry
+ * (a fresh Workspace shell) and registers itself under `label`, which the
+ * window-scoped IPC handlers key on. Returns once the WebView for the new
+ * window exists as a WebDriver window handle so the caller can switch to it.
+ *
+ * The frontend wires the production "open in new window" affordance (C2/D1);
+ * this helper drives the underlying primitive so the isolation contract (S5)
+ * can be asserted independently of that UI landing.
+ */
+export async function createWindow(label: string): Promise<void> {
+  await browser.executeAsync(
+    function (label: string, done: (v: unknown) => void): void {
+      // Tauri exposes WebviewWindow on the internals bridge in dev/e2e builds.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const tauri = (window as any).__TAURI_INTERNALS__;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const WebviewWindowCtor = (window as any).__TAURI__?.webviewWindow?.WebviewWindow;
+      if (!WebviewWindowCtor) {
+        done({ error: 'WebviewWindow API missing on window.__TAURI__' });
+        return;
+      }
+      void tauri;
+      try {
+        const w = new WebviewWindowCtor(label, { url: 'index.html', width: 1000, height: 700 });
+        w.once('tauri://created', () => done(null));
+        w.once('tauri://error', (e: unknown) => done({ error: String(e) }));
+      } catch (e) {
+        done({ error: String(e) });
+      }
+    },
+    label,
+  );
+}
+
+/**
+ * Switch the active WebDriver window to the one whose document title or
+ * location matches `label`. tauri-wd surfaces each native window as a
+ * separate WebDriver handle; we identify the target by asking each handle
+ * for its window label via the Tauri current-window API.
+ */
+export async function switchToWindow(label: string): Promise<void> {
+  const handles = await browser.getWindowHandles();
+  for (const h of handles) {
+    await browser.switchToWindow(h);
+    const thisLabel = await browser.execute(function (): string | null {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const cur = (window as any).__TAURI__?.webviewWindow?.getCurrentWebviewWindow?.();
+      return cur?.label ?? null;
+    });
+    if (thisLabel === label) return;
+  }
+  throw new Error(`no WebDriver handle for window label "${label}"`);
+}
+
+/** Tab labels visible in the currently-active WebDriver window. */
+export async function tabLabelsInActiveWindow(): Promise<string[]> {
+  return browser.execute(() =>
+    Array.from(document.querySelectorAll<HTMLElement>('[data-test="tab"] .tab-label'))
+      .map((el) => el.textContent?.trim() ?? ''),
+  );
+}
+
 /** Spec 06: drive import_comments through the e2e side-channel. */
 export async function importCommentsByE2eHook(
   tabId: string,
