@@ -1144,7 +1144,14 @@ fn dispatch_cli_targets(
                 let _ = ws.register_ssh_tab_from_outcome(url, outcome);
                 tracing::info!("opened SSH from {}: {}", source_label, url_label);
             }
-            let _ = app_handle.emit("workspace-changed", ());
+            // B2: CLI / file-association opens route into the `main` window
+            // for now (E2 adds focused routing), so address the repaint nudge
+            // to `main` rather than broadcasting it to every window.
+            let _ = app_handle.emit_to(
+                mdviewer_lib::workspace::MAIN_LABEL,
+                "workspace-changed",
+                (),
+            );
         });
     }
 }
@@ -1532,7 +1539,7 @@ fn main() {
                     targets,
                     "second invocation",
                 );
-                let _ = app.emit("workspace-changed", ());
+                let _ = app.emit_to(mdviewer_lib::workspace::MAIN_LABEL, "workspace-changed", ());
             }
             // Bring the main window forward so the user sees the new tab
             // even if the existing window was hidden behind another app.
@@ -1973,7 +1980,7 @@ fn main() {
                 // Tell the WebView to re-fetch the open-doc list and re-paint
                 // its tab strip. main.ts listens for this event and calls
                 // workspace.refresh().
-                let _ = app.emit("workspace-changed", ());
+                let _ = app.emit_to(mdviewer_lib::workspace::MAIN_LABEL, "workspace-changed", ());
             }
             // Suppress the "unused" warnings on non-macOS platforms.
             #[cfg(not(any(target_os = "macos", target_os = "ios")))]
