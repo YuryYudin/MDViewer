@@ -1549,6 +1549,45 @@ fn d1_window_mutating_commands_rebuild_menu() {
 }
 
 #[test]
+fn move_tab_emits_workspace_changed_to_both_source_and_destination() {
+    // Phase-E review fix (S4): a cross-window move must repaint BOTH tab
+    // strips. The frontend deliberately does not locally repaint the source on
+    // a successful move; it relies on the backend emitting `workspace-changed`
+    // to the source AND the destination. The handler captures the source label
+    // from `move_tab`'s return value and emits to it (guarded against a
+    // redundant double-emit on a same-window move).
+    let main_rs = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    )
+    .expect("read main.rs");
+    let start = main_rs
+        .find("fn move_tab(")
+        .expect("main.rs must declare fn move_tab(");
+    let rest = &main_rs[start..];
+    let body_end = rest[1..]
+        .find("#[tauri::command]")
+        .map(|i| i + 1)
+        .unwrap_or(rest.len());
+    let body = &rest[..body_end];
+    // Captures the from-label returned by Workspace::move_tab.
+    assert!(
+        body.contains("let from = state"),
+        "move_tab must bind the source label returned by Workspace::move_tab",
+    );
+    // Emits to the destination window.
+    assert!(
+        body.contains("emit_to(to_window.as_str(), \"workspace-changed\""),
+        "move_tab must emit workspace-changed to the destination window",
+    );
+    // Emits to the source window, guarded against a same-window double-emit.
+    assert!(
+        body.contains("if from != to_window")
+            && body.contains("emit_to(from.as_str(), \"workspace-changed\""),
+        "move_tab must emit workspace-changed to the source window (guarded by from != to_window)",
+    );
+}
+
+#[test]
 fn d1_one_owner_focus_existing_wired() {
     // open_document and open_in_new_window must consult the one-owner
     // resolution (A1) before creating a tab so an already-open path focuses

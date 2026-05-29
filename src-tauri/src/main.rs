@@ -1706,13 +1706,19 @@ fn move_tab(
     tab_id: String,
     to_window: String,
 ) -> Result<(), String> {
-    state
+    let from = state
         .lock()
         .map_err(|e| e.to_string())?
         .move_tab(&tab_id, &to_window)
         .map_err(|e| e.to_string())?;
     // Repaint the destination's tab strip (and focus it forward).
     let _ = app.emit_to(to_window.as_str(), "workspace-changed", ());
+    // Repaint the SOURCE window too — its tab strip lost the moved tab and the
+    // frontend deliberately doesn't locally repaint on a successful move
+    // (design S4). Guard against a redundant double-emit on a same-window move.
+    if from != to_window {
+        let _ = app.emit_to(from.as_str(), "workspace-changed", ());
+    }
     if let Some(win) = app.get_webview_window(&to_window) {
         let _ = win.set_focus();
     }
