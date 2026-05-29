@@ -342,6 +342,18 @@ export async function main(): Promise<void> {
       const windowLabel = thisWindow.label;
       void windowLabel;
 
+      // G2 (multi-window e2e): each window's own main.ts runs on boot, so
+      // every window self-reports its label here. The e2e `switchToWindow`
+      // helper reads `window.__mdviewerE2E.windowLabel` from each WebDriver
+      // handle to find the one matching a given label — replacing the old
+      // `window.__TAURI__...getCurrentWebviewWindow().label` path, which is
+      // unavailable because `withGlobalTauri` is OFF. Guarded on the e2e
+      // side-channel's presence so production boot is unaffected. The
+      // side-channel object is populated synchronously below (before this
+      // async import resolves) on `__WEBDRIVER__` builds.
+      const e2e = (window as unknown as { __mdviewerE2E?: Record<string, unknown> }).__mdviewerE2E;
+      if (e2e) e2e.windowLabel = windowLabel;
+
       // `workspace-changed`: this window's tab set changed from outside its
       // own IPC flow (CLI / second-instance open into it, Drive/SSH open,
       // move_tab). Rust already mutated Workspace state; we just re-fetch
@@ -483,6 +495,20 @@ export async function main(): Promise<void> {
         // parse_positional_args → dispatch_cli_targets focused-window path.
         const { emit } = await import('@tauri-apps/api/event');
         await emit('e2e-dispatch-cli', JSON.stringify(args));
+      },
+      /**
+       * G2 (multi-window e2e): spawn a native window with the EXACT label
+       * via the `e2e_create_window` IPC (registered only under
+       * `--features e2e`). We invoke RAW via `@tauri-apps/api/core` — the
+       * same path `mdviewer:new-window` uses — rather than reaching for
+       * `window.__TAURI__`, which is undefined here because `withGlobalTauri`
+       * is OFF (the app bundles `@tauri-apps/api`). The returned promise
+       * resolves once the backend has spawned + registered the window; the
+       * helper then polls `switchToWindow(label)` until the new window's own
+       * boot reports its `windowLabel` (set below).
+       */
+      createWindow(label: string): Promise<void> {
+        return invoke<void>('e2e_create_window', { label });
       },
       fireKeymapAction(action: 'font_increase' | 'font_decrease' | 'font_reset'): void {
         // tauri-webdriver-automation does not deliver the W3C Meta key
