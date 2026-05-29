@@ -1,12 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Permissions the main MDViewer window needs to invoke its IPC commands and the bundled plugins.",
-  "windows": ["main"],
+  "description": "Permissions every MDViewer window needs to invoke its IPC commands and the bundled plugins. The `win-*` glob covers the secondary windows spawned at runtime (labelled `win-{nanos}`), so they can invoke IPC just like `main`.",
+  "windows": ["main", "win-*"],
   "permissions": [
     "core:default",
     "dialog:default",
-    "fs:default",
-    "window-state:default"
+    "fs:default"
   ]
 }

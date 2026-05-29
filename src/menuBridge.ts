@@ -27,6 +27,12 @@ export const MENU_ACTION_TO_EVENT: Readonly<Record<string, string>> = Object.fre
   // `menu-open-remote` to the action string `open-remote` which lands
   // here and fans out as the CustomEvent the Workspace listens for.
   'open-remote': 'mdviewer:open-remote',
+  // B3: File → "New Window" (CmdOrCtrl+Shift+N) → `mdviewer:new-window`. The
+  // Rust side (menu_id_to_action) maps the menu id `menu-new-window` to the
+  // action string `new-window` which lands here and fans out as the
+  // CustomEvent the Workspace handler turns into the `new_window` IPC (C1)
+  // that spawns a second window on the StartPage.
+  'new-window': 'mdviewer:new-window',
   'new-document': 'mdviewer:new-document',
   'close-tab': 'mdviewer:close-tab',
   'open-settings': 'mdviewer:open-settings',
