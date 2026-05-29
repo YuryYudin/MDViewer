@@ -123,7 +123,24 @@ export async function mountStartPage(
       when.setAttribute('data-test', 'recent-when');
       when.textContent = entry.mtime != null ? relativeTime(Number(entry.mtime)) : '—';
 
-      item.append(left, when);
+      // D3: open-in-new-window affordance (wireframe 06). Clicking it spawns
+      // a fresh window for this recent via the `open_in_new_window` IPC (D1),
+      // which honors the one-owner invariant — an already-open doc focuses
+      // its existing window instead of duplicating. We stopPropagation so the
+      // row's own open-in-this-window click (registered below) does NOT also
+      // fire when the user activates the affordance.
+      const openNew = document.createElement('button');
+      openNew.className = 'recent-open-new-window';
+      openNew.setAttribute('data-test', 'recent-open-new-window');
+      openNew.setAttribute('aria-label', 'Open in new window');
+      openNew.title = 'Open in new window';
+      openNew.textContent = '⧉';
+      openNew.addEventListener('click', (e) => {
+        e.stopPropagation();
+        void ipc.openInNewWindow(entry.path);
+      });
+
+      item.append(left, when, openNew);
       item.addEventListener('click', () => {
         void (async () => {
           const outcome = await ipc.openDocument(entry.path);
