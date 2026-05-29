@@ -1274,11 +1274,60 @@ fn dispatch_cli_targets_new_window(
     rebuild_menu(&app);
     let _ = new_win.set_focus();
 
-    // SSH targets: fetch off the event loop, then register into the new window.
+    // SSH targets. Mirror the Local one-owner RELOCATE so `mdviewer -w ssh://...`
+    // on an ALREADY-OPEN remote doc moves that tab into the freshly-spawned
+    // window instead of leaving it in its original one (the cache-path de-dupe
+    // in `register_ssh_tab_from_outcome_for` only collapses duplicates — it
+    // never reassigns window_label). The SSH cache path is deterministic for a
+    // (host, port, user, path) tuple, so we can predict where the URL WOULD
+    // land via `cache_path_for_url` WITHOUT a fetch, then run the same
+    // `open_in_new_window_resolve` → `new_window_target_action` one-owner
+    // decision the Local branch uses. Only the fetch+register fallback is
+    // deferred to an async task; the relocate is a synchronous move under the
+    // workspace lock (no network IO).
     for url in deferred_ssh {
+        let url_label = url.to_string();
+        // Predict the cache path and check one-owner BEFORE any fetch.
+        let relocated = {
+            let ssh_state = app.state::<SshAppState>();
+            let cache_path =
+                mdviewer_lib::ssh::operations::cache_path_for_url(ssh_state.ops.cache_base(), &url);
+            let ws_state = app.state::<Mutex<Workspace>>();
+            let did_relocate = match ws_state.lock() {
+                Ok(mut ws) => {
+                    let resolution = ws.open_in_new_window_resolve(&cache_path);
+                    match new_window_target_action(&resolution, &new_label) {
+                        NewWindowTargetAction::Relocate { tab_id } => {
+                            match ws.move_tab(&tab_id, &new_label) {
+                                Ok(from) => {
+                                    tracing::info!(
+                                        "{source_label} -w relocated SSH {url_label} from {from} into {new_label}"
+                                    );
+                                }
+                                Err(e) => tracing::warn!(
+                                    "{source_label} -w SSH relocate failed for {url_label}: {e:?}"
+                                ),
+                            }
+                            true
+                        }
+                        NewWindowTargetAction::Open => false,
+                    }
+                }
+                Err(_) => false,
+            };
+            did_relocate
+        };
+        if relocated {
+            // Already-open tab moved into the new window — repaint + raise, no
+            // fetch needed. (The new window was already focused above; a fresh
+            // workspace-changed makes its tab strip pick up the moved tab.)
+            let _ = app.emit_to(new_label.as_str(), "workspace-changed", ());
+            continue;
+        }
+        // Not open anywhere (or already in the new window): fetch off the event
+        // loop, then register into the new window — the original behavior.
         let app_handle = app.clone();
         let landing = new_label.clone();
-        let url_label = url.to_string();
         tauri::async_runtime::spawn(async move {
             let ssh_state = app_handle.state::<SshAppState>();
             let outcome = match ssh_state.ops.open_url(&url).await {
