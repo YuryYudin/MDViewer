@@ -2822,6 +2822,29 @@ mod tests {
         assert_eq!(ws.mrf_label(), MAIN_LABEL);
     }
 
+    /// Closing the last remaining window empties the registry and repoints the
+    /// mrf label to the documented `MAIN_LABEL` fallback (the
+    /// `windows.first()` is `None` branch in `close_window`). The other
+    /// close_window tests always leave "main" surviving, so this is the only
+    /// test that exercises the empty-registry path directly.
+    #[test]
+    fn close_last_window_empties_registry_and_repoints_mrf() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::new_for_test(dir.path());
+        // new_for_test seeds a single "main" window; close it while it's the
+        // only window.
+        assert_eq!(ws.list_windows().len(), 1);
+
+        ws.close_window(MAIN_LABEL);
+
+        assert!(ws.list_windows().is_empty(), "registry is empty");
+        assert_eq!(
+            ws.mrf_label(),
+            MAIN_LABEL,
+            "mrf falls back to MAIN_LABEL when no windows remain",
+        );
+    }
+
     /// move_tab into the tab's own window just re-activates it (no order
     /// churn, no error) — the same-window short-circuit branch.
     #[test]
