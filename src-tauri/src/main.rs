@@ -1142,6 +1142,188 @@ fn route_target_label(focused: &str, owner: Option<&str>) -> String {
     }
 }
 
+/// F1: the action a single Local target takes when `mdviewer -w <path>` spawns
+/// a fresh window `new_label`. One-owner is honored with a CANONICALIZED
+/// lookup, so an already-open document is never duplicated into the new
+/// window:
+///
+/// * `Relocate { tab_id }` — the path is already open in some OTHER window;
+///   the existing tab is MOVED (via `Workspace::move_tab`) into `new_label`
+///   rather than re-opened. This is the never-duplicate guarantee.
+/// * `Open` — the path is not open anywhere yet (or the only place it's open
+///   is the freshly-spawned `new_label` itself, which can't happen on a first
+///   spawn but is treated as a no-relocate so a re-dispatch stays idempotent);
+///   open it fresh into `new_label`.
+///
+/// Pure over `(resolution, new_label)` — `resolution` is the output of
+/// `Workspace::open_in_new_window_resolve(canonical_path)`, which already does
+/// the canonicalized one-owner lookup — so the relocate-vs-open rule is
+/// unit-tested without a live Tauri runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum NewWindowTargetAction {
+    Relocate { tab_id: String },
+    Open,
+}
+
+fn new_window_target_action(
+    resolution: &mdviewer_lib::workspace::OneOwnerResolution,
+    new_label: &str,
+) -> NewWindowTargetAction {
+    use mdviewer_lib::workspace::OneOwnerResolution;
+    match resolution {
+        // Already open elsewhere → relocate the existing tab into the new
+        // window (never duplicate). If it's somehow already owned by the
+        // new window, opening fresh is a no-op-equivalent and avoids a
+        // self-move, so fall through to `Open`.
+        OneOwnerResolution::Existing { label, tab_id } if label != new_label => {
+            NewWindowTargetAction::Relocate {
+                tab_id: tab_id.clone(),
+            }
+        }
+        _ => NewWindowTargetAction::Open,
+    }
+}
+
+/// F1: running-app dispatch for `mdviewer -w [targets]` — SPAWN a fresh window
+/// and route every target into it, raising it. Honors one-owner with a
+/// canonicalized lookup: a target already open in another window is RELOCATED
+/// into the new window (via `Workspace::move_tab`), never duplicated. With zero
+/// targets the new window opens on an empty StartPage (`mdviewer -w`).
+///
+/// Reuses E2's `spawn_window` + the C1 `Workspace::new_window` registration +
+/// `register_window_event_handler` lifecycle wiring (same shape as the
+/// `open_in_new_window` IPC command), so the new window renders / persists
+/// geometry / guards dirty-close exactly like every other spawned window.
+///
+/// SSH targets follow `dispatch_cli_targets`'s deferred-async pattern: the
+/// fetch happens off the event loop, then the tab is registered into the
+/// already-spawned new window. The relocate path is Local-only — an SSH URL
+/// isn't path-canonicalizable the same way, and SSH tabs are cheap to re-fetch.
+fn dispatch_cli_targets_new_window(
+    app: tauri::AppHandle,
+    targets: Vec<cli::OpenTarget>,
+    source_label: &'static str,
+) {
+    // Spawn the fresh window up front (mirrors `new_window` / `open_in_new_window`
+    // label scheme) so every target — relocated or freshly opened — lands in it.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let new_label = format!("win-{nanos}");
+    let new_win = match spawn_window(&app, &new_label) {
+        Ok(w) => w,
+        Err(e) => {
+            tracing::warn!("{source_label} -w: spawn_window failed: {e:?}");
+            return;
+        }
+    };
+
+    let mut deferred_ssh: Vec<mdviewer_core::ssh_url::SshUrl> = Vec::new();
+    let ws_state = app.state::<Mutex<Workspace>>();
+    if let Ok(mut ws) = ws_state.lock() {
+        // Register the new window before opening / relocating any tab into it.
+        ws.new_window(new_label.clone());
+        for target in targets {
+            match target {
+                cli::OpenTarget::Local(path) => {
+                    // `open_in_new_window_resolve` does the canonicalized
+                    // one-owner lookup; `new_window_target_action` turns its
+                    // result into relocate-vs-open against the new window.
+                    let resolution = ws.open_in_new_window_resolve(&path);
+                    match new_window_target_action(&resolution, &new_label) {
+                        NewWindowTargetAction::Relocate { tab_id } => {
+                            match ws.move_tab(&tab_id, &new_label) {
+                                Ok(from) => tracing::info!(
+                                    "{source_label} -w relocated {} from {} into {}",
+                                    path.display(),
+                                    from,
+                                    new_label
+                                ),
+                                Err(e) => tracing::warn!(
+                                    "{source_label} -w relocate failed for {}: {e:?}",
+                                    path.display()
+                                ),
+                            }
+                        }
+                        NewWindowTargetAction::Open => {
+                            match ws.open_document_for(&new_label, &path, OpenOpts::default()) {
+                                Ok(_) => tracing::info!(
+                                    "{source_label} -w opened {} into {}",
+                                    path.display(),
+                                    new_label
+                                ),
+                                Err(e) => tracing::warn!(
+                                    "{source_label} -w open failed for {}: {e:?}",
+                                    path.display()
+                                ),
+                            }
+                        }
+                    }
+                }
+                cli::OpenTarget::Ssh(url) => deferred_ssh.push(url),
+            }
+        }
+    }
+
+    // Track lifecycle on the new window (geometry / focus / dirty-close guard)
+    // just like `new_window` / the restore loop, refresh its tab strip + the
+    // Window submenu, then bring it forward.
+    register_window_event_handler(&app, &new_win);
+    let _ = app.emit_to(new_label.as_str(), "workspace-changed", ());
+    rebuild_menu(&app);
+    let _ = new_win.set_focus();
+
+    // SSH targets: fetch off the event loop, then register into the new window.
+    for url in deferred_ssh {
+        let app_handle = app.clone();
+        let landing = new_label.clone();
+        let url_label = url.to_string();
+        tauri::async_runtime::spawn(async move {
+            let ssh_state = app_handle.state::<SshAppState>();
+            let outcome = match ssh_state.ops.open_url(&url).await {
+                Ok(o) => o,
+                Err(e) => {
+                    tracing::warn!("{source_label} -w SSH open failed for {url_label}: {e:?}");
+                    return;
+                }
+            };
+            let ws_state = app_handle.state::<Mutex<Workspace>>();
+            if let Ok(mut ws) = ws_state.lock() {
+                let _ = ws.register_ssh_tab_from_outcome_for(&landing, url, outcome);
+                tracing::info!("{source_label} -w opened SSH {url_label} into {landing}");
+            }
+            if let Some(win) = app_handle.get_webview_window(&landing) {
+                let _ = win.set_focus();
+            }
+            let _ = app_handle.emit_to(landing.as_str(), "workspace-changed", ());
+        });
+    }
+}
+
+/// F1: route a parsed CLI invocation to the right running-app dispatch.
+///
+/// * `new_window` set (`mdviewer -w [...]`) → spawn a fresh window and route
+///   the targets into it (relocating already-open targets), even when the
+///   target list is empty (one empty StartPage window).
+/// * `new_window` clear (the default) → E2's focused-window routing; a target
+///   list is required, so an empty list is a no-op (nothing to open, no window
+///   to spawn).
+///
+/// Single funnel so every running-app entry point (single-instance callback,
+/// e2e side-channel listener) honors the flag identically.
+fn dispatch_parsed_cli(
+    app: tauri::AppHandle,
+    parsed: cli::ParsedArgs,
+    source_label: &'static str,
+) {
+    if parsed.new_window {
+        dispatch_cli_targets_new_window(app, parsed.targets, source_label);
+    } else if !parsed.targets.is_empty() {
+        dispatch_cli_targets(app, parsed.targets, source_label);
+    }
+}
+
 /// Dispatch a heterogeneous list of CLI targets onto the workspace. Used by
 /// (a) the single-instance plugin callback and (b) macOS's
 /// `RunEvent::Opened` hook — both sync contexts that may receive a mix of
@@ -1873,13 +2055,7 @@ fn main() {
             // emit for the window it routed into, so this callback no longer
             // hard-codes `main`.
             let parsed = cli::parse_positional_args(&argv);
-            if !parsed.targets.is_empty() {
-                dispatch_cli_targets(
-                    app.clone(),
-                    parsed.targets,
-                    "second invocation",
-                );
-            }
+            dispatch_parsed_cli(app.clone(), parsed, "second invocation");
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
@@ -2299,13 +2475,7 @@ fn main() {
                     let argv: Vec<String> =
                         serde_json::from_str(event.payload()).unwrap_or_default();
                     let parsed = cli::parse_positional_args(&argv);
-                    if !parsed.targets.is_empty() {
-                        dispatch_cli_targets(
-                            dispatch_app.clone(),
-                            parsed.targets,
-                            "e2e dispatch",
-                        );
-                    }
+                    dispatch_parsed_cli(dispatch_app.clone(), parsed, "e2e dispatch");
                 });
             }
             Ok(())

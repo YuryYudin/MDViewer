@@ -806,6 +806,132 @@ mod window_scoping {
         );
     }
 
+    /// F1: mirror of main.rs's `NewWindowTargetAction` + `new_window_target_action`
+    /// — the per-target relocate-vs-open decision for `mdviewer -w <path>`. Given
+    /// the canonicalized one-owner resolution and the freshly-spawned window
+    /// label, an already-open doc in some OTHER window relocates; everything else
+    /// opens fresh.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum NewWindowTargetAction {
+        Relocate { tab_id: String },
+        Open,
+    }
+
+    fn new_window_target_action(
+        resolution: &mdviewer_lib::workspace::OneOwnerResolution,
+        new_label: &str,
+    ) -> NewWindowTargetAction {
+        use mdviewer_lib::workspace::OneOwnerResolution;
+        match resolution {
+            OneOwnerResolution::Existing { label, tab_id } if label != new_label => {
+                NewWindowTargetAction::Relocate { tab_id: tab_id.clone() }
+            }
+            _ => NewWindowTargetAction::Open,
+        }
+    }
+
+    #[test]
+    fn f1_new_window_action_opens_when_not_open_anywhere() {
+        // A not-yet-open target opens fresh into the new window.
+        let res = mdviewer_lib::workspace::OneOwnerResolution::NeedsNew;
+        assert_eq!(
+            new_window_target_action(&res, "win-new"),
+            NewWindowTargetAction::Open
+        );
+    }
+
+    #[test]
+    fn f1_new_window_action_relocates_doc_open_elsewhere() {
+        // S9 never-duplicate: a doc already open in another window is
+        // RELOCATED (move_tab) into the new window, not re-opened.
+        let res = mdviewer_lib::workspace::OneOwnerResolution::Existing {
+            label: MAIN_LABEL.to_string(),
+            tab_id: "tab-7".to_string(),
+        };
+        assert_eq!(
+            new_window_target_action(&res, "win-new"),
+            NewWindowTargetAction::Relocate { tab_id: "tab-7".to_string() }
+        );
+    }
+
+    #[test]
+    fn f1_new_window_action_open_when_already_in_new_window() {
+        // Idempotency guard: if the only place the doc is open is the
+        // just-spawned new window itself, don't self-move — open is a no-op.
+        let res = mdviewer_lib::workspace::OneOwnerResolution::Existing {
+            label: "win-new".to_string(),
+            tab_id: "tab-7".to_string(),
+        };
+        assert_eq!(
+            new_window_target_action(&res, "win-new"),
+            NewWindowTargetAction::Open
+        );
+    }
+
+    #[test]
+    fn f1_new_window_relocate_moves_existing_tab_via_real_workspace() {
+        // Boundary integration: drive the real F1 relocate path through
+        // `open_in_new_window_resolve` (canonicalized one-owner lookup) +
+        // `new_window_target_action` + `Workspace::move_tab`. A doc open in
+        // `main` must end up owned solely by the freshly-spawned window — one
+        // tab total, never duplicated.
+        let (state, tmp) = ws();
+        let doc = tmp.path().join("relocate.md");
+        std::fs::write(&doc, "# relocate\n").unwrap();
+
+        let mut g = state.lock().unwrap();
+        // Doc starts open in main.
+        g.open_document_for(MAIN_LABEL, &doc, OpenOpts::default()).unwrap();
+        assert_eq!(g.list_open_documents_for(MAIN_LABEL).len(), 1);
+
+        // `mdviewer -w relocate.md` spawns a fresh window.
+        let new_label = "win-spawned".to_string();
+        g.new_window(new_label.clone());
+
+        // Resolve + act, exactly as dispatch_cli_targets_new_window does.
+        let resolution = g.open_in_new_window_resolve(&doc);
+        match new_window_target_action(&resolution, &new_label) {
+            NewWindowTargetAction::Relocate { tab_id } => {
+                g.move_tab(&tab_id, &new_label).unwrap();
+            }
+            NewWindowTargetAction::Open => panic!("doc was open in main; expected Relocate"),
+        }
+
+        // Never duplicated: gone from main, present in the new window, one tab.
+        assert!(
+            g.list_open_documents_for(MAIN_LABEL).is_empty(),
+            "relocated tab must leave the source window"
+        );
+        let dest = g.list_open_documents_for(&new_label);
+        assert_eq!(dest.len(), 1, "exactly one tab in the new window — no duplicate");
+        let canonical = doc.canonicalize().unwrap_or(doc);
+        assert_eq!(dest[0].path, canonical);
+    }
+
+    #[test]
+    fn f1_new_window_opens_fresh_when_not_open_via_real_workspace() {
+        // Boundary integration: a not-yet-open doc resolves to NeedsNew →
+        // Open, and `open_document_for` lands it in the spawned window.
+        let (state, tmp) = ws();
+        let doc = tmp.path().join("fresh.md");
+        std::fs::write(&doc, "# fresh\n").unwrap();
+
+        let mut g = state.lock().unwrap();
+        let new_label = "win-spawned".to_string();
+        g.new_window(new_label.clone());
+
+        let resolution = g.open_in_new_window_resolve(&doc);
+        match new_window_target_action(&resolution, &new_label) {
+            NewWindowTargetAction::Open => {
+                g.open_document_for(&new_label, &doc, OpenOpts::default()).unwrap();
+            }
+            NewWindowTargetAction::Relocate { .. } => panic!("doc was not open; expected Open"),
+        }
+
+        assert_eq!(g.list_open_documents_for(&new_label).len(), 1);
+        assert!(g.list_open_documents_for(MAIN_LABEL).is_empty());
+    }
+
     /// D1: mirror of main.rs's pure `window_summaries_with_focus` — project the
     /// per-window summaries onto the IPC wire shape, marking exactly the
     /// `focused_label` window focused. The production `list_windows` handler

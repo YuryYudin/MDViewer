@@ -17,9 +17,10 @@
 //! 1. `argv[0]` — the binary path itself.
 //! 2. The first arg if it's the `migrate-sidecars` subcommand (handled
 //!    separately in `main.rs`).
-//! 3. Any arg starting with `-` — reserved for future flags. Today the
-//!    binary has none, but `mdviewer --version` shouldn't be misread as
-//!    "open a file called --version".
+//! 3. Any arg starting with `-` — reserved for flags. `-w` / `--window`
+//!    (F1) is recognized order-independently and sets `new_window=true`;
+//!    every OTHER `-`-prefixed arg is skipped, so `mdviewer --version`
+//!    isn't misread as "open a file called --version".
 //! 4. Empty strings (defensive — Tauri's argv from
 //!    `RunEvent::Opened { urls }` can include them on edge-case macOS
 //!    drag interactions).
@@ -95,13 +96,13 @@ pub fn urls_to_paths(urls: &[tauri::Url]) -> Vec<OpenTarget> {
 /// The parsed result of one CLI / file-association invocation: the ordered
 /// list of `OpenTarget`s plus a `new_window` hint.
 ///
-/// `new_window` is the `-w` / `--new-window` flag from contract
-/// `01-cli-window-flag.md`. **E2 always sets it `false`** — this task only
-/// changes the *default* (no-flag) routing to target the focused window.
-/// F1 adds the flag recognition that flips this to `true`. Keeping the
-/// `ParsedArgs` shape stable here means F1 is a one-line change in the
-/// parser (set the field) plus a one-branch change at the dispatch site,
-/// not a return-type churn across every call site again.
+/// `new_window` is the `-w` / `--window` flag from contract
+/// `01-cli-window-flag.md`. E2 introduced the field (always `false`) and
+/// changed the *default* (no-flag) routing to target the focused window.
+/// F1 wires the flag recognition: `-w` / `--window` anywhere in the argv
+/// flips this to `true`, which the running-app dispatch site reads to spawn
+/// a fresh window for the targets (relocating an already-open target into
+/// it) instead of routing into the focused window.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedArgs {
     pub targets: Vec<OpenTarget>,
@@ -111,8 +112,9 @@ pub struct ParsedArgs {
 /// Parse positional file paths / SSH URLs out of `args` (typically
 /// `std::env::args()`). Returns `ParsedArgs { targets, new_window }`; an
 /// empty `targets` Vec means no targets are present — the caller should
-/// boot into the StartPage in that case. `new_window` is always `false`
-/// here (E2); F1 wires the `-w` flag that sets it `true`.
+/// boot into the StartPage in that case. `new_window` is `true` when the
+/// argv contains the `-w` / `--window` flag (F1), recognized anywhere in
+/// the list and never collected as a target.
 pub fn parse_positional_args(args: &[String]) -> ParsedArgs {
     let mut iter = args.iter().enumerate();
 
@@ -136,17 +138,27 @@ pub fn parse_positional_args(args: &[String]) -> ParsedArgs {
     }
 
     let mut targets = Vec::new();
+    let mut new_window = false;
     while let Some((_, arg)) = peeked {
-        if !arg.is_empty() && !arg.starts_with('-') {
+        if arg.is_empty() {
+            // Skip defensive empties (see module docs).
+        } else if arg.starts_with('-') {
+            // F1: recognize the new-window flag order-independently and in
+            // both equivalent forms. Every OTHER flag is still skipped (the
+            // existing future-proofing behavior) and never sets new_window.
+            if matches!(arg.as_str(), "-w" | "--window") {
+                new_window = true;
+            }
+        } else {
             targets.push(classify_arg(arg));
         }
         peeked = iter.next();
     }
     ParsedArgs {
         targets,
-        // E2: the default (no-flag) invocation never requests a new window;
-        // F1 recognizes `-w` / `--new-window` and flips this.
-        new_window: false,
+        // E2: the default (no-flag) invocation never requests a new window.
+        // F1: `-w` / `--window` flips this to true.
+        new_window,
     }
 }
 
@@ -250,6 +262,79 @@ mod tests {
             as_local(&parsed.targets[0]).file_name().and_then(|s| s.to_str()),
             Some("x.md"),
         );
+    }
+
+    #[test]
+    fn short_window_flag_sets_new_window() {
+        // F1: `-w` is the short form of the new-window flag. It must set
+        // `new_window=true` and NOT be collected as a target.
+        let parsed = parse_positional_args(&argv(&["mdviewer", "-w", "/tmp/notes.md"]));
+        assert!(parsed.new_window);
+        assert_eq!(parsed.targets.len(), 1);
+        assert_eq!(
+            as_local(&parsed.targets[0]).file_name().and_then(|s| s.to_str()),
+            Some("notes.md"),
+        );
+    }
+
+    #[test]
+    fn long_window_flag_sets_new_window() {
+        // F1: `--window` is the long form and is equivalent to `-w`.
+        let parsed = parse_positional_args(&argv(&["mdviewer", "--window", "/tmp/notes.md"]));
+        assert!(parsed.new_window);
+        assert_eq!(parsed.targets.len(), 1);
+        assert_eq!(
+            as_local(&parsed.targets[0]).file_name().and_then(|s| s.to_str()),
+            Some("notes.md"),
+        );
+    }
+
+    #[test]
+    fn window_flag_is_order_independent() {
+        // F1: the flag may appear before or after the targets — both forms
+        // set `new_window=true` and neither swallows a target.
+        let before = parse_positional_args(&argv(&["mdviewer", "-w", "/tmp/a.md", "/tmp/b.md"]));
+        let after = parse_positional_args(&argv(&["mdviewer", "/tmp/a.md", "/tmp/b.md", "--window"]));
+        let middle = parse_positional_args(&argv(&["mdviewer", "/tmp/a.md", "-w", "/tmp/b.md"]));
+        assert!(before.new_window);
+        assert!(after.new_window);
+        assert!(middle.new_window);
+        assert_eq!(before.targets.len(), 2);
+        assert_eq!(after.targets.len(), 2);
+        assert_eq!(middle.targets.len(), 2);
+    }
+
+    #[test]
+    fn window_flag_with_zero_targets() {
+        // F1: `mdviewer -w` with no path requests a new (empty StartPage)
+        // window — `new_window=true`, `targets` empty. The dispatch site
+        // opens one empty StartPage window in this case.
+        let parsed = parse_positional_args(&argv(&["mdviewer", "-w"]));
+        assert!(parsed.new_window);
+        assert!(parsed.targets.is_empty());
+    }
+
+    #[test]
+    fn absent_window_flag_leaves_new_window_false() {
+        // F1: a plain target list (no `-w` / `--window`) leaves the hint off.
+        let parsed = parse_positional_args(&argv(&["mdviewer", "/tmp/notes.md"]));
+        assert!(!parsed.new_window);
+        assert_eq!(parsed.targets.len(), 1);
+    }
+
+    #[test]
+    fn unknown_flags_still_skipped_and_dont_set_new_window() {
+        // F1: only `-w` / `--window` flip `new_window`. Other unknown flags
+        // keep the existing skip-and-ignore behavior — they are not targets
+        // and must not set the new-window hint.
+        let parsed = parse_positional_args(&argv(&[
+            "mdviewer",
+            "--debug",
+            "/tmp/notes.md",
+            "-v",
+        ]));
+        assert!(!parsed.new_window);
+        assert_eq!(parsed.targets.len(), 1);
     }
 
     #[test]
