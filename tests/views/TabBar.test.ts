@@ -287,9 +287,12 @@ describe('TabBar', () => {
     expect(ev.defaultPrevented).toBe(true);
   });
 
-  it('Open in New Window invokes openInNewWindow with the tab path and dismisses the menu', async () => {
+  it('Open in New Window RELOCATES (detaches) the tab via detach_tab and dismisses the menu', async () => {
     const root = document.createElement('div');
-    const ipc = makeIpc();
+    // A tab is an already-open doc; under one-owner, open_in_new_window would
+    // merely focus the existing window. "Open in New Window" must detach the
+    // tab into a brand-new window instead (wireframe 02 / G2 S2).
+    const ipc = makeIpc({ detachTab: vi.fn().mockResolvedValue(undefined) });
     const state: WorkspaceState = {
       tabs: [
         { id: 't1', path: '/docs/a.md' },
@@ -302,7 +305,8 @@ describe('TabBar', () => {
     (root.querySelector('[data-test="ctx-open-new-window"]') as HTMLElement).click();
     await Promise.resolve();
     await Promise.resolve();
-    expect(ipc.openInNewWindow).toHaveBeenCalledWith('/docs/b.md');
+    expect(ipc.detachTab).toHaveBeenCalledWith('t2');
+    expect(ipc.openInNewWindow).not.toHaveBeenCalled();
     // Activating an item dismisses the menu.
     expect(root.querySelector('[data-test="tab-context-menu"]')).toBeNull();
   });

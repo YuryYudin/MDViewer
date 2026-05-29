@@ -199,11 +199,14 @@ async function detachTab(
  * 02-tab-context-menu.html). Items, classes, and data-test hooks mirror the
  * wireframe so app.css can style it and e2e/unit tests can target it.
  *
- * - "Open in New Window" → `ipc.openInNewWindow(tab.path)`. The backend
- *   relocates the document under the one-owner invariant and raises the new
- *   window; the source strip refreshes (the host's `onAfterClose`-style
- *   repaint is not needed here because the relocate fires a window/tab event
- *   E-phase wiring listens to — D2 only owns the menu + invoke).
+ * - "Open in New Window" → `detachTab(ipc, tab, callbacks)` (the same helper
+ *   G1's drag-to-detach uses). A tab is an ALREADY-OPEN document, so under the
+ *   one-owner invariant `open_in_new_window` would merely focus the existing
+ *   window+tab — the doc would never leave the strip. To match the wireframe
+ *   ("relocate this tab into a brand-new window and raise it") we RELOCATE
+ *   (detach) the tab via `detach_tab`, which spawns a fresh window, moves the
+ *   tab into it, and emits `workspace-changed` to both windows (so the source
+ *   strip loses the tab without a local repaint here).
  * - "Move to Window ▸" → SCAFFOLD ONLY. An empty submenu placeholder is
  *   rendered; E1 populates it from `list_windows`. We deliberately do NOT
  *   list windows here (listing the current window as a move target would be
@@ -236,7 +239,7 @@ function openTabContextMenu(
   const openItem = makeMenuItem('Open in New Window', 'ctx-open-new-window');
   openItem.addEventListener('click', () => {
     dismiss();
-    void ipc.openInNewWindow(tab.path);
+    void detachTab(ipc, tab, callbacks);
   });
   menu.appendChild(openItem);
 
