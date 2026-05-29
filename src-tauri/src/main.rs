@@ -1959,6 +1959,65 @@ fn move_tab(
     Ok(())
 }
 
+/// G1: detach tab `tab_id` into a brand-new window (the drag-off-the-strip
+/// gesture, S10). Mints a derived `win-{nanos}` label (never client-supplied,
+/// mirroring `new_window` / `open_in_new_window`), spawns the native window,
+/// registers its lifecycle, then relocates the tab into it via
+/// `Workspace::detach_tab` (spawn-less: it registers the window in the
+/// registry and `move_tab`s the tab in).
+///
+/// Same lesson as the `move_tab` handler fix (S4): the tab leaves its source
+/// window, so we must repaint BOTH windows. `Workspace::detach_tab` returns the
+/// NEW window's summary, not the source label, so we capture the source via
+/// `owning_window_label` BEFORE detaching, then emit `workspace-changed` to the
+/// source AND the new window, rebuild the Window submenu (the window set grew),
+/// and focus the new window forward.
+#[tauri::command]
+fn detach_tab(
+    app: tauri::AppHandle,
+    state: State<'_, Ws>,
+    tab_id: String,
+) -> Result<(), String> {
+    // Derive the new window label up front (matches new_window / open_in_new_window).
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let label = format!("win-{nanos}");
+
+    // Capture the SOURCE window the tab currently lives in BEFORE the move —
+    // detach_tab returns the new window's summary, not the source. We need the
+    // source label to repaint the strip the tab leaves (S4 dual-emit lesson).
+    let source = {
+        let ws = state.lock().map_err(|e| e.to_string())?;
+        match ws.window_label_for_tab(&tab_id) {
+            Some(s) => s.to_string(),
+            None => return Err(format!("no such tab: {tab_id}")),
+        }
+    };
+
+    // Spawn the fresh window + register its lifecycle before mutating the
+    // registry, mirroring open_in_new_window's ordering.
+    let new_win = spawn_window(&app, &label).map_err(|e| e.to_string())?;
+    {
+        let mut ws = state.lock().map_err(|e| e.to_string())?;
+        ws.detach_tab(&tab_id, label.clone())
+            .map_err(|e| e.to_string())?;
+    }
+    register_window_event_handler(&app, &new_win);
+
+    // Repaint the NEW window (gained the tab) AND the SOURCE window (lost it).
+    let _ = app.emit_to(label.as_str(), "workspace-changed", ());
+    if source != label {
+        let _ = app.emit_to(source.as_str(), "workspace-changed", ());
+    }
+    // The window set grew + both windows' active-doc-names may have changed.
+    rebuild_menu(&app);
+    // Bring the freshly-detached window forward.
+    let _ = new_win.set_focus();
+    Ok(())
+}
+
 /// B2: compute the virtual-screen bounds (union work area) from the live
 /// monitor list so `clamp_geometry` can pull an off-screen restored window
 /// back onto a reachable display. Falls back to a single 1920x1080 origin
@@ -2540,6 +2599,8 @@ fn main() {
             list_windows,
             open_in_new_window,
             move_tab,
+            // G1: detach a tab into a fresh window (drag-off-the-strip, S10).
+            detach_tab,
             open_document,
             close_tab,
             activate_tab,

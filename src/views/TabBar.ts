@@ -99,6 +99,24 @@ export function mountTabBar(
       openTabContextMenu(root, ipc, tab, callbacks);
     });
 
+    // G1: drag a tab off the strip to detach it into a new window (wireframe
+    // 05-drag-detach, S10). The tab is draggable; on `dragend` we compare the
+    // drop point against the strip's bounding rect. A release CLEAR of the
+    // strip detaches via `detach_tab`; a release INSIDE the strip is a no-op
+    // (we deliberately do NOT reorder — intra-strip drags / accidental nudges
+    // must not spawn windows). The `.dragging` class dims the tab mid-drag.
+    btn.draggable = true;
+    btn.addEventListener('dragstart', () => {
+      btn.classList.add('dragging');
+    });
+    btn.addEventListener('dragend', (ev) => {
+      btn.classList.remove('dragging');
+      if (isClearOfStrip(strip, ev)) {
+        void detachTab(ipc, tab, callbacks);
+      }
+      // else: drop inside the strip — no-op (no reorder, no detach).
+    });
+
     strip.appendChild(btn);
   }
 
@@ -127,6 +145,53 @@ async function closeTabAndRepaint(
 ): Promise<void> {
   await ipc.closeTab(tab.id);
   if (callbacks?.onAfterClose) await callbacks.onAfterClose();
+}
+
+/**
+ * G1: is the drag's release point CLEAR of the tab strip's bounding rect?
+ *
+ * The strip is the drag's "home base": a release inside it is an intra-strip
+ * drag (which we treat as a no-op — reordering is out of scope), while a
+ * release outside it is the detach gesture. We read the drop coordinates from
+ * the `dragend` event's clientX/clientY and test them against the strip's
+ * live `getBoundingClientRect()`. A drop exactly on the edge counts as inside
+ * (inclusive bounds) so a fractional-pixel release at the strip border doesn't
+ * accidentally spawn a window.
+ */
+function isClearOfStrip(strip: HTMLElement, ev: { clientX: number; clientY: number }): boolean {
+  const r = strip.getBoundingClientRect();
+  const inside =
+    ev.clientX >= r.left &&
+    ev.clientX <= r.right &&
+    ev.clientY >= r.top &&
+    ev.clientY <= r.bottom;
+  return !inside;
+}
+
+/**
+ * G1: detach the tab into a fresh window. The single backend `detach_tab` IPC
+ * spawns a `win-{nanos}` window and relocates the tab into it under the
+ * one-owner invariant, then emits `workspace-changed` to BOTH the source
+ * window (which loses the tab) and the new window — so we don't locally
+ * repaint here (the boot-time listeners do, mirroring the move_tab flow). A
+ * rejection toasts the error and refreshes the source strip so the UI stays
+ * in sync with backend truth.
+ */
+async function detachTab(
+  ipc: Ipc,
+  tab: { id: string; path: string },
+  callbacks?: TabBarCallbacks,
+): Promise<void> {
+  try {
+    await ipc.detachTab(tab.id);
+  } catch (e) {
+    document.dispatchEvent(
+      new CustomEvent('mdviewer:toast', {
+        detail: { message: `Detach failed: ${errorText(e)}`, level: 'error' },
+      }),
+    );
+    if (callbacks?.onAfterClose) await callbacks.onAfterClose();
+  }
 }
 
 /**

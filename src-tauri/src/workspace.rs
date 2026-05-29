@@ -1651,6 +1651,15 @@ impl Workspace {
         Ok(from)
     }
 
+    /// The window label that currently owns `tab_id`, or `None` if no such
+    /// tab exists. G1's `detach_tab` IPC reads this BEFORE detaching so it can
+    /// repaint the SOURCE window's tab strip (the tab leaves it) — the
+    /// `Workspace::detach_tab` return value is the NEW window's summary, not
+    /// the source label.
+    pub fn window_label_for_tab(&self, tab_id: &str) -> Option<&str> {
+        self.tabs.get(tab_id).map(|t| t.window_label.as_str())
+    }
+
     /// Detach `tab_id` into a brand-new window labeled `new_label`: register
     /// the window then `move_tab` the tab into it as its sole tab. Returns
     /// the new window's summary. Errors if `tab_id` is unknown.

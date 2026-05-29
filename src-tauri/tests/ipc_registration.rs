@@ -1836,6 +1836,116 @@ fn move_tab_emits_workspace_changed_to_both_source_and_destination() {
 }
 
 #[test]
+fn g1_detach_tab_registered_and_declared() {
+    // G1: the drag-off-the-strip gesture detaches a tab into a fresh window via
+    // a single backend IPC. Mirrors the existing registration smoke checks: the
+    // handler must be declared AND wired into the invoke_handler! macro arm.
+    let main_rs = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    )
+    .expect("read main.rs");
+    assert!(
+        main_rs.contains("fn detach_tab("),
+        "main.rs must declare `fn detach_tab(...)` (G1)",
+    );
+    assert!(
+        main_rs.contains("            detach_tab,"),
+        "main.rs must register `detach_tab` in the invoke_handler! list (G1)",
+    );
+}
+
+#[test]
+fn g1_detach_tab_emits_to_both_windows_and_rebuilds_menu() {
+    // G1 — same lesson as the move_tab handler fix (S4): a detach spawns a new
+    // window and relocates the tab into it. BOTH the source window (which the
+    // tab left) AND the new window must repaint via window-addressed
+    // `workspace-changed`, the Window submenu must rebuild, and the new window
+    // must be focused forward.
+    let main_rs = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    )
+    .expect("read main.rs");
+    let start = main_rs
+        .find("fn detach_tab(")
+        .expect("main.rs must declare fn detach_tab(");
+    let rest = &main_rs[start..];
+    let body_end = rest[1..]
+        .find("#[tauri::command]")
+        .map(|i| i + 1)
+        .unwrap_or(rest.len());
+    let body = &rest[..body_end];
+    // Spawns a fresh window via the shared spawn_window helper + registers its
+    // lifecycle, mirroring open_in_new_window / new_window.
+    assert!(
+        body.contains("spawn_window(") && body.contains("register_window_event_handler("),
+        "detach_tab must spawn a window via spawn_window and register its event handler",
+    );
+    // Emits to the NEW window so its tab strip shows the relocated tab.
+    assert!(
+        body.contains("emit_to(label.as_str(), \"workspace-changed\""),
+        "detach_tab must emit workspace-changed to the new window",
+    );
+    // Emits to the SOURCE window so its strip drops the moved tab.
+    assert!(
+        body.contains("emit_to(source.as_str(), \"workspace-changed\""),
+        "detach_tab must emit workspace-changed to the source window the tab left",
+    );
+    // Rebuilds the Window submenu (the window set grew + active-doc-names changed).
+    assert!(
+        body.contains("rebuild_menu("),
+        "detach_tab must rebuild the menu after growing the window set",
+    );
+    // Brings the new window forward.
+    assert!(
+        body.contains("set_focus()"),
+        "detach_tab must set_focus the new window",
+    );
+}
+
+#[test]
+fn g1_detach_tab_workspace_relocates_into_new_window() {
+    // Boundary integration: the IPC handler delegates to Workspace::detach_tab
+    // (or new_window + move_tab). Drive the real Workspace path: a doc open in
+    // `main` must end up the SOLE tab of the freshly-labeled window — gone from
+    // main, never duplicated.
+    use mdviewer_lib::workspace::{OpenOpts, MAIN_LABEL};
+    let (state, tmp) = ws();
+    let doc_a = tmp.path().join("a.md");
+    let doc_b = tmp.path().join("b.md");
+    std::fs::write(&doc_a, "# A\n").unwrap();
+    std::fs::write(&doc_b, "# B\n").unwrap();
+
+    let mut g = state.lock().unwrap();
+    // Two tabs in main (a two-tab strip, as the S10 gesture drags one off).
+    g.open_document_for(MAIN_LABEL, &doc_a, OpenOpts::default()).unwrap();
+    let outcome = g.open_document_for(MAIN_LABEL, &doc_b, OpenOpts::default()).unwrap();
+    let tab_b = match outcome {
+        mdviewer_lib::workspace::OpenOutcome::Document(r) => r.tab_id,
+        mdviewer_lib::workspace::OpenOutcome::Conflict { .. } => panic!("unexpected conflict"),
+    };
+    assert_eq!(g.list_open_documents_for(MAIN_LABEL).len(), 2);
+
+    // The handler reads the source label BEFORE detaching (detach_tab itself
+    // returns the new window summary, not the source), then detaches.
+    let source = g
+        .owning_window_label(&doc_b.canonicalize().unwrap_or(doc_b.clone()))
+        .map(str::to_string);
+    assert_eq!(source.as_deref(), Some(MAIN_LABEL), "tab b lives in main");
+    let summary = g.detach_tab(&tab_b, "win-detach".to_string()).expect("detach ok");
+    assert_eq!(summary.label, "win-detach");
+
+    // Relocated: gone from main (one tab left), sole tab in the new window.
+    assert_eq!(
+        g.list_open_documents_for(MAIN_LABEL).len(),
+        1,
+        "detached tab must leave the source window"
+    );
+    let dest = g.list_open_documents_for("win-detach");
+    assert_eq!(dest.len(), 1, "exactly one tab in the new window — no duplicate");
+    assert_eq!(dest[0].id, tab_b);
+}
+
+#[test]
 fn d1_one_owner_focus_existing_wired() {
     // open_document and open_in_new_window must consult the one-owner
     // resolution (A1) before creating a tab so an already-open path focuses
