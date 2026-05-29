@@ -1,6 +1,11 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { prepareFixture, switchToWindow, tabLabelsInActiveWindow } from './helpers/app';
+import {
+  prepareFixture,
+  switchToWindow,
+  tabLabelsInActiveWindow,
+  allWindowLabels,
+} from './helpers/app';
 
 /**
  * F1 — CLI `-w` / `--window` flag spawns a NEW window (scenario S9).
@@ -45,27 +50,6 @@ async function dispatchCliByE2eHook(args: string[]): Promise<void> {
   );
 }
 
-/** The label of the currently-active WebDriver window. */
-async function currentWindowLabel(): Promise<string | null> {
-  return browser.execute(function (): string | null {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const cur = (window as any).__TAURI__?.webviewWindow?.getCurrentWebviewWindow?.();
-    return cur?.label ?? null;
-  });
-}
-
-/** Every window label currently registered (one WebDriver handle each). */
-async function allWindowLabels(): Promise<string[]> {
-  const handles = await browser.getWindowHandles();
-  const labels: string[] = [];
-  for (const h of handles) {
-    await browser.switchToWindow(h);
-    const label = await currentWindowLabel();
-    if (label) labels.push(label);
-  }
-  return labels;
-}
-
 describe('F1 — CLI `-w` flag spawns a new window (S9)', () => {
   let fixture: Awaited<ReturnType<typeof prepareFixture>>;
   let fooPath: string;
@@ -87,16 +71,15 @@ describe('F1 — CLI `-w` flag spawns a new window (S9)', () => {
   });
 
   it('S9: `mdviewer -w foo.md` spawns a NEW window holding foo.md, distinct from the focused window', async () => {
-    // Reach the StartPage in `main` and focus it.
+    // Reach the StartPage in `main`. (No explicit OS-focus drive: the `-w`
+    // flag spawns a fresh window regardless of which window is focused, so
+    // the unobservable-headless OS-focus step the old spec attempted via
+    // `window.__TAURI__` — undefined under tauri-wd with withGlobalTauri OFF —
+    // is irrelevant to this scenario's contract.)
     await switchToWindow('main');
     await browser.waitUntil(async () => browser.$('[data-view="start"]').isExisting(), {
       timeout: 10_000,
       timeoutMsg: 'main never reached the StartPage',
-    });
-    await browser.execute(function (): void {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const cur = (window as any).__TAURI__?.webviewWindow?.getCurrentWebviewWindow?.();
-      cur?.setFocus?.();
     });
 
     // Pre-condition: `main` does not show foo.md, and it's the only window.

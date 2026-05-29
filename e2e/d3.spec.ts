@@ -40,9 +40,18 @@ describe('D3 — Open in New Window from a recent (S3)', () => {
     // Seed recents with report.md so the StartPage renders its row — but the
     // doc is NOT open in any window (no session.json), so the affordance must
     // genuinely spawn a new window rather than focus an existing one.
+    //
+    // The on-disk recents schema is a BARE ARRAY OF PATH STRINGS
+    // (`{"entries":["/abs/report.md"]}`) — `kind`/`mtime` are DERIVED at
+    // materialize time (RecentsStore::list_with_mtime), never persisted (see
+    // recents.rs `OnDisk { entries: Vec<PathBuf> }` + its
+    // `on_disk_schema_unchanged_no_kind_field` test). The old object shape
+    // (`{path,mtime,kind}`) failed to deserialize → empty recents → no row.
+    // Local entries are pruned at load unless the path exists on disk; we
+    // write report.md above first so the row survives the `.exists()` filter.
     await fs.writeFile(
       path.join(dataDir, 'recents.json'),
-      JSON.stringify({ entries: [{ path: reportPath, mtime: null, kind: 'local' }] }, null, 2),
+      JSON.stringify({ entries: [reportPath] }, null, 2),
     );
     await fs.rm(path.join(dataDir, 'session.json'), { force: true });
     await browser.reloadSession();

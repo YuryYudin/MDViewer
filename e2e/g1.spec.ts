@@ -5,6 +5,7 @@ import {
   openDocByE2eHook,
   switchToWindow,
   tabLabelsInActiveWindow,
+  findOtherWindowLabel,
 } from './helpers/app';
 
 /**
@@ -30,21 +31,6 @@ import {
 /** Count of distinct native windows surfaced as WebDriver handles. */
 async function windowHandleCount(): Promise<number> {
   return (await browser.getWindowHandles()).length;
-}
-
-/** The window-label of the only handle whose label is not `notLabel`. */
-async function findOtherWindowLabel(notLabel: string): Promise<string> {
-  const handles = await browser.getWindowHandles();
-  for (const h of handles) {
-    await browser.switchToWindow(h);
-    const label = await browser.execute(function (): string | null {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const cur = (window as any).__TAURI__?.webviewWindow?.getCurrentWebviewWindow?.();
-      return cur?.label ?? null;
-    });
-    if (label && label !== notLabel) return label;
-  }
-  throw new Error(`no window handle other than "${notLabel}"`);
 }
 
 describe('G1 — Drag a tab off the strip to detach (S10)', () => {

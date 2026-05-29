@@ -6,6 +6,7 @@ import {
   switchToWindow,
   createWindow,
   tabLabelsInActiveWindow,
+  findOtherWindowLabel,
 } from './helpers/app';
 
 /**
@@ -24,21 +25,6 @@ import {
  * the orchestrator's phase-end gate; it asserts the user-visible relocate
  * across two WebDriver window handles.
  */
-
-/** Window-label of a freshly-created window: derive its tab labels. */
-async function findOtherWindowLabel(notLabel: string): Promise<string> {
-  const handles = await browser.getWindowHandles();
-  for (const h of handles) {
-    await browser.switchToWindow(h);
-    const label = await browser.execute(function (): string | null {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const cur = (window as any).__TAURI__?.webviewWindow?.getCurrentWebviewWindow?.();
-      return cur?.label ?? null;
-    });
-    if (label && label !== notLabel) return label;
-  }
-  throw new Error(`no window handle other than "${notLabel}"`);
-}
 
 describe('E1 — Move tab to an existing window (S4)', () => {
   let fixture: Awaited<ReturnType<typeof prepareFixture>>;

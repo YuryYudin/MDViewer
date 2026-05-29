@@ -2604,10 +2604,23 @@ fn main() {
                 use tauri::Listener;
                 let dispatch_app = app.handle().clone();
                 app.listen("e2e-dispatch-cli", move |event| {
-                    // Payload is a JSON array of argv strings, e.g.
-                    // ["mdviewer", "/abs/foo.md"].
-                    let argv: Vec<String> =
-                        serde_json::from_str(event.payload()).unwrap_or_default();
+                    // Payload is the argv, e.g. ["mdviewer", "/abs/foo.md"].
+                    // The frontend side-channel emits it as a JS string
+                    // (`emit('e2e-dispatch-cli', JSON.stringify(args))`), and
+                    // Tauri serializes a JS string payload as a JSON STRING —
+                    // so `event.payload()` is a quoted, escaped JSON string
+                    // (`"[\"mdviewer\",...]"`), NOT a bare JSON array. Decode
+                    // the outer string layer first, then the inner array; fall
+                    // back to a direct array parse so a future emit of the raw
+                    // array (no stringify) still works. This is e2e-harness
+                    // scaffolding (gated on `--features e2e`); the production
+                    // CLI routing it feeds (`dispatch_parsed_cli`) is unchanged.
+                    let raw = event.payload();
+                    let argv: Vec<String> = serde_json::from_str::<String>(raw)
+                        .ok()
+                        .and_then(|inner| serde_json::from_str::<Vec<String>>(&inner).ok())
+                        .or_else(|| serde_json::from_str::<Vec<String>>(raw).ok())
+                        .unwrap_or_default();
                     let parsed = cli::parse_positional_args(&argv);
                     dispatch_parsed_cli(dispatch_app.clone(), parsed, "e2e dispatch");
                 });

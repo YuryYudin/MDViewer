@@ -46,20 +46,27 @@ async function newWindowViaIpc(): Promise<void> {
   });
 }
 
-/** Labels of every open native window, asked of each WebDriver handle. */
-async function openWindowLabels(): Promise<string[]> {
-  const handles = await browser.getWindowHandles();
-  const labels: string[] = [];
-  for (const h of handles) {
-    await browser.switchToWindow(h);
-    const label = await browser.execute(function (): string | null {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const cur = (window as any).__TAURI__?.webviewWindow?.getCurrentWebviewWindow?.();
-      return cur?.label ?? null;
-    });
-    if (label) labels.push(label);
-  }
-  return labels;
+/**
+ * The rows the native Window submenu is built from. The submenu builder
+ * enumerates the Workspace window registry via the `list_windows` IPC — each
+ * row's `label` keys the `window-select:<label>` menu id and `active_doc_name`
+ * is its display label. Asserting on `list_windows` asserts on the EXACT data
+ * the menu is constructed from (the native menu itself is not in the DOM and so
+ * is not queryable through tauri-wd).
+ */
+async function listWindows(): Promise<
+  Array<{ label: string; active_doc_name: string | null; focused: boolean }>
+> {
+  const v = await browser.executeAsync(function (done: (v: unknown) => void): void {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const tauri = (window as any).__TAURI_INTERNALS__;
+    if (!tauri?.invoke) { done({ error: 'tauri runtime missing' }); return; }
+    tauri.invoke('list_windows').then(
+      (rows: unknown) => done(rows),
+      (e: unknown) => done({ error: String(e) }),
+    );
+  });
+  return v as Array<{ label: string; active_doc_name: string | null; focused: boolean }>;
 }
 
 describe('C1 — Window menu lists and raises open windows (S11)', () => {

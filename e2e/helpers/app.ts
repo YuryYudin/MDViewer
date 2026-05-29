@@ -152,6 +152,49 @@ export async function switchToWindow(label: string): Promise<void> {
   throw new Error(`no WebDriver handle for window label "${label}"`);
 }
 
+/**
+ * The window-label of the currently-active WebDriver handle, read from the
+ * e2e side-channel `window.__mdviewerE2E.windowLabel` (set by each window's
+ * main.ts on boot — see src/main.ts G2).
+ *
+ * G2: replaces the `window.__TAURI__...getCurrentWebviewWindow().label` path
+ * the original specs used, which is unavailable because `withGlobalTauri` is
+ * OFF (the app bundles `@tauri-apps/api`). Polls briefly because a just-spawned
+ * window populates the label only after its async boot import resolves.
+ */
+export async function currentWindowLabel(): Promise<string | null> {
+  for (let attempt = 0; attempt < 12; attempt++) {
+    const label = await browser.execute(function (): string | null {
+      const w = window as unknown as { __mdviewerE2E?: { windowLabel?: string } };
+      return w.__mdviewerE2E?.windowLabel ?? null;
+    });
+    if (label) return label;
+    await browser.pause(250);
+  }
+  return null;
+}
+
+/** Every open native window's label, asked of each WebDriver handle via the
+ *  e2e side-channel. Leaves the active handle on the last one swept. */
+export async function allWindowLabels(): Promise<string[]> {
+  const handles = await browser.getWindowHandles();
+  const labels: string[] = [];
+  for (const h of handles) {
+    await browser.switchToWindow(h);
+    const label = await currentWindowLabel();
+    if (label) labels.push(label);
+  }
+  return labels;
+}
+
+/** The label of the only open window whose label is not `notLabel`. */
+export async function findOtherWindowLabel(notLabel: string): Promise<string> {
+  const labels = await allWindowLabels();
+  const other = labels.find((l) => l !== notLabel);
+  if (!other) throw new Error(`no window handle other than "${notLabel}"`);
+  return other;
+}
+
 /** Tab labels visible in the currently-active WebDriver window. */
 export async function tabLabelsInActiveWindow(): Promise<string[]> {
   return browser.execute(() =>

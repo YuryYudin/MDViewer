@@ -1,6 +1,12 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { prepareFixture, createWindow, switchToWindow } from './helpers/app';
+import {
+  prepareFixture,
+  createWindow,
+  switchToWindow,
+  currentWindowLabel,
+  tabLabelsInActiveWindow,
+} from './helpers/app';
 
 /**
  * E2 — CLI default routing to the focused window (scenario S8).
@@ -44,22 +50,23 @@ async function dispatchCliByE2eHook(args: string[]): Promise<void> {
   );
 }
 
-/** Tab labels visible in the currently-active WebDriver window. */
-async function tabLabelsInActiveWindow(): Promise<string[]> {
-  return browser.execute(() =>
-    Array.from(document.querySelectorAll<HTMLElement>('[data-test="tab"] .tab-label')).map(
-      (el) => el.textContent?.trim() ?? '',
-    ),
-  );
-}
-
-/** The label of the currently-active WebDriver window. */
-async function currentWindowLabel(): Promise<string | null> {
-  return browser.execute(function (): string | null {
+/** The label the backend currently considers focused, read from the
+ *  `list_windows` IPC's `focused` flag (driven by Tauri's `is_focused()` —
+ *  observable headless, unlike the unimplemented `isFocused` WebDriver
+ *  command). This is the same signal `focused_window(app)` routes CLI
+ *  dispatch by, so asserting on it proves the routing target. */
+async function focusedWindowLabel(): Promise<string | null> {
+  const v = await browser.executeAsync(function (done: (v: unknown) => void): void {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const cur = (window as any).__TAURI__?.webviewWindow?.getCurrentWebviewWindow?.();
-    return cur?.label ?? null;
+    const tauri = (window as any).__TAURI_INTERNALS__;
+    if (!tauri?.invoke) { done({ error: 'tauri runtime missing' }); return; }
+    tauri.invoke('list_windows').then(
+      (rows: Array<{ label: string; focused: boolean }>) =>
+        done(rows.find((r) => r.focused)?.label ?? null),
+      (e: unknown) => done({ error: String(e) }),
+    );
   });
+  return v as string | null;
 }
 
 describe('E2 — CLI default routing to the focused window (S8)', () => {
@@ -90,37 +97,32 @@ describe('E2 — CLI default routing to the focused window (S8)', () => {
       timeoutMsg: 'main never reached the StartPage',
     });
 
-    // Spawn a SECOND window and focus it — it becomes the most-recently-
-    // focused window, the one the CLI default routing must target.
+    // Spawn a SECOND window — Tauri raises + focuses a freshly-built window,
+    // so win-2 becomes the focused window the CLI default routing must target.
+    // OBSERVABLE-PROXY NOTE: tauri-wd does NOT implement `isFocused`, and
+    // WebDriver `switchToWindow` does NOT drive OS focus headless. But the
+    // backend's `is_focused()` (the exact signal `focused_window(app)` routes
+    // by) IS observable through the `list_windows` `focused` flag — so we
+    // assert win-2 is the focused window via that, then drive + verify the
+    // dispatch landing WITHOUT switching WebDriver handles first (a switch
+    // would itself move OS focus and defeat the test).
     await createWindow('win-2');
     await switchToWindow('win-2');
     await browser.waitUntil(async () => browser.$('[data-view="start"]').isExisting(), {
       timeout: 10_000,
       timeoutMsg: 'win-2 never reached the StartPage',
     });
-    // Ensure win-2 holds OS focus so focused_window(app) resolves to it.
-    await browser.execute(function (): void {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const cur = (window as any).__TAURI__?.webviewWindow?.getCurrentWebviewWindow?.();
-      cur?.setFocus?.();
+    await browser.waitUntil(async () => (await focusedWindowLabel()) === 'win-2', {
+      timeout: 10_000,
+      timeoutMsg: 'backend never reported win-2 as the focused window',
     });
-    await browser.waitUntil(
-      async () => {
-        const f = await browser.executeAsync(function (done: (v: unknown) => void): void {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const cur = (window as any).__TAURI__?.webviewWindow?.getCurrentWebviewWindow?.();
-          if (!cur?.isFocused) { done(false); return; }
-          cur.isFocused().then((v: boolean) => done(v), () => done(false));
-        });
-        return f === true;
-      },
-      { timeout: 10_000, timeoutMsg: 'win-2 never took focus' },
-    );
 
-    // Pre-condition: neither window shows foo.md yet.
+    // Pre-condition: the focused window (win-2) shows no foo.md yet.
     expect(await tabLabelsInActiveWindow()).not.toContain('foo.md');
 
-    // Drive the running-app CLI dispatch: `mdviewer <foo.md>`.
+    // Drive the running-app CLI dispatch: `mdviewer <foo.md>`. The active
+    // WebDriver handle is still win-2, so we don't perturb OS focus before
+    // the dispatch resolves `focused_window` → win-2.
     await dispatchCliByE2eHook(['mdviewer', fooPath]);
 
     // The focused window (win-2) gains foo.md as a tab and is raised.
