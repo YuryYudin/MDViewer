@@ -251,6 +251,14 @@ export interface Ipc {
    * the tab's current owner.
    */
   moveTab(tabId: string, toWindow: string): Promise<void>;
+  /**
+   * G1: detach tab `tabId` into a brand-new window. The backend derives the
+   * new window's label (`win-{nanos}`, never client-supplied), spawns it,
+   * relocates the tab into it under the one-owner invariant, and refreshes
+   * BOTH the source window (which the tab left) and the new window. Invoked by
+   * the TabBar drag handler when a `dragend` drops clear of the strip.
+   */
+  detachTab(tabId: string): Promise<void>;
 }
 
 /**
@@ -356,6 +364,9 @@ export const tauriIpc: Ipc = {
   listWindows: () => invoke<WindowSummary[]>('list_windows'),
   openInNewWindow: (path) => invoke<void>('open_in_new_window', { path }),
   moveTab: (tabId, toWindow) => invoke<void>('move_tab', { tabId, toWindow }),
+  // G1: detach a tab into a fresh window. No client label — the backend mints
+  // the `win-{nanos}` label and spawns the window in the same handler.
+  detachTab: (tabId) => invoke<void>('detach_tab', { tabId }),
   // Subscribe to `ssh:askpass-request`. `listen` is async (it round-trips
   // through Tauri's event API) so the unlisten handle isn't available
   // synchronously — capture it asynchronously and have the returned

@@ -522,6 +522,97 @@ describe('TabBar', () => {
     ).toBe(0);
   });
 
+  // -------------------------------------------------------------------
+  // G1: drag a tab off the strip to detach (wireframe 05-drag-detach, S10)
+  // -------------------------------------------------------------------
+
+  /**
+   * Stamp a deterministic bounding rect on the tab strip so the dragend
+   * handler can decide "clear of the strip" vs "inside the strip" without a
+   * real layout pass (jsdom doesn't compute geometry).
+   */
+  function stubStripRect(root: HTMLElement, rect: Partial<DOMRect>): void {
+    const strip = root.querySelector<HTMLElement>('[data-test="tabbar"]')!;
+    const full: DOMRect = {
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: 300,
+      bottom: 40,
+      width: 300,
+      height: 40,
+      toJSON: () => ({}),
+      ...rect,
+    } as DOMRect;
+    strip.getBoundingClientRect = () => full;
+  }
+
+  function fireDragEnd(tab: HTMLElement, clientX: number, clientY: number): void {
+    // jsdom has no DragEvent ctor; a MouseEvent carries clientX/clientY which
+    // is all the dragend handler reads. Name it 'dragend' so the listener fires.
+    const ev = new MouseEvent('dragend', { bubbles: true, clientX, clientY });
+    tab.dispatchEvent(ev);
+  }
+
+  it('marks tabs draggable', () => {
+    const root = document.createElement('div');
+    const state: WorkspaceState = {
+      tabs: [
+        { id: 't1', path: '/docs/a.md' },
+        { id: 't2', path: '/docs/b.md' },
+      ],
+      activeId: 't1',
+    };
+    mountTabBar(root, makeIpc(), state);
+    const tabs = root.querySelectorAll<HTMLElement>('[data-test="tab"]');
+    expect(tabs.length).toBe(2);
+    for (const tab of Array.from(tabs)) {
+      expect(tab.draggable).toBe(true);
+    }
+  });
+
+  it('S10: dragend CLEAR of the strip rect detaches the tab into a new window', () => {
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    const ipc = makeIpc({ detachTab: vi.fn().mockResolvedValue(undefined) });
+    const state: WorkspaceState = {
+      tabs: [
+        { id: 't1', path: '/docs/a.md' },
+        { id: 't2', path: '/docs/b.md' },
+      ],
+      activeId: 't1',
+    };
+    mountTabBar(root, ipc, state);
+    // Strip occupies 0,0 → 300,40.
+    stubStripRect(root, { left: 0, top: 0, right: 300, bottom: 40 });
+    const tab = root.querySelectorAll<HTMLElement>('[data-test="tab"]')[1];
+    // Release well below the strip — clear of its bounding rect.
+    fireDragEnd(tab, 150, 400);
+    expect(ipc.detachTab).toHaveBeenCalledWith('t2');
+    root.remove();
+  });
+
+  it('S10: dragend INSIDE the strip rect is a no-op (no detach, no reorder)', () => {
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    const ipc = makeIpc({ detachTab: vi.fn().mockResolvedValue(undefined) });
+    const state: WorkspaceState = {
+      tabs: [
+        { id: 't1', path: '/docs/a.md' },
+        { id: 't2', path: '/docs/b.md' },
+      ],
+      activeId: 't1',
+    };
+    mountTabBar(root, ipc, state);
+    stubStripRect(root, { left: 0, top: 0, right: 300, bottom: 40 });
+    const tab = root.querySelectorAll<HTMLElement>('[data-test="tab"]')[1];
+    // Release inside the strip's rect — a no-op (intra-strip drag).
+    fireDragEnd(tab, 120, 20);
+    expect(ipc.detachTab).not.toHaveBeenCalled();
+    root.remove();
+  });
+
   it('marks the active tab', () => {
     const root = document.createElement('div');
     const state: WorkspaceState = {

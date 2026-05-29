@@ -247,6 +247,20 @@ body {
   cursor: pointer;
 }
 
+/* G1: drag a tab off the strip to detach (wireframe 05-drag-detach, S10).
+ * A grab cursor advertises the affordance; while a tab is being dragged it
+ * dims and shows a dashed outline so the detach gesture reads as "lifting"
+ * the tab out of the strip. */
+[data-test='tab'] {
+  cursor: grab;
+}
+[data-test='tab'].dragging {
+  cursor: grabbing;
+  opacity: 0.5;
+  outline: 1px dashed var(--border);
+  outline-offset: -2px;
+}
+
 /* =====================================================================
  * Tab context menu (wireframe 02-tab-context-menu)
  *
