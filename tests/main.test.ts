@@ -59,6 +59,30 @@ vi.mock('../src/ipc', async () => {
   return { ...actual, tauriIpc: fakeIpc };
 });
 
+// C2: window-addressed event bus. `main()` resolves `getCurrentWindow().label`
+// at boot and subscribes to THIS window's addressed events via
+// `getCurrentWindow().listen(name, cb)` — not the broadcast global `listen`.
+// Capture each window-scoped subscription so tests can fire the callbacks
+// deterministically and assert the boot label was resolved.
+type WinListener = (ev: { payload: unknown }) => void;
+const currentWindow = {
+  label: 'main',
+  listeners: {} as Record<string, WinListener[]>,
+  listen: vi.fn((event: string, cb: WinListener) => {
+    (currentWindow.listeners[event] ||= []).push(cb);
+    return Promise.resolve(() => undefined);
+  }),
+};
+vi.mock('@tauri-apps/api/window', () => ({
+  getCurrentWindow: () => currentWindow,
+}));
+
+// C2: raw `invoke('new_window')` lands here (the typed ipc.ts binding is D1).
+const rawInvoke = vi.fn().mockResolvedValue(undefined);
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: (...args: unknown[]) => rawInvoke(...args),
+}));
+
 // Stub the CSS imports so the bootstrap can be exercised in jsdom.
 vi.mock('../src/styles/theme.css', () => ({}));
 vi.mock('../src/styles/app.css', () => ({}));
@@ -107,6 +131,10 @@ describe('main()', () => {
     Object.values(fakeIpc).forEach((m) => (m as any).mockClear?.());
     fakeIpc.listOpenDocuments.mockResolvedValue([]);
     fakeIpc.listRecents.mockResolvedValue([]);
+    currentWindow.label = 'main';
+    currentWindow.listeners = {};
+    currentWindow.listen.mockClear();
+    rawInvoke.mockClear();
   });
 
   it('mounts Workspace when display_name is set', async () => {
@@ -368,6 +396,116 @@ describe('main()', () => {
     fakeIpc.getSettings.mockResolvedValueOnce(settingsWith());
     const { main } = await import('../src/main');
     await expect(main()).rejects.toThrow(/#app element missing/);
+  });
+});
+
+describe('main() — C2 window-addressed routing', () => {
+  beforeEach(() => {
+    resetDom(true);
+    localStorage.removeItem('mdviewer.theme');
+    Object.values(fakeIpc).forEach((m) => (m as any).mockClear?.());
+    fakeIpc.listOpenDocuments.mockResolvedValue([]);
+    fakeIpc.listRecents.mockResolvedValue([]);
+    fakeIpc.getSettings.mockResolvedValue(settingsWith());
+    currentWindow.label = 'main';
+    currentWindow.listeners = {};
+    currentWindow.listen.mockClear();
+    rawInvoke.mockClear();
+  });
+
+  // The addressed-event subscriptions live in a fire-and-forget IIFE that
+  // main() does not await (its `await import('@tauri-apps/api/window')` chain
+  // resolves on later microtask turns). Poll until the last subscription
+  // (`confirm-window-close`) has registered so assertions don't race the
+  // IIFE.
+  async function waitForAddressedListeners(): Promise<void> {
+    for (let i = 0; i < 20; i++) {
+      if ((currentWindow.listeners['confirm-window-close'] ?? []).length > 0) return;
+      await new Promise((r) => setTimeout(r, 0));
+    }
+  }
+
+  it('resolves getCurrentWindow().label and subscribes to this window’s addressed events at boot', async () => {
+    currentWindow.label = 'win-42';
+    fakeIpc.getSettings.mockResolvedValueOnce(settingsWith());
+    const { main } = await import('../src/main');
+    await main();
+    await waitForAddressedListeners();
+    // Subscriptions use the window-scoped `getCurrentWindow().listen`, NOT
+    // the broadcast global `listen` — every addressed event the design lists
+    // (04-window-addressed-events) is registered against THIS window.
+    const subscribed = currentWindow.listen.mock.calls.map((c) => c[0]);
+    expect(subscribed).toContain('workspace-changed');
+    expect(subscribed).toContain('show-conflict');
+    expect(subscribed).toContain('external-change');
+    expect(subscribed).toContain('confirm-window-close');
+  });
+
+  it('mdviewer:new-window invokes the new_window command via a raw invoke', async () => {
+    fakeIpc.getSettings.mockResolvedValueOnce(settingsWith());
+    const { main } = await import('../src/main');
+    await main();
+    document.dispatchEvent(new CustomEvent('mdviewer:new-window'));
+    // Let the fire-and-forget handler's microtasks settle.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(rawInvoke).toHaveBeenCalledWith('new_window');
+  });
+
+  it('confirm-window-close runs the save-or-discard confirm and invokes close_window to proceed', async () => {
+    fakeIpc.getSettings.mockResolvedValueOnce(settingsWith());
+    // The dirty-tab guard's confirm uses window.confirm; accept (save & close).
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    try {
+      const { main } = await import('../src/main');
+      await main();
+      await waitForAddressedListeners();
+      const cbs = currentWindow.listeners['confirm-window-close'] ?? [];
+      expect(cbs.length).toBeGreaterThan(0);
+      cbs[0]({ payload: null });
+      // Drain the async confirm/close chain.
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      // The save flush is dispatched and then the backend close is driven
+      // via the close_window command so the prevented close can proceed.
+      expect(rawInvoke).toHaveBeenCalledWith('close_window');
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+
+  it('confirm-window-close cancel keeps the window open (does NOT invoke close_window)', async () => {
+    fakeIpc.getSettings.mockResolvedValueOnce(settingsWith());
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    try {
+      const { main } = await import('../src/main');
+      await main();
+      await waitForAddressedListeners();
+      const cbs = currentWindow.listeners['confirm-window-close'] ?? [];
+      cbs[0]({ payload: null });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(rawInvoke).not.toHaveBeenCalledWith('close_window');
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+
+  it('workspace-changed addressed event triggers a window-scoped refresh', async () => {
+    fakeIpc.getSettings.mockResolvedValueOnce(settingsWith());
+    const { main } = await import('../src/main');
+    await main();
+    await waitForAddressedListeners();
+    fakeIpc.listOpenDocuments.mockClear();
+    const cbs = currentWindow.listeners['workspace-changed'] ?? [];
+    expect(cbs.length).toBeGreaterThan(0);
+    cbs[0]({ payload: null });
+    await Promise.resolve();
+    await Promise.resolve();
+    // refresh() re-fetches this window's own tab list via list_open_documents.
+    expect(fakeIpc.listOpenDocuments).toHaveBeenCalled();
   });
 });
 
