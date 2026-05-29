@@ -475,6 +475,15 @@ export async function main(): Promise<void> {
         const { emit } = await import('@tauri-apps/api/event');
         await emit('menu-action', action);
       },
+      async dispatchCli(args: string[]): Promise<void> {
+        // E2 (S8): the OS can't shell a second `mdviewer foo.md` invocation
+        // under WebDriver, so the spec drives the running-app CLI dispatch by
+        // emitting `e2e-dispatch-cli` with the argv. The Rust setup() listener
+        // (debug-only) routes it through the real
+        // parse_positional_args → dispatch_cli_targets focused-window path.
+        const { emit } = await import('@tauri-apps/api/event');
+        await emit('e2e-dispatch-cli', JSON.stringify(args));
+      },
       fireKeymapAction(action: 'font_increase' | 'font_decrease' | 'font_reset'): void {
         // tauri-webdriver-automation does not deliver the W3C Meta key
         // through `browser.keys(['Meta', '='])` (the actions JSON sent

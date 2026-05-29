@@ -1121,35 +1121,90 @@ async fn ssh_list_dir(
         .collect())
 }
 
+/// E2: choose the window a CLI / file-association target should open into.
+///
+/// Pure decision over `(focused, owner)`:
+/// * `owner` — the label of the window that *already* owns this document
+///   (from a CANONICALIZED `owning_window_label` lookup), if any. One-owner
+///   wins: re-route into the existing owner so the target is focused +
+///   activated in place rather than duplicated into a second window.
+/// * `focused` — the most-recently-focused window's label (resolved by the
+///   caller from `focused_window(app)` / `mrf_label()`); the default landing
+///   site for a not-yet-open document.
+///
+/// Factored out of `dispatch_cli_targets` so the routing rule is unit-tested
+/// without a live Tauri runtime (the lock/window-raise plumbing around it is
+/// framework-adjacent and covered by the source-smoke + e2e gates).
+fn route_target_label(focused: &str, owner: Option<&str>) -> String {
+    match owner {
+        Some(owner_label) => owner_label.to_string(),
+        None => focused.to_string(),
+    }
+}
+
 /// Dispatch a heterogeneous list of CLI targets onto the workspace. Used by
 /// (a) the single-instance plugin callback and (b) macOS's
 /// `RunEvent::Opened` hook — both sync contexts that may receive a mix of
 /// `Local` paths and `Ssh` URLs.
 ///
-/// Local targets open through `Workspace::open_document` under a brief
-/// workspace lock; SSH targets spawn an async task that fetches via
-/// `Operations::open_url` lock-free, then re-acquires the lock to register
-/// the tab. The two paths are independent: an SSH fetch failure for one
-/// URL doesn't block another URL from succeeding.
+/// E2: the running-app dispatch routes targets into the MOST-RECENTLY-FOCUSED
+/// window (the one the user is actually looking at) and raises it, rather than
+/// always landing them in `main`. One-owner is honored: a target already open
+/// in some window focuses that window + activates its tab instead of
+/// duplicating. The owner lookup canonicalizes the path first — `open_document`
+/// stores canonical paths but `owning_window_label` compares raw, so the
+/// phase-D caveat (raw-vs-canonical mismatch) is avoided by canonicalizing
+/// before the check, matching `open_in_new_window_resolve`.
+///
+/// Local targets open through `Workspace::open_document_for(<routed label>)`
+/// under a brief workspace lock; SSH targets spawn an async task that fetches
+/// via `Operations::open_url` lock-free, then re-acquires the lock to register
+/// the tab into the routed window. The two paths are independent: an SSH fetch
+/// failure for one URL doesn't block another URL from succeeding.
 fn dispatch_cli_targets(
     app: tauri::AppHandle,
     targets: Vec<cli::OpenTarget>,
     source_label: &'static str,
 ) {
+    // Resolve the landing window once: the focused window, falling back to the
+    // workspace's most-recently-focused label (and finally any live window).
+    // This is the default site for not-yet-open targets; one-owner re-routes
+    // per-target below.
+    let focused_label = focused_window(&app)
+        .map(|w| w.label().to_string())
+        .unwrap_or_else(|| mdviewer_lib::workspace::MAIN_LABEL.to_string());
+
     // First pass: open Local tabs synchronously under a single workspace
     // lock acquisition. We deliberately don't .await inside this scope.
+    // Collect the set of windows we routed into so we can raise them after
+    // dropping the lock.
     let mut deferred_ssh: Vec<mdviewer_core::ssh_url::SshUrl> = Vec::new();
+    let mut raise_labels: Vec<String> = Vec::new();
     let ws_state = app.state::<Mutex<Workspace>>();
     if let Ok(mut ws) = ws_state.lock() {
         for target in targets {
             match target {
                 cli::OpenTarget::Local(path) => {
-                    match ws.open_document(&path, OpenOpts::default()) {
-                        Ok(_) => tracing::info!(
-                            "opened from {}: {}",
-                            source_label,
-                            path.display()
-                        ),
+                    // One-owner: canonicalize first (open_document stores
+                    // canonical, owning_window_label compares raw) so an
+                    // already-open doc resolves to its owning window instead
+                    // of a spurious miss → duplicate.
+                    let canonical =
+                        path.canonicalize().unwrap_or_else(|_| path.clone());
+                    let owner = ws.owning_window_label(&canonical).map(|s| s.to_string());
+                    let open_label = route_target_label(&focused_label, owner.as_deref());
+                    match ws.open_document_for(&open_label, &path, OpenOpts::default()) {
+                        Ok(_) => {
+                            tracing::info!(
+                                "opened from {} into {}: {}",
+                                source_label,
+                                open_label,
+                                path.display()
+                            );
+                            if !raise_labels.contains(&open_label) {
+                                raise_labels.push(open_label);
+                            }
+                        }
                         Err(e) => tracing::warn!(
                             "{} open failed for {}: {e:?}",
                             source_label,
@@ -1162,12 +1217,22 @@ fn dispatch_cli_targets(
         }
     }
 
+    // Raise + repaint the windows we routed Local targets into. Raising brings
+    // the focused (or one-owner) window forward so the user sees the new tab.
+    for label in &raise_labels {
+        if let Some(win) = app.get_webview_window(label) {
+            let _ = win.set_focus();
+        }
+        let _ = app.emit_to(label.as_str(), "workspace-changed", ());
+    }
+
     // Second pass: each SSH target spawns a Tauri-runtime task so the
     // synchronous caller (the single-instance plugin callback, the
     // RunEvent::Opened branch) returns immediately and the async fetch
     // happens off the event loop.
     for url in deferred_ssh {
         let app_handle = app.clone();
+        let landing = focused_label.clone();
         // Display impl on SshUrl renders the canonical
         // `ssh://[user@]host[:port]/path` form — same shape A2 pinned.
         let url_label = url.to_string();
@@ -1186,17 +1251,21 @@ fn dispatch_cli_targets(
             };
             let ws_state = app_handle.state::<Mutex<Workspace>>();
             if let Ok(mut ws) = ws_state.lock() {
-                let _ = ws.register_ssh_tab_from_outcome(url, outcome);
-                tracing::info!("opened SSH from {}: {}", source_label, url_label);
+                // E2: register the SSH tab into the focused window (matching
+                // the Local-target routing) instead of always `main`.
+                let _ = ws.register_ssh_tab_from_outcome_for(&landing, url, outcome);
+                tracing::info!(
+                    "opened SSH from {} into {}: {}",
+                    source_label,
+                    landing,
+                    url_label
+                );
             }
-            // B2: CLI / file-association opens route into the `main` window
-            // for now (E2 adds focused routing), so address the repaint nudge
-            // to `main` rather than broadcasting it to every window.
-            let _ = app_handle.emit_to(
-                mdviewer_lib::workspace::MAIN_LABEL,
-                "workspace-changed",
-                (),
-            );
+            // E2: raise + repaint the focused window the tab landed in.
+            if let Some(win) = app_handle.get_webview_window(&landing) {
+                let _ = win.set_focus();
+            }
+            let _ = app_handle.emit_to(landing.as_str(), "workspace-changed", ());
         });
     }
 }
@@ -1791,19 +1860,19 @@ fn main() {
         // running spawns a duplicate window on Win/Linux and bounces
         // the Dock icon on macOS without doing anything useful.
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            let targets = cli::parse_positional_args(&argv);
-            if !targets.is_empty() {
+            // E2: route the second-instance targets into the MOST-RECENTLY-
+            // FOCUSED window (resolved inside `dispatch_cli_targets`), raise
+            // that window, and honor one-owner — instead of always landing in
+            // `main`. `dispatch_cli_targets` now owns the focus + repaint
+            // emit for the window it routed into, so this callback no longer
+            // hard-codes `main`.
+            let parsed = cli::parse_positional_args(&argv);
+            if !parsed.targets.is_empty() {
                 dispatch_cli_targets(
                     app.clone(),
-                    targets,
+                    parsed.targets,
                     "second invocation",
                 );
-                let _ = app.emit_to(mdviewer_lib::workspace::MAIN_LABEL, "workspace-changed", ());
-            }
-            // Bring the main window forward so the user sees the new tab
-            // even if the existing window was hidden behind another app.
-            if let Some(win) = app.get_webview_window("main") {
-                let _ = win.set_focus();
             }
         }))
         .plugin(tauri_plugin_dialog::init())
@@ -1939,8 +2008,14 @@ fn main() {
             // *this* launch and shouldn't have the saved tabs loaded too.
             // The session restore branch only runs when argv brought no
             // paths AND the user has opted into restore mode.
+            // E2: `parse_positional_args` now returns `ParsedArgs { targets,
+            // new_window }`. Cold-start behavior is UNCHANGED — targets open
+            // into `main` (via `open_document`) exactly as before; the
+            // `new_window` hint is only consumed by the running-app dispatch
+            // (F1 wires the flag). Bind `.targets` so the existing loop is
+            // a one-field change.
             let cli_targets =
-                cli::parse_positional_args(&std::env::args().collect::<Vec<_>>());
+                cli::parse_positional_args(&std::env::args().collect::<Vec<_>>()).targets;
             // A9: argv now contains a mix of `OpenTarget::Local(path)` and
             // `OpenTarget::Ssh(url)`. Local opens go through `open_document`
             // synchronously; SSH opens drive `open_ssh_url(url, &ops)` via
@@ -2197,6 +2272,36 @@ fn main() {
                     }
                 }
             });
+
+            // E2 (S8): e2e side-channel for the running-app CLI dispatch.
+            // The OS can't shell out a second `mdviewer foo.md` invocation
+            // under WebDriver, so the e2e spec emits an `e2e-dispatch-cli`
+            // event carrying the argv. This listener parses it through the
+            // SAME `cli::parse_positional_args` + `dispatch_cli_targets` path
+            // the real single-instance callback uses, so the spec exercises
+            // the focused-window routing end-to-end. Gated on `--features e2e`
+            // (the same gate the WebDriver bridge that exposes `__mdviewerE2E`
+            // rides on) so shipped binaries never register this listener — the
+            // side-channel is unreachable in production.
+            #[cfg(feature = "e2e")]
+            {
+                use tauri::Listener;
+                let dispatch_app = app.handle().clone();
+                app.listen("e2e-dispatch-cli", move |event| {
+                    // Payload is a JSON array of argv strings, e.g.
+                    // ["mdviewer", "/abs/foo.md"].
+                    let argv: Vec<String> =
+                        serde_json::from_str(event.payload()).unwrap_or_default();
+                    let parsed = cli::parse_positional_args(&argv);
+                    if !parsed.targets.is_empty() {
+                        dispatch_cli_targets(
+                            dispatch_app.clone(),
+                            parsed.targets,
+                            "e2e dispatch",
+                        );
+                    }
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -2267,11 +2372,11 @@ fn main() {
                 if targets.is_empty() {
                     return;
                 }
+                // E2: `dispatch_cli_targets` now routes into the focused
+                // window (one-owner honored), raises it, and emits the
+                // `workspace-changed` repaint to that window — so we no
+                // longer hard-code a `main`-addressed emit here.
                 dispatch_cli_targets(app.clone(), targets, "RunEvent::Opened");
-                // Tell the WebView to re-fetch the open-doc list and re-paint
-                // its tab strip. main.ts listens for this event and calls
-                // workspace.refresh().
-                let _ = app.emit_to(mdviewer_lib::workspace::MAIN_LABEL, "workspace-changed", ());
             }
             // Suppress the "unused" warnings on non-macOS platforms.
             #[cfg(not(any(target_os = "macos", target_os = "ios")))]

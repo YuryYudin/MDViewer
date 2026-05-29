@@ -92,10 +92,28 @@ pub fn urls_to_paths(urls: &[tauri::Url]) -> Vec<OpenTarget> {
         .collect()
 }
 
+/// The parsed result of one CLI / file-association invocation: the ordered
+/// list of `OpenTarget`s plus a `new_window` hint.
+///
+/// `new_window` is the `-w` / `--new-window` flag from contract
+/// `01-cli-window-flag.md`. **E2 always sets it `false`** — this task only
+/// changes the *default* (no-flag) routing to target the focused window.
+/// F1 adds the flag recognition that flips this to `true`. Keeping the
+/// `ParsedArgs` shape stable here means F1 is a one-line change in the
+/// parser (set the field) plus a one-branch change at the dispatch site,
+/// not a return-type churn across every call site again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedArgs {
+    pub targets: Vec<OpenTarget>,
+    pub new_window: bool,
+}
+
 /// Parse positional file paths / SSH URLs out of `args` (typically
-/// `std::env::args()`). Returns an empty Vec when no targets are present
-/// — the caller should boot into the StartPage in that case.
-pub fn parse_positional_args(args: &[String]) -> Vec<OpenTarget> {
+/// `std::env::args()`). Returns `ParsedArgs { targets, new_window }`; an
+/// empty `targets` Vec means no targets are present — the caller should
+/// boot into the StartPage in that case. `new_window` is always `false`
+/// here (E2); F1 wires the `-w` flag that sets it `true`.
+pub fn parse_positional_args(args: &[String]) -> ParsedArgs {
     let mut iter = args.iter().enumerate();
 
     // Skip argv[0] (binary path).
@@ -110,18 +128,26 @@ pub fn parse_positional_args(args: &[String]) -> Vec<OpenTarget> {
         if first.as_str() == "migrate-sidecars" {
             // Drop the entire subcommand line. main.rs has already exited
             // by the time we'd be parsing this anyway.
-            return Vec::new();
+            return ParsedArgs {
+                targets: Vec::new(),
+                new_window: false,
+            };
         }
     }
 
-    let mut out = Vec::new();
+    let mut targets = Vec::new();
     while let Some((_, arg)) = peeked {
         if !arg.is_empty() && !arg.starts_with('-') {
-            out.push(classify_arg(arg));
+            targets.push(classify_arg(arg));
         }
         peeked = iter.next();
     }
-    out
+    ParsedArgs {
+        targets,
+        // E2: the default (no-flag) invocation never requests a new window;
+        // F1 recognizes `-w` / `--new-window` and flips this.
+        new_window: false,
+    }
 }
 
 /// Classify a single argv string as `OpenTarget::Ssh` (when it parses as
@@ -165,7 +191,10 @@ mod tests {
 
     #[test]
     fn empty_when_only_binary_name() {
-        assert!(parse_positional_args(&argv(&["/usr/local/bin/mdviewer"])).is_empty());
+        let parsed = parse_positional_args(&argv(&["/usr/local/bin/mdviewer"]));
+        assert!(parsed.targets.is_empty());
+        // E2: the default invocation never requests a new window.
+        assert!(!parsed.new_window);
     }
 
     #[test]
@@ -178,13 +207,15 @@ mod tests {
             "/tmp/this-may-not-exist-1.md",
             "/tmp/this-may-not-exist-2.md",
         ]));
-        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed.targets.len(), 2);
+        // E2: plain target lists carry no new-window hint (F1 adds `-w`).
+        assert!(!parsed.new_window);
         assert_eq!(
-            as_local(&parsed[0]).file_name().and_then(|s| s.to_str()),
+            as_local(&parsed.targets[0]).file_name().and_then(|s| s.to_str()),
             Some("this-may-not-exist-1.md"),
         );
         assert_eq!(
-            as_local(&parsed[1]).file_name().and_then(|s| s.to_str()),
+            as_local(&parsed.targets[1]).file_name().and_then(|s| s.to_str()),
             Some("this-may-not-exist-2.md"),
         );
     }
@@ -201,7 +232,10 @@ mod tests {
             "-v",
             "/tmp/another.md",
         ]));
-        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed.targets.len(), 2);
+        // E2: even a flag like `-v` mustn't set new_window — that's F1's
+        // job, and only for the specific `-w` / `--new-window` flag.
+        assert!(!parsed.new_window);
     }
 
     #[test]
@@ -210,9 +244,10 @@ mod tests {
         // mid-gesture) has been observed to deliver an empty string.
         // Never treat `""` as a filename.
         let parsed = parse_positional_args(&argv(&["mdviewer", "", "/tmp/x.md", ""]));
-        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed.targets.len(), 1);
+        assert!(!parsed.new_window);
         assert_eq!(
-            as_local(&parsed[0]).file_name().and_then(|s| s.to_str()),
+            as_local(&parsed.targets[0]).file_name().and_then(|s| s.to_str()),
             Some("x.md"),
         );
     }
@@ -228,7 +263,8 @@ mod tests {
             "/some/dir",
             "extra-noise",
         ]));
-        assert!(parsed.is_empty());
+        assert!(parsed.targets.is_empty());
+        assert!(!parsed.new_window);
     }
 
     #[test]
@@ -241,8 +277,8 @@ mod tests {
             "mdviewer",
             "ssh://alice@host.example:2222/notes/file.md",
         ]));
-        assert_eq!(parsed.len(), 1);
-        let url = as_ssh(&parsed[0]);
+        assert_eq!(parsed.targets.len(), 1);
+        let url = as_ssh(&parsed.targets[0]);
         assert_eq!(url.user.as_deref(), Some("alice"));
         assert_eq!(url.host, "host.example");
         assert_eq!(url.port, 2222);
@@ -260,14 +296,14 @@ mod tests {
             "ssh://host/remote-1.md",
             "/tmp/local-2.md",
         ]));
-        assert_eq!(parsed.len(), 3);
+        assert_eq!(parsed.targets.len(), 3);
         assert_eq!(
-            as_local(&parsed[0]).file_name().and_then(|s| s.to_str()),
+            as_local(&parsed.targets[0]).file_name().and_then(|s| s.to_str()),
             Some("local-1.md"),
         );
-        assert_eq!(as_ssh(&parsed[1]).host, "host");
+        assert_eq!(as_ssh(&parsed.targets[1]).host, "host");
         assert_eq!(
-            as_local(&parsed[2]).file_name().and_then(|s| s.to_str()),
+            as_local(&parsed.targets[2]).file_name().and_then(|s| s.to_str()),
             Some("local-2.md"),
         );
     }
@@ -280,10 +316,10 @@ mod tests {
         // found" toast — same UX the user would get for a typo'd local
         // path.
         let parsed = parse_positional_args(&argv(&["mdviewer", "ssh:///no-host.md"]));
-        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed.targets.len(), 1);
         // The fallback yields a Local target. The exact path shape isn't
         // load-bearing; the guarantee is "not Ssh, not silently dropped."
-        match &parsed[0] {
+        match &parsed.targets[0] {
             OpenTarget::Local(_) => {}
             OpenTarget::Ssh(_) => panic!("malformed ssh URL must not classify as Ssh"),
         }
@@ -354,11 +390,11 @@ mod tests {
             "mdviewer",
             target.to_str().expect("utf-8 path"),
         ]));
-        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed.targets.len(), 1);
         // canonicalize() resolves any symlinks; the suffix should still
         // match the original file name.
         assert_eq!(
-            as_local(&parsed[0]).file_name().and_then(|s| s.to_str()),
+            as_local(&parsed.targets[0]).file_name().and_then(|s| s.to_str()),
             Some("doc.md"),
         );
     }

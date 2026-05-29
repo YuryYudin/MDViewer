@@ -748,6 +748,64 @@ mod window_scoping {
         }
     }
 
+    /// E2: mirror of main.rs's pure `route_target_label` — the CLI / file-
+    /// association dispatch landing-site decision. One-owner wins (`owner`
+    /// re-routes into the window that already holds the doc); otherwise the
+    /// target lands in the most-recently-focused window (`focused`).
+    fn route_target_label(focused: &str, owner: Option<&str>) -> String {
+        match owner {
+            Some(owner_label) => owner_label.to_string(),
+            None => focused.to_string(),
+        }
+    }
+
+    #[test]
+    fn route_target_label_defaults_to_focused_when_not_open() {
+        // E2 S8: a not-yet-open target lands in the focused window, not `main`.
+        assert_eq!(route_target_label("win-2", None), "win-2");
+        // Even when the focused window happens to be main, the routing is
+        // "focused", not a hard-coded constant.
+        assert_eq!(route_target_label(MAIN_LABEL, None), MAIN_LABEL);
+    }
+
+    #[test]
+    fn route_target_label_one_owner_wins_over_focused() {
+        // One-owner: a target already open in `main` must re-route into main
+        // even though `win-2` is focused — no duplicate copy in the focused
+        // window.
+        assert_eq!(route_target_label("win-2", Some(MAIN_LABEL)), MAIN_LABEL);
+        // Owner == focused is a no-op (the focused window already owns it).
+        assert_eq!(route_target_label("win-2", Some("win-2")), "win-2");
+    }
+
+    #[test]
+    fn route_target_label_one_owner_canonicalized_lookup() {
+        // E2: the dispatch canonicalizes the path before `owning_window_label`
+        // (which compares raw `Tab.path` — stored canonical by
+        // open_document). This mirror test pins that an already-open doc,
+        // looked up by its CANONICAL path, resolves to its owning window so
+        // route_target_label re-routes into it rather than the focused window.
+        let (state, tmp) = ws();
+        let doc = tmp.path().join("owned.md");
+        std::fs::write(&doc, "# owned\n").unwrap();
+
+        let mut g = state.lock().unwrap();
+        g.new_window("win-2".to_string());
+        // Doc lives in main.
+        g.open_document_for(MAIN_LABEL, &doc, OpenOpts::default()).unwrap();
+
+        // Dispatch is "focused = win-2"; canonicalize the path the way the
+        // dispatch does before the owner lookup.
+        let canonical = doc.canonicalize().unwrap_or_else(|_| doc.clone());
+        let owner = g.owning_window_label(&canonical).map(str::to_string);
+        assert_eq!(owner.as_deref(), Some(MAIN_LABEL));
+        assert_eq!(
+            route_target_label("win-2", owner.as_deref()),
+            MAIN_LABEL,
+            "already-open doc re-routes into its owner, not the focused window"
+        );
+    }
+
     /// D1: mirror of main.rs's pure `window_summaries_with_focus` — project the
     /// per-window summaries onto the IPC wire shape, marking exactly the
     /// `focused_label` window focused. The production `list_windows` handler
@@ -1017,6 +1075,58 @@ fn b2_tab_commands_take_window_and_route_addressed_events() {
     assert!(
         main_rs.contains("focused_window("),
         "on_menu_event must route through focused_window for S12",
+    );
+}
+
+#[test]
+fn e2_cli_dispatch_routes_into_focused_window_with_one_owner() {
+    // E2 S8 source-smoke: the running-app CLI dispatch must route into the
+    // most-recently-focused window (not hard-coded `main`), canonicalize the
+    // path before the one-owner lookup, and open via the window-scoped
+    // `open_document_for`. We assert the wiring at source level because the
+    // dispatch touches the live Tauri window list (focus, raise, emit) and is
+    // exercised end-to-end by the S8 e2e spec; the pure routing decision is
+    // unit-tested via the `route_target_label` mirror above.
+    let main_rs = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    )
+    .expect("read main.rs");
+
+    let idx = main_rs
+        .find("fn dispatch_cli_targets(")
+        .expect("dispatch_cli_targets must exist");
+    // Scope the assertions to the function body (next ~3500 chars covers it).
+    let body: String = main_rs[idx..].chars().take(3500).collect();
+
+    assert!(
+        body.contains("focused_window(&app)"),
+        "dispatch must resolve the landing window via focused_window (E2 focused routing)",
+    );
+    assert!(
+        body.contains("route_target_label("),
+        "dispatch must use the pure route_target_label decision for one-owner vs focused",
+    );
+    assert!(
+        body.contains("owning_window_label("),
+        "dispatch must consult owning_window_label for the one-owner check",
+    );
+    assert!(
+        body.contains("canonicalize()"),
+        "dispatch must canonicalize the path before the one-owner lookup (phase-D raw-vs-canonical caveat)",
+    );
+    assert!(
+        body.contains("open_document_for(&open_label"),
+        "dispatch must open Local targets via the window-scoped open_document_for(<routed label>)",
+    );
+    assert!(
+        body.contains("set_focus()"),
+        "dispatch must raise the routed window so the user sees the new tab",
+    );
+    // The MAIN_LABEL-addressed repaint emit must be gone — the dispatch now
+    // emits to the routed window.
+    assert!(
+        !body.contains("MAIN_LABEL,\n                \"workspace-changed\""),
+        "dispatch must not hard-code a MAIN_LABEL repaint emit (E2 routes to the focused window)",
     );
 }
 
