@@ -81,6 +81,128 @@ export async function openDocByE2eHook(absPath: string): Promise<void> {
   );
 }
 
+/**
+ * B2 (multi-window): spawn a second native window with the given label via
+ * the e2e side-channel's `createWindow` hook, which invokes the
+ * `e2e_create_window` IPC (registered only under `--features e2e`). The new
+ * window loads the same app entry (a fresh Workspace shell) and registers
+ * itself under the EXACT `label`, which the window-scoped IPC handlers key
+ * on. Returns once the new window exists as a WebDriver handle that reports
+ * the requested label, so the caller can switch to it.
+ *
+ * G2: this used to call `new WebviewWindow(...)` off `window.__TAURI__`, but
+ * `withGlobalTauri` is OFF (the app bundles `@tauri-apps/api` imports), so
+ * `window.__TAURI__` is undefined under tauri-wd. We drive the spawn through
+ * the same e2e side-channel the other helpers use instead.
+ *
+ * The frontend wires the production "open in new window" affordance (C2/D1);
+ * this helper drives the underlying primitive so the isolation contract (S5)
+ * can be asserted independently of that UI landing.
+ */
+export async function createWindow(label: string): Promise<void> {
+  const result = await browser.executeAsync(
+    function (label: string, done: (v: unknown) => void): void {
+      const w = window as unknown as {
+        __mdviewerE2E?: { createWindow?(label: string): Promise<void> };
+      };
+      if (!w.__mdviewerE2E?.createWindow) {
+        done({ error: 'e2e createWindow hook missing' });
+        return;
+      }
+      w.__mdviewerE2E.createWindow(label).then(() => done(null), (e) => done({ error: String(e) }));
+    },
+    label,
+  );
+  if (result && typeof result === 'object' && 'error' in result) {
+    throw new Error(`createWindow("${label}") failed: ${(result as { error: string }).error}`);
+  }
+  // Wait until the freshly-spawned window's own boot has reported its label
+  // and surfaces as a WebDriver handle we can switch to.
+  await switchToWindow(label);
+}
+
+/**
+ * Switch the active WebDriver window to the one whose own boot reported the
+ * given `label`. tauri-wd surfaces each native window as a separate WebDriver
+ * handle; we identify the target by reading `window.__mdviewerE2E.windowLabel`
+ * (set by each window's main.ts on boot — see src/main.ts G2) from each
+ * handle.
+ *
+ * G2: replaces the old `window.__TAURI__...getCurrentWebviewWindow().label`
+ * path (unavailable because `withGlobalTauri` is OFF). The label is set after
+ * the window's async boot import resolves, so we poll a few times with a short
+ * pause before giving up — a just-spawned window needs a moment to populate it.
+ */
+export async function switchToWindow(label: string): Promise<void> {
+  const maxAttempts = 20;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const handles = await browser.getWindowHandles();
+    for (const h of handles) {
+      await browser.switchToWindow(h);
+      const thisLabel = await browser.execute(function (): string | null {
+        const w = window as unknown as { __mdviewerE2E?: { windowLabel?: string } };
+        return w.__mdviewerE2E?.windowLabel ?? null;
+      });
+      if (thisLabel === label) return;
+    }
+    // The label populates after the window's async boot resolves; give a
+    // just-spawned window time before the next sweep.
+    await browser.pause(250);
+  }
+  throw new Error(`no WebDriver handle for window label "${label}"`);
+}
+
+/**
+ * The window-label of the currently-active WebDriver handle, read from the
+ * e2e side-channel `window.__mdviewerE2E.windowLabel` (set by each window's
+ * main.ts on boot — see src/main.ts G2).
+ *
+ * G2: replaces the `window.__TAURI__...getCurrentWebviewWindow().label` path
+ * the original specs used, which is unavailable because `withGlobalTauri` is
+ * OFF (the app bundles `@tauri-apps/api`). Polls briefly because a just-spawned
+ * window populates the label only after its async boot import resolves.
+ */
+export async function currentWindowLabel(): Promise<string | null> {
+  for (let attempt = 0; attempt < 12; attempt++) {
+    const label = await browser.execute(function (): string | null {
+      const w = window as unknown as { __mdviewerE2E?: { windowLabel?: string } };
+      return w.__mdviewerE2E?.windowLabel ?? null;
+    });
+    if (label) return label;
+    await browser.pause(250);
+  }
+  return null;
+}
+
+/** Every open native window's label, asked of each WebDriver handle via the
+ *  e2e side-channel. Leaves the active handle on the last one swept. */
+export async function allWindowLabels(): Promise<string[]> {
+  const handles = await browser.getWindowHandles();
+  const labels: string[] = [];
+  for (const h of handles) {
+    await browser.switchToWindow(h);
+    const label = await currentWindowLabel();
+    if (label) labels.push(label);
+  }
+  return labels;
+}
+
+/** The label of the only open window whose label is not `notLabel`. */
+export async function findOtherWindowLabel(notLabel: string): Promise<string> {
+  const labels = await allWindowLabels();
+  const other = labels.find((l) => l !== notLabel);
+  if (!other) throw new Error(`no window handle other than "${notLabel}"`);
+  return other;
+}
+
+/** Tab labels visible in the currently-active WebDriver window. */
+export async function tabLabelsInActiveWindow(): Promise<string[]> {
+  return browser.execute(() =>
+    Array.from(document.querySelectorAll<HTMLElement>('[data-test="tab"] .tab-label'))
+      .map((el) => el.textContent?.trim() ?? ''),
+  );
+}
+
 /** Spec 06: drive import_comments through the e2e side-channel. */
 export async function importCommentsByE2eHook(
   tabId: string,

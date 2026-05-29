@@ -261,6 +261,17 @@ impl Watcher {
         self.state.lock().unwrap().unsaved.insert(key, dirty);
     }
 
+    /// B2: read-only accessor mirroring [`Self::mark_unsaved`]. Returns the
+    /// current dirty bit for `p` (defaulting to `false` for paths never
+    /// marked). The window close-request guard consults this to decide
+    /// whether an OS titlebar close must be intercepted while a tab in the
+    /// window has unsaved edits. No logic — a plain getter over the same
+    /// `unsaved` map `set_dirty` writes.
+    pub fn is_unsaved(&self, p: &Path) -> bool {
+        let key = canonical(p);
+        *self.state.lock().unwrap().unsaved.get(&key).unwrap_or(&false)
+    }
+
     /// Record that we just wrote `hash` to `p` ourselves. The next notify
     /// event for `p` whose on-disk hash matches `hash` will be suppressed.
     ///

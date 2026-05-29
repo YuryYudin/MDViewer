@@ -102,6 +102,12 @@ fn export_all() -> Result<String, Box<dyn std::error::Error>> {
     buf.push_str(&mdviewer_lib::workspace::ExportResult::export_to_string().unwrap());
     buf.push('\n');
 
+    // D1: per-window summary returned by the `list_windows` IPC command —
+    // mirrors WindowSummaryData (label / active_doc_name / tab_count) plus the
+    // IPC-supplied `focused` flag. Consumed by the multi-window frontend.
+    buf.push_str(&mdviewer_lib::workspace::WindowSummary::export_to_string().unwrap());
+    buf.push('\n');
+
     // A10: EntryKind tagging on RecentEntry — `"local" | "ssh"` literal.
     // Emitted before `RecentEntry` so the latter's `kind` field resolves
     // without a dangling import.

@@ -31,6 +31,7 @@ function fakeIpc(recentPaths: string[] = ['/docs/a.md', '/docs/b.md']): Ipc {
     appInfo: vi.fn().mockResolvedValue({ version: '0.0.0', commit_hash: 'unit' }),
     renderMarkdown: vi.fn(),
     resolveAnchor: vi.fn(),
+    openInNewWindow: vi.fn().mockResolvedValue(undefined),
   } as unknown as Ipc;
 }
 
@@ -67,6 +68,55 @@ describe('StartPage', () => {
     const item = root.querySelector('[data-test="recent-item"]') as HTMLElement;
     item.click();
     expect(ipc.openDocument).toHaveBeenCalledWith('/docs/a.md');
+  });
+
+  // D3: each recents row carries an open-in-new-window affordance
+  // (wireframe 06). It must (a) be present per row with the agreed
+  // data-test hook, (b) call ipc.openInNewWindow with that row's path
+  // when activated, and (c) stopPropagation so the row's own
+  // open-in-this-window click does NOT also fire.
+  it('renders an open-in-new-window affordance per recent row', async () => {
+    const root = document.createElement('div');
+    const ipc = fakeIpc(['/docs/a.md', '/docs/b.md']);
+    await mountStartPage(root, ipc);
+    const affordances = root.querySelectorAll('[data-test="recent-open-new-window"]');
+    expect(affordances.length).toBe(2);
+  });
+
+  it('clicking the open-in-new-window affordance calls ipc.openInNewWindow with the row path', async () => {
+    const root = document.createElement('div');
+    const ipc = fakeIpc(['/docs/a.md', '/docs/b.md']);
+    await mountStartPage(root, ipc);
+    const rows = root.querySelectorAll('[data-test="recent-item"]');
+    const affordance = rows[1].querySelector(
+      '[data-test="recent-open-new-window"]',
+    ) as HTMLElement;
+    affordance.click();
+    expect(ipc.openInNewWindow).toHaveBeenCalledWith('/docs/b.md');
+  });
+
+  it('the open-in-new-window affordance stops propagation so the row open does not also fire', async () => {
+    const root = document.createElement('div');
+    const ipc = fakeIpc(['/docs/a.md']);
+    await mountStartPage(root, ipc);
+    const affordance = root.querySelector(
+      '[data-test="recent-open-new-window"]',
+    ) as HTMLElement;
+    affordance.click();
+    // Propagation stopped: the row's open-in-this-window handler did NOT run.
+    expect(ipc.openDocument).not.toHaveBeenCalled();
+    // The new-window IPC did run for this row's path.
+    expect(ipc.openInNewWindow).toHaveBeenCalledWith('/docs/a.md');
+  });
+
+  it('a plain row-body click still opens in this window even with the affordance present', async () => {
+    const root = document.createElement('div');
+    const ipc = fakeIpc(['/docs/a.md']);
+    await mountStartPage(root, ipc);
+    const item = root.querySelector('[data-test="recent-item"]') as HTMLElement;
+    item.click();
+    expect(ipc.openDocument).toHaveBeenCalledWith('/docs/a.md');
+    expect(ipc.openInNewWindow).not.toHaveBeenCalled();
   });
 
   it('exposes a hidden file input for E2E uploads', async () => {

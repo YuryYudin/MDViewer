@@ -707,6 +707,677 @@ fn ssh_password_response_is_sync_not_async() {
 // and Conflict paths and asserts push() did / did not run.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// B2: window-scoped tab commands + addressed event routing.
+//
+// The IPC handlers now derive their window from the injected `tauri::Window`
+// (`.label()`) instead of a client argument, events are addressed via
+// `emit_to(<label>, …)`, and session restore recreates N windows. We can't
+// import main.rs's `#[tauri::command] fn`s from this crate, so we (a) exercise
+// the window-scoped Workspace API the handlers delegate to, (b) unit-test the
+// pure helpers (`window_has_dirty_tab` / `restore_window_label`) by mirroring
+// their bodies against the real Workspace, and (c) source-level smoke that the
+// handlers take a `window: tauri::Window` and call `emit_to`.
+// ---------------------------------------------------------------------------
+
+mod window_scoping {
+    use super::*;
+    use mdviewer_lib::workspace::{OpenOpts, OpenOutcome, MAIN_LABEL};
+    use std::path::Path;
+
+    /// Mirror of main.rs's pure `window_has_dirty_tab`: any tab owned by
+    /// `label` for which `dirty_for(path)` is true. The production handler
+    /// passes `|p| watcher.is_unsaved(p)`; here we inject an explicit set.
+    fn window_has_dirty_tab(
+        ws: &mdviewer_lib::workspace::Workspace,
+        label: &str,
+        dirty_for: impl Fn(&Path) -> bool,
+    ) -> bool {
+        ws.list_open_documents_for(label)
+            .iter()
+            .any(|t| dirty_for(&t.path))
+    }
+
+    /// Mirror of main.rs's pure `restore_window_label`: idx 0 → "main",
+    /// later windows → unique `win-{nanos+idx}`.
+    fn restore_window_label(index: usize, nanos: u128) -> String {
+        if index == 0 {
+            MAIN_LABEL.to_string()
+        } else {
+            format!("win-{}", nanos + index as u128)
+        }
+    }
+
+    /// E2: mirror of main.rs's pure `route_target_label` — the CLI / file-
+    /// association dispatch landing-site decision. One-owner wins (`owner`
+    /// re-routes into the window that already holds the doc); otherwise the
+    /// target lands in the most-recently-focused window (`focused`).
+    fn route_target_label(focused: &str, owner: Option<&str>) -> String {
+        match owner {
+            Some(owner_label) => owner_label.to_string(),
+            None => focused.to_string(),
+        }
+    }
+
+    #[test]
+    fn route_target_label_defaults_to_focused_when_not_open() {
+        // E2 S8: a not-yet-open target lands in the focused window, not `main`.
+        assert_eq!(route_target_label("win-2", None), "win-2");
+        // Even when the focused window happens to be main, the routing is
+        // "focused", not a hard-coded constant.
+        assert_eq!(route_target_label(MAIN_LABEL, None), MAIN_LABEL);
+    }
+
+    #[test]
+    fn route_target_label_one_owner_wins_over_focused() {
+        // One-owner: a target already open in `main` must re-route into main
+        // even though `win-2` is focused — no duplicate copy in the focused
+        // window.
+        assert_eq!(route_target_label("win-2", Some(MAIN_LABEL)), MAIN_LABEL);
+        // Owner == focused is a no-op (the focused window already owns it).
+        assert_eq!(route_target_label("win-2", Some("win-2")), "win-2");
+    }
+
+    #[test]
+    fn route_target_label_one_owner_canonicalized_lookup() {
+        // E2: the dispatch canonicalizes the path before `owning_window_label`
+        // (which compares raw `Tab.path` — stored canonical by
+        // open_document). This mirror test pins that an already-open doc,
+        // looked up by its CANONICAL path, resolves to its owning window so
+        // route_target_label re-routes into it rather than the focused window.
+        let (state, tmp) = ws();
+        let doc = tmp.path().join("owned.md");
+        std::fs::write(&doc, "# owned\n").unwrap();
+
+        let mut g = state.lock().unwrap();
+        g.new_window("win-2".to_string());
+        // Doc lives in main.
+        g.open_document_for(MAIN_LABEL, &doc, OpenOpts::default()).unwrap();
+
+        // Dispatch is "focused = win-2"; canonicalize the path the way the
+        // dispatch does before the owner lookup.
+        let canonical = doc.canonicalize().unwrap_or_else(|_| doc.clone());
+        let owner = g.owning_window_label(&canonical).map(str::to_string);
+        assert_eq!(owner.as_deref(), Some(MAIN_LABEL));
+        assert_eq!(
+            route_target_label("win-2", owner.as_deref()),
+            MAIN_LABEL,
+            "already-open doc re-routes into its owner, not the focused window"
+        );
+    }
+
+    /// F1: mirror of main.rs's `NewWindowTargetAction` + `new_window_target_action`
+    /// — the per-target relocate-vs-open decision for `mdviewer -w <path>`. Given
+    /// the canonicalized one-owner resolution and the freshly-spawned window
+    /// label, an already-open doc in some OTHER window relocates; everything else
+    /// opens fresh.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum NewWindowTargetAction {
+        Relocate { tab_id: String },
+        Open,
+    }
+
+    fn new_window_target_action(
+        resolution: &mdviewer_lib::workspace::OneOwnerResolution,
+        new_label: &str,
+    ) -> NewWindowTargetAction {
+        use mdviewer_lib::workspace::OneOwnerResolution;
+        match resolution {
+            OneOwnerResolution::Existing { label, tab_id } if label != new_label => {
+                NewWindowTargetAction::Relocate { tab_id: tab_id.clone() }
+            }
+            _ => NewWindowTargetAction::Open,
+        }
+    }
+
+    #[test]
+    fn f1_new_window_action_opens_when_not_open_anywhere() {
+        // A not-yet-open target opens fresh into the new window.
+        let res = mdviewer_lib::workspace::OneOwnerResolution::NeedsNew;
+        assert_eq!(
+            new_window_target_action(&res, "win-new"),
+            NewWindowTargetAction::Open
+        );
+    }
+
+    #[test]
+    fn f1_new_window_action_relocates_doc_open_elsewhere() {
+        // S9 never-duplicate: a doc already open in another window is
+        // RELOCATED (move_tab) into the new window, not re-opened.
+        let res = mdviewer_lib::workspace::OneOwnerResolution::Existing {
+            label: MAIN_LABEL.to_string(),
+            tab_id: "tab-7".to_string(),
+        };
+        assert_eq!(
+            new_window_target_action(&res, "win-new"),
+            NewWindowTargetAction::Relocate { tab_id: "tab-7".to_string() }
+        );
+    }
+
+    #[test]
+    fn f1_new_window_action_open_when_already_in_new_window() {
+        // Idempotency guard: if the only place the doc is open is the
+        // just-spawned new window itself, don't self-move — open is a no-op.
+        let res = mdviewer_lib::workspace::OneOwnerResolution::Existing {
+            label: "win-new".to_string(),
+            tab_id: "tab-7".to_string(),
+        };
+        assert_eq!(
+            new_window_target_action(&res, "win-new"),
+            NewWindowTargetAction::Open
+        );
+    }
+
+    #[test]
+    fn f1_new_window_relocate_moves_existing_tab_via_real_workspace() {
+        // Boundary integration: drive the real F1 relocate path through
+        // `open_in_new_window_resolve` (canonicalized one-owner lookup) +
+        // `new_window_target_action` + `Workspace::move_tab`. A doc open in
+        // `main` must end up owned solely by the freshly-spawned window — one
+        // tab total, never duplicated.
+        let (state, tmp) = ws();
+        let doc = tmp.path().join("relocate.md");
+        std::fs::write(&doc, "# relocate\n").unwrap();
+
+        let mut g = state.lock().unwrap();
+        // Doc starts open in main.
+        g.open_document_for(MAIN_LABEL, &doc, OpenOpts::default()).unwrap();
+        assert_eq!(g.list_open_documents_for(MAIN_LABEL).len(), 1);
+
+        // `mdviewer -w relocate.md` spawns a fresh window.
+        let new_label = "win-spawned".to_string();
+        g.new_window(new_label.clone());
+
+        // Resolve + act, exactly as dispatch_cli_targets_new_window does.
+        let resolution = g.open_in_new_window_resolve(&doc);
+        match new_window_target_action(&resolution, &new_label) {
+            NewWindowTargetAction::Relocate { tab_id } => {
+                g.move_tab(&tab_id, &new_label).unwrap();
+            }
+            NewWindowTargetAction::Open => panic!("doc was open in main; expected Relocate"),
+        }
+
+        // Never duplicated: gone from main, present in the new window, one tab.
+        assert!(
+            g.list_open_documents_for(MAIN_LABEL).is_empty(),
+            "relocated tab must leave the source window"
+        );
+        let dest = g.list_open_documents_for(&new_label);
+        assert_eq!(dest.len(), 1, "exactly one tab in the new window — no duplicate");
+        let canonical = doc.canonicalize().unwrap_or(doc);
+        assert_eq!(dest[0].path, canonical);
+    }
+
+    #[test]
+    fn f1_new_window_opens_fresh_when_not_open_via_real_workspace() {
+        // Boundary integration: a not-yet-open doc resolves to NeedsNew →
+        // Open, and `open_document_for` lands it in the spawned window.
+        let (state, tmp) = ws();
+        let doc = tmp.path().join("fresh.md");
+        std::fs::write(&doc, "# fresh\n").unwrap();
+
+        let mut g = state.lock().unwrap();
+        let new_label = "win-spawned".to_string();
+        g.new_window(new_label.clone());
+
+        let resolution = g.open_in_new_window_resolve(&doc);
+        match new_window_target_action(&resolution, &new_label) {
+            NewWindowTargetAction::Open => {
+                g.open_document_for(&new_label, &doc, OpenOpts::default()).unwrap();
+            }
+            NewWindowTargetAction::Relocate { .. } => panic!("doc was not open; expected Open"),
+        }
+
+        assert_eq!(g.list_open_documents_for(&new_label).len(), 1);
+        assert!(g.list_open_documents_for(MAIN_LABEL).is_empty());
+    }
+
+    /// phase-F review fix: the SSH branch of `dispatch_cli_targets_new_window`
+    /// must relocate an ALREADY-OPEN remote doc into the freshly-spawned window
+    /// exactly like the Local branch — not leave it in its original window.
+    /// This drives the real path: open an ssh:// URL in `main`, then predict
+    /// its cache path via `cache_path_for_url(ops.cache_base(), &url)` (no
+    /// fetch), resolve one-owner, and `move_tab` into the spawned window. The
+    /// result must be one tab total, gone from `main`.
+    #[tokio::test]
+    async fn f1_new_window_ssh_relocates_already_open_tab_into_new_window() {
+        use async_trait::async_trait;
+        use mdviewer_core::ssh_url::SshUrl;
+        use mdviewer_lib::ssh::operations::{cache_path_for_url, Operations};
+        use mdviewer_lib::ssh::transport::{
+            DirEntry, SshStat, SshTransport, TransportError,
+        };
+        use std::sync::Arc;
+
+        struct FetchOnce {
+            bytes: Vec<u8>,
+        }
+        #[async_trait]
+        impl SshTransport for FetchOnce {
+            async fn fetch(&self, _url: &SshUrl) -> Result<Vec<u8>, TransportError> {
+                Ok(self.bytes.clone())
+            }
+            async fn push(&self, _url: &SshUrl, _bytes: &[u8]) -> Result<(), TransportError> {
+                Ok(())
+            }
+            async fn list_dir(&self, _url: &SshUrl) -> Result<Vec<DirEntry>, TransportError> {
+                Ok(vec![])
+            }
+            async fn stat(&self, _url: &SshUrl) -> Result<SshStat, TransportError> {
+                Ok(SshStat { size: 0, is_dir: false, mtime: None })
+            }
+        }
+
+        let data_dir = tempfile::tempdir().expect("data dir");
+        let cache_dir = tempfile::tempdir().expect("cache dir");
+        let transport = Arc::new(FetchOnce { bytes: b"# remote\n".to_vec() });
+        let ops = Operations::new(transport, cache_dir.path().to_path_buf());
+        let url = SshUrl {
+            user: Some("alice".into()),
+            host: "host.example".into(),
+            port: 22,
+            path: "/notes/file.md".into(),
+        };
+
+        let mut ws = mdviewer_lib::workspace::Workspace::new(data_dir.path()).expect("workspace");
+        // Doc starts open in main (SSH tab stored under its cache path).
+        let _summary = ws.open_ssh_url(url.clone(), &ops).await.expect("open ssh ok");
+        let open_tab_path = {
+            let docs = ws.list_open_documents_for(MAIN_LABEL);
+            assert_eq!(docs.len(), 1);
+            docs[0].path.clone()
+        };
+
+        // `mdviewer -w ssh://...` spawns a fresh window.
+        let new_label = "win-spawned".to_string();
+        ws.new_window(new_label.clone());
+
+        // Predict the cache path WITHOUT a fetch and run the one-owner decision,
+        // exactly as the new-window SSH loop does.
+        let cache_path = cache_path_for_url(ops.cache_base(), &url);
+        assert_eq!(
+            cache_path, open_tab_path,
+            "predicted cache path must equal the open tab's stored path"
+        );
+        let resolution = ws.open_in_new_window_resolve(&cache_path);
+        match new_window_target_action(&resolution, &new_label) {
+            NewWindowTargetAction::Relocate { tab_id } => {
+                ws.move_tab(&tab_id, &new_label).unwrap();
+            }
+            NewWindowTargetAction::Open => {
+                panic!("SSH doc was open in main; expected Relocate")
+            }
+        }
+
+        // Never duplicated, and actually RELOCATED: gone from main, sole tab in
+        // the new window.
+        assert!(
+            ws.list_open_documents_for(MAIN_LABEL).is_empty(),
+            "relocated SSH tab must leave the source window"
+        );
+        let dest = ws.list_open_documents_for(&new_label);
+        assert_eq!(dest.len(), 1, "exactly one SSH tab in the new window — no duplicate");
+        assert_eq!(dest[0].path, cache_path);
+    }
+
+    /// phase-F review fix (source-level smoke): pin that the PRODUCTION
+    /// `dispatch_cli_targets_new_window` SSH loop predicts the cache path and
+    /// relocates an already-open tab via `move_tab` — not just the test mirror.
+    /// A regression that drops the relocate (reverting to register-only
+    /// de-dupe, which leaves the tab in its original window) trips this. The
+    /// DEFAULT (non -w) focused-window SSH loop in `dispatch_cli_targets` must
+    /// NOT gain a relocate, so we also assert the relocate seam appears exactly
+    /// once across main.rs's SSH dispatch.
+    #[test]
+    fn dispatch_new_window_ssh_loop_relocates_via_move_tab() {
+        let main_rs = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+        )
+        .expect("read main.rs");
+        let start = main_rs
+            .find("fn dispatch_cli_targets_new_window(")
+            .expect("main.rs declares fn dispatch_cli_targets_new_window");
+        // Slice to the next top-level fn so we only inspect this function body.
+        let body_after = &main_rs[start..];
+        let end = body_after[1..]
+            .find("\nfn ")
+            .map(|i| start + 1 + i)
+            .unwrap_or(main_rs.len());
+        let body = &main_rs[start..end];
+        assert!(
+            body.contains("cache_path_for_url(") && body.contains(".cache_base()"),
+            "new-window SSH loop must predict the cache path via cache_path_for_url(ops.cache_base(), &url)",
+        );
+        assert!(
+            body.contains("open_in_new_window_resolve(") && body.contains("move_tab("),
+            "new-window SSH loop must relocate an already-open SSH tab via move_tab (one-owner)",
+        );
+    }
+
+    /// D1: mirror of main.rs's pure `window_summaries_with_focus` — project the
+    /// per-window summaries onto the IPC wire shape, marking exactly the
+    /// `focused_label` window focused. The production `list_windows` handler
+    /// passes the OS-reported focused label; this exercises the projection
+    /// logic without an AppHandle.
+    fn window_summaries_with_focus(
+        summaries: Vec<mdviewer_lib::workspace::WindowSummaryData>,
+        focused_label: Option<&str>,
+    ) -> Vec<mdviewer_lib::workspace::WindowSummary> {
+        use mdviewer_lib::workspace::WindowSummary;
+        summaries
+            .into_iter()
+            .map(|d| WindowSummary {
+                focused: focused_label == Some(d.label.as_str()),
+                label: d.label,
+                active_doc_name: d.active_doc_name,
+                tab_count: d.tab_count,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn d1_window_summaries_mark_only_focused_window() {
+        let (state, _tmp) = ws();
+        let mut g = state.lock().unwrap();
+        g.new_window("win-2".to_string());
+        let summaries = g.list_windows();
+        assert_eq!(summaries.len(), 2, "main + win-2 registered");
+
+        // win-2 focused → exactly one focused, and it is win-2.
+        let out = window_summaries_with_focus(summaries.clone(), Some("win-2"));
+        assert_eq!(out.len(), 2);
+        assert_eq!(out.iter().filter(|s| s.focused).count(), 1);
+        assert!(out.iter().find(|s| s.label == "win-2").unwrap().focused);
+        assert!(!out.iter().find(|s| s.label == MAIN_LABEL).unwrap().focused);
+
+        // No focused window reported (backgrounded app) → none flagged, and
+        // the pure fields still carry through verbatim.
+        let none = window_summaries_with_focus(summaries.clone(), None);
+        assert!(none.iter().all(|s| !s.focused), "no focus → none flagged");
+        let main = none.iter().find(|s| s.label == MAIN_LABEL).unwrap();
+        let main_data = summaries.iter().find(|d| d.label == MAIN_LABEL).unwrap();
+        assert_eq!(main.tab_count, main_data.tab_count);
+        assert_eq!(main.active_doc_name, main_data.active_doc_name);
+    }
+
+    #[test]
+    fn open_document_for_owns_tab_in_its_window() {
+        // open_document_for(label, ...) must register the tab into THAT
+        // window's order — and a second window must not see it. This is the
+        // S5 isolation invariant at the Workspace layer.
+        let (state, tmp) = ws();
+        let doc_a = tmp.path().join("a.md");
+        let doc_b = tmp.path().join("b.md");
+        std::fs::write(&doc_a, "# A\n").unwrap();
+        std::fs::write(&doc_b, "# B\n").unwrap();
+
+        let mut g = state.lock().unwrap();
+        g.new_window("win-2".to_string());
+
+        g.open_document_for(MAIN_LABEL, &doc_a, OpenOpts::default()).unwrap();
+        g.open_document_for("win-2", &doc_b, OpenOpts::default()).unwrap();
+
+        let main_tabs: Vec<_> = g
+            .list_open_documents_for(MAIN_LABEL)
+            .iter()
+            .map(|t| t.path.clone())
+            .collect();
+        let win2_tabs: Vec<_> = g
+            .list_open_documents_for("win-2")
+            .iter()
+            .map(|t| t.path.clone())
+            .collect();
+
+        assert_eq!(main_tabs.len(), 1, "main window has exactly its own tab");
+        assert_eq!(win2_tabs.len(), 1, "win-2 has exactly its own tab");
+        assert!(main_tabs[0].ends_with("a.md"));
+        assert!(win2_tabs[0].ends_with("b.md"));
+        // Cross-window isolation: main's active is unchanged by win-2's open.
+        let main_active = g
+            .active_tab_id_for(MAIN_LABEL)
+            .map(str::to_string);
+        let main_only_tab = g.list_open_documents_for(MAIN_LABEL)[0].id.clone();
+        assert_eq!(main_active, Some(main_only_tab));
+    }
+
+    #[test]
+    fn window_has_dirty_tab_scopes_to_the_window() {
+        let (state, tmp) = ws();
+        let doc_a = tmp.path().join("a.md");
+        let doc_b = tmp.path().join("b.md");
+        std::fs::write(&doc_a, "# A\n").unwrap();
+        std::fs::write(&doc_b, "# B\n").unwrap();
+
+        let mut g = state.lock().unwrap();
+        g.new_window("win-2".to_string());
+        g.open_document_for(MAIN_LABEL, &doc_a, OpenOpts::default()).unwrap();
+        g.open_document_for("win-2", &doc_b, OpenOpts::default()).unwrap();
+
+        // Canonical paths (open_document canonicalizes before storing).
+        let canon_a = doc_a.canonicalize().unwrap();
+
+        // Only a.md (in main) is dirty.
+        let dirty_set: std::collections::HashSet<std::path::PathBuf> =
+            [canon_a.clone()].into_iter().collect();
+        let dirty_for = |p: &Path| dirty_set.contains(p);
+
+        assert!(
+            window_has_dirty_tab(&g, MAIN_LABEL, &dirty_for),
+            "main owns the dirty a.md"
+        );
+        assert!(
+            !window_has_dirty_tab(&g, "win-2", &dirty_for),
+            "win-2 owns only the clean b.md — its close must not be guarded"
+        );
+    }
+
+    #[test]
+    fn window_has_dirty_tab_false_for_empty_or_unknown_window() {
+        let (state, _tmp) = ws();
+        let g = state.lock().unwrap();
+        assert!(!window_has_dirty_tab(&g, MAIN_LABEL, |_| true), "no tabs → not dirty");
+        assert!(!window_has_dirty_tab(&g, "ghost", |_| true), "unknown window → not dirty");
+    }
+
+    #[test]
+    fn restore_window_label_first_is_main_rest_unique() {
+        let nanos = 1_000u128;
+        assert_eq!(restore_window_label(0, nanos), "main");
+        assert_eq!(restore_window_label(1, nanos), "win-1001");
+        assert_eq!(restore_window_label(2, nanos), "win-1002");
+        // Two windows in the same nanosecond batch never collide.
+        assert_ne!(
+            restore_window_label(1, nanos),
+            restore_window_label(2, nanos)
+        );
+    }
+
+    #[test]
+    fn open_document_existing_tab_reactivates_in_owning_window() {
+        // Opening an already-open path re-activates the tab in ITS window,
+        // regardless of which window asked — the conflict/existing branch is
+        // window-agnostic by design.
+        let (state, tmp) = ws();
+        let doc = tmp.path().join("shared.md");
+        std::fs::write(&doc, "# shared\n").unwrap();
+
+        let mut g = state.lock().unwrap();
+        g.new_window("win-2".to_string());
+        // First opened in win-2.
+        let first = g.open_document_for("win-2", &doc, OpenOpts::default()).unwrap();
+        let first_id = match first {
+            OpenOutcome::Document(r) => r.tab_id,
+            OpenOutcome::Conflict { .. } => panic!("unexpected conflict"),
+        };
+        // main asks to open the same path; it stays owned by win-2.
+        let second = g.open_document_for(MAIN_LABEL, &doc, OpenOpts::default()).unwrap();
+        let second_id = match second {
+            OpenOutcome::Document(r) => r.tab_id,
+            OpenOutcome::Conflict { .. } => panic!("unexpected conflict"),
+        };
+        assert_eq!(first_id, second_id, "same tab re-used, not duplicated");
+        assert_eq!(g.list_open_documents_for("win-2").len(), 1);
+        assert_eq!(
+            g.list_open_documents_for(MAIN_LABEL).len(),
+            0,
+            "main never gained the tab — it lives in win-2"
+        );
+    }
+
+    #[test]
+    fn owning_window_for_watched_resolves_md_and_sidecar() {
+        // The external-change forwarder resolves both the .md path and its
+        // sidecar to the owning window. A path no window owns → None (drop).
+        let (state, tmp) = ws();
+        let doc = tmp.path().join("note.md");
+        std::fs::write(&doc, "# note\n").unwrap();
+
+        let mut g = state.lock().unwrap();
+        g.new_window("win-2".to_string());
+        g.open_document_for("win-2", &doc, OpenOpts::default()).unwrap();
+
+        let canon = doc.canonicalize().unwrap();
+        assert_eq!(g.owning_window_for_watched(&canon), Some("win-2"));
+
+        let pattern = g.settings_store().get().comments.sidecar_pattern;
+        let sc = mdviewer_lib::sidecar::sidecar_path(&canon, &pattern);
+        assert_eq!(
+            g.owning_window_for_watched(&sc),
+            Some("win-2"),
+            "sidecar path resolves to the .md's owning window"
+        );
+
+        assert_eq!(
+            g.owning_window_for_watched(Path::new("/nope/missing.md")),
+            None,
+            "unowned path drops the event"
+        );
+    }
+}
+
+#[test]
+fn b2_tab_commands_take_window_and_route_addressed_events() {
+    // Source-level smoke (mirrors the existing ipc_registration_includes_*
+    // checks): the window-scoped handlers must accept `window: tauri::Window`
+    // and the file must use emit_to for addressed events. The whole point of
+    // B2 is window identity from the injected Window + addressed events.
+    let main_rs = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    )
+    .expect("read main.rs");
+
+    for handler in [
+        "fn open_document(",
+        "fn close_tab(",
+        "fn activate_tab(",
+        "fn list_open_documents(",
+        "fn get_active_tab_id(",
+    ] {
+        let idx = main_rs.find(handler).unwrap_or_else(|| panic!("missing {handler}"));
+        // The signature (first ~260 chars) must declare a `tauri::Window`.
+        let sig: String = main_rs[idx..].chars().take(260).collect();
+        assert!(
+            sig.contains("window: tauri::Window"),
+            "{handler} must take `window: tauri::Window` (identity from the Window, not a client arg)",
+        );
+    }
+
+    // Window-scoped delegation: the commands call the `_for` variants.
+    assert!(main_rs.contains("list_open_documents_for(window.label())"));
+    assert!(main_rs.contains("close_tab_for(window.label()"));
+    assert!(main_rs.contains("activate_tab_for(window.label()"));
+    assert!(main_rs.contains("active_tab_id_for(window.label())"));
+    assert!(main_rs.contains("open_document_for(&label"));
+
+    // Addressed events: emit_to must appear and the broadcast workspace-changed
+    // for drive/ssh opens must be gone in favor of emit_to.
+    assert!(
+        main_rs.contains("emit_to("),
+        "main.rs must use emit_to(<label>, …) for addressed events",
+    );
+
+    // Restore recreates N windows + the window event handler is registered.
+    assert!(
+        main_rs.contains("fn spawn_window("),
+        "main.rs must declare spawn_window for the restore loop",
+    );
+    assert!(
+        main_rs.contains("on_window_event"),
+        "main.rs must register a per-window on_window_event handler",
+    );
+    assert!(
+        main_rs.contains("confirm-window-close"),
+        "the CloseRequested guard must emit confirm-window-close on a dirty window",
+    );
+    assert!(
+        main_rs.contains("prevent_close()"),
+        "the CloseRequested guard must call api.prevent_close() while a tab is dirty",
+    );
+    // The window-state plugin builder line must be gone (geometry is now the
+    // on_window_event handler's job).
+    assert!(
+        !main_rs.contains("tauri_plugin_window_state::Builder"),
+        "the tauri-plugin-window-state builder call must be removed (B2 owns geometry now)",
+    );
+    // Menu actions route to the focused window, not a broadcast.
+    assert!(
+        main_rs.contains("focused_window("),
+        "on_menu_event must route through focused_window for S12",
+    );
+}
+
+#[test]
+fn e2_cli_dispatch_routes_into_focused_window_with_one_owner() {
+    // E2 S8 source-smoke: the running-app CLI dispatch must route into the
+    // most-recently-focused window (not hard-coded `main`), canonicalize the
+    // path before the one-owner lookup, and open via the window-scoped
+    // `open_document_for`. We assert the wiring at source level because the
+    // dispatch touches the live Tauri window list (focus, raise, emit) and is
+    // exercised end-to-end by the S8 e2e spec; the pure routing decision is
+    // unit-tested via the `route_target_label` mirror above.
+    let main_rs = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    )
+    .expect("read main.rs");
+
+    let idx = main_rs
+        .find("fn dispatch_cli_targets(")
+        .expect("dispatch_cli_targets must exist");
+    // Scope the assertions to the function body (next ~3500 chars covers it).
+    let body: String = main_rs[idx..].chars().take(3500).collect();
+
+    assert!(
+        body.contains("focused_window(&app)"),
+        "dispatch must resolve the landing window via focused_window (E2 focused routing)",
+    );
+    assert!(
+        body.contains("route_target_label("),
+        "dispatch must use the pure route_target_label decision for one-owner vs focused",
+    );
+    assert!(
+        body.contains("owning_window_label("),
+        "dispatch must consult owning_window_label for the one-owner check",
+    );
+    assert!(
+        body.contains("canonicalize()"),
+        "dispatch must canonicalize the path before the one-owner lookup (phase-D raw-vs-canonical caveat)",
+    );
+    assert!(
+        body.contains("open_document_for(&open_label"),
+        "dispatch must open Local targets via the window-scoped open_document_for(<routed label>)",
+    );
+    assert!(
+        body.contains("set_focus()"),
+        "dispatch must raise the routed window so the user sees the new tab",
+    );
+    // The MAIN_LABEL-addressed repaint emit must be gone — the dispatch now
+    // emits to the routed window.
+    assert!(
+        !body.contains("MAIN_LABEL,\n                \"workspace-changed\""),
+        "dispatch must not hard-code a MAIN_LABEL repaint emit (E2 routes to the focused window)",
+    );
+}
+
 mod ssh_save_dispatch {
     use async_trait::async_trait;
     use mdviewer_core::ssh_url::SshUrl;
@@ -974,4 +1645,340 @@ mod ssh_save_dispatch {
             "Operations::save_back must be invoked BEFORE the backend dispatch",
         );
     }
+}
+
+// ----------------------------------------------------------------------------
+// C1: Window menu lists + raises open windows.
+//
+// `new_window` is registered HERE (C1), not D1 — it's self-contained
+// (spawn_window from B2, Workspace::new_window from A1, this task's
+// rebuild_menu). D1 adds the OTHER window commands and must NOT re-register
+// new_window. The raise path is wholly Rust-side: `on_menu_event` parses the
+// `window-select:<label>` suffix and calls `set_focus()`. These source-smoke
+// checks mirror the existing `ipc_registration_includes_*` pattern (we can't
+// link main.rs's `#[tauri::command] fn`s into this crate).
+// ----------------------------------------------------------------------------
+
+#[test]
+fn ipc_registration_includes_new_window() {
+    let main_rs = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    )
+    .expect("read main.rs");
+    assert!(
+        main_rs.contains("fn new_window("),
+        "main.rs must declare `fn new_window(...)` (C1 owns this command)",
+    );
+    assert!(
+        main_rs.contains("            new_window,"),
+        "main.rs must register `new_window` in the invoke_handler! list",
+    );
+}
+
+#[test]
+fn c1_menu_rebuild_and_window_select_raise_wired() {
+    let main_rs = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    )
+    .expect("read main.rs");
+
+    // The menu must be rebuilt + re-applied on registry change. The helper
+    // calls list_windows() and set_menu(...).
+    assert!(
+        main_rs.contains("fn rebuild_menu("),
+        "main.rs must declare a rebuild_menu(app) helper",
+    );
+    assert!(
+        main_rs.contains("list_windows()"),
+        "rebuild_menu must read the window registry via list_windows()",
+    );
+    assert!(
+        main_rs.contains("set_menu("),
+        "rebuild_menu must re-apply the menu via set_menu(...)",
+    );
+
+    // The new_window command must spawn via B2's spawn_window, register via
+    // A1's Workspace::new_window, and rebuild the menu.
+    let body_start = main_rs
+        .find("fn new_window(")
+        .expect("main.rs must declare fn new_window(");
+    let body = &main_rs[body_start..];
+    assert!(
+        body.contains("spawn_window("),
+        "new_window must spawn a window via spawn_window (B2)",
+    );
+    assert!(
+        body.contains("rebuild_menu("),
+        "new_window must rebuild the Window menu after spawning",
+    );
+
+    // The on_menu_event raise path parses `window-select:` and calls set_focus.
+    assert!(
+        main_rs.contains("window_select_label("),
+        "on_menu_event must parse the window-select label via menu::window_select_label",
+    );
+    assert!(
+        main_rs.contains("set_focus()"),
+        "the window-select branch must raise the matching window via set_focus()",
+    );
+}
+
+/// The pure menu helpers C1 adds (submenu-entry builder + label parse) live
+/// in `mdviewer_lib::menu` so they can be exercised without an AppHandle.
+/// Pin the parse contract here too (the menu.rs unit suite owns the builder).
+#[test]
+fn window_select_label_helper_is_reachable() {
+    assert_eq!(
+        mdviewer_lib::menu::window_select_label("window-select:main"),
+        Some("main"),
+    );
+    assert_eq!(
+        mdviewer_lib::menu::window_select_label("window-select:"),
+        None,
+    );
+}
+
+// ----------------------------------------------------------------------------
+// D1: the remaining window IPC surface + one-owner focus-existing.
+//
+// D1 registers the FOUR remaining window commands (`new_window` is C1's and is
+// asserted above — D1 must NOT re-register it). Each window-set-mutating
+// command (close_window, open_in_new_window, move_tab) must call rebuild_menu
+// so the Window submenu stays current. The one-owner invariant lives in A1's
+// Workspace (unit-tested there); D1 wires open_document + open_in_new_window to
+// consult open_in_new_window_resolve / owning_window_label before creating a
+// tab. These source-smoke checks mirror the existing pattern (we can't link
+// main.rs's `#[tauri::command] fn`s into this crate).
+// ----------------------------------------------------------------------------
+
+#[test]
+fn d1_window_ipc_commands_registered() {
+    let main_rs = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    )
+    .expect("read main.rs");
+    for cmd in ["close_window", "list_windows", "open_in_new_window", "move_tab"] {
+        assert!(
+            main_rs.contains(&format!("fn {cmd}(")),
+            "main.rs must declare `fn {cmd}(...)` (D1)",
+        );
+        assert!(
+            main_rs.contains(&format!("            {cmd},")),
+            "main.rs must register `{cmd}` in the invoke_handler! list (D1)",
+        );
+    }
+}
+
+#[test]
+fn d1_window_mutating_commands_rebuild_menu() {
+    // close_window / open_in_new_window / move_tab change the window set or a
+    // window's active doc, so each must rebuild the Window submenu afterward.
+    let main_rs = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    )
+    .expect("read main.rs");
+    for cmd in ["close_window", "open_in_new_window", "move_tab"] {
+        let start = main_rs
+            .find(&format!("fn {cmd}("))
+            .unwrap_or_else(|| panic!("main.rs must declare fn {cmd}("));
+        // Body span up to the next top-level `#[tauri::command]` so we only
+        // scan this handler.
+        let rest = &main_rs[start..];
+        let body_end = rest[1..]
+            .find("#[tauri::command]")
+            .map(|i| i + 1)
+            .unwrap_or(rest.len());
+        let body = &rest[..body_end];
+        assert!(
+            body.contains("rebuild_menu("),
+            "{cmd} must call rebuild_menu after mutating the window set",
+        );
+    }
+}
+
+#[test]
+fn move_tab_emits_workspace_changed_to_both_source_and_destination() {
+    // Phase-E review fix (S4): a cross-window move must repaint BOTH tab
+    // strips. The frontend deliberately does not locally repaint the source on
+    // a successful move; it relies on the backend emitting `workspace-changed`
+    // to the source AND the destination. The handler captures the source label
+    // from `move_tab`'s return value and emits to it (guarded against a
+    // redundant double-emit on a same-window move).
+    let main_rs = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    )
+    .expect("read main.rs");
+    let start = main_rs
+        .find("fn move_tab(")
+        .expect("main.rs must declare fn move_tab(");
+    let rest = &main_rs[start..];
+    let body_end = rest[1..]
+        .find("#[tauri::command]")
+        .map(|i| i + 1)
+        .unwrap_or(rest.len());
+    let body = &rest[..body_end];
+    // Captures the from-label returned by Workspace::move_tab.
+    assert!(
+        body.contains("let from = state"),
+        "move_tab must bind the source label returned by Workspace::move_tab",
+    );
+    // Emits to the destination window.
+    assert!(
+        body.contains("emit_to(to_window.as_str(), \"workspace-changed\""),
+        "move_tab must emit workspace-changed to the destination window",
+    );
+    // Emits to the source window, guarded against a same-window double-emit.
+    assert!(
+        body.contains("if from != to_window")
+            && body.contains("emit_to(from.as_str(), \"workspace-changed\""),
+        "move_tab must emit workspace-changed to the source window (guarded by from != to_window)",
+    );
+}
+
+#[test]
+fn g1_detach_tab_registered_and_declared() {
+    // G1: the drag-off-the-strip gesture detaches a tab into a fresh window via
+    // a single backend IPC. Mirrors the existing registration smoke checks: the
+    // handler must be declared AND wired into the invoke_handler! macro arm.
+    let main_rs = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    )
+    .expect("read main.rs");
+    assert!(
+        main_rs.contains("fn detach_tab("),
+        "main.rs must declare `fn detach_tab(...)` (G1)",
+    );
+    assert!(
+        main_rs.contains("            detach_tab,"),
+        "main.rs must register `detach_tab` in the invoke_handler! list (G1)",
+    );
+}
+
+#[test]
+fn g1_detach_tab_emits_to_both_windows_and_rebuilds_menu() {
+    // G1 — same lesson as the move_tab handler fix (S4): a detach spawns a new
+    // window and relocates the tab into it. BOTH the source window (which the
+    // tab left) AND the new window must repaint via window-addressed
+    // `workspace-changed`, the Window submenu must rebuild, and the new window
+    // must be focused forward.
+    let main_rs = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    )
+    .expect("read main.rs");
+    let start = main_rs
+        .find("fn detach_tab(")
+        .expect("main.rs must declare fn detach_tab(");
+    let rest = &main_rs[start..];
+    let body_end = rest[1..]
+        .find("#[tauri::command]")
+        .map(|i| i + 1)
+        .unwrap_or(rest.len());
+    let body = &rest[..body_end];
+    // Spawns a fresh window via the shared spawn_window helper + registers its
+    // lifecycle, mirroring open_in_new_window / new_window.
+    assert!(
+        body.contains("spawn_window(") && body.contains("register_window_event_handler("),
+        "detach_tab must spawn a window via spawn_window and register its event handler",
+    );
+    // Emits to the NEW window so its tab strip shows the relocated tab.
+    assert!(
+        body.contains("emit_to(label.as_str(), \"workspace-changed\""),
+        "detach_tab must emit workspace-changed to the new window",
+    );
+    // Emits to the SOURCE window so its strip drops the moved tab.
+    assert!(
+        body.contains("emit_to(source.as_str(), \"workspace-changed\""),
+        "detach_tab must emit workspace-changed to the source window the tab left",
+    );
+    // Rebuilds the Window submenu (the window set grew + active-doc-names changed).
+    assert!(
+        body.contains("rebuild_menu("),
+        "detach_tab must rebuild the menu after growing the window set",
+    );
+    // Brings the new window forward.
+    assert!(
+        body.contains("set_focus()"),
+        "detach_tab must set_focus the new window",
+    );
+}
+
+#[test]
+fn g1_detach_tab_workspace_relocates_into_new_window() {
+    // Boundary integration: the IPC handler delegates to Workspace::detach_tab
+    // (or new_window + move_tab). Drive the real Workspace path: a doc open in
+    // `main` must end up the SOLE tab of the freshly-labeled window — gone from
+    // main, never duplicated.
+    use mdviewer_lib::workspace::{OpenOpts, MAIN_LABEL};
+    let (state, tmp) = ws();
+    let doc_a = tmp.path().join("a.md");
+    let doc_b = tmp.path().join("b.md");
+    std::fs::write(&doc_a, "# A\n").unwrap();
+    std::fs::write(&doc_b, "# B\n").unwrap();
+
+    let mut g = state.lock().unwrap();
+    // Two tabs in main (a two-tab strip, as the S10 gesture drags one off).
+    g.open_document_for(MAIN_LABEL, &doc_a, OpenOpts::default()).unwrap();
+    let outcome = g.open_document_for(MAIN_LABEL, &doc_b, OpenOpts::default()).unwrap();
+    let tab_b = match outcome {
+        mdviewer_lib::workspace::OpenOutcome::Document(r) => r.tab_id,
+        mdviewer_lib::workspace::OpenOutcome::Conflict { .. } => panic!("unexpected conflict"),
+    };
+    assert_eq!(g.list_open_documents_for(MAIN_LABEL).len(), 2);
+
+    // The handler reads the source label BEFORE detaching (detach_tab itself
+    // returns the new window summary, not the source), then detaches.
+    let source = g
+        .owning_window_label(&doc_b.canonicalize().unwrap_or(doc_b.clone()))
+        .map(str::to_string);
+    assert_eq!(source.as_deref(), Some(MAIN_LABEL), "tab b lives in main");
+    let summary = g.detach_tab(&tab_b, "win-detach".to_string()).expect("detach ok");
+    assert_eq!(summary.label, "win-detach");
+
+    // Relocated: gone from main (one tab left), sole tab in the new window.
+    assert_eq!(
+        g.list_open_documents_for(MAIN_LABEL).len(),
+        1,
+        "detached tab must leave the source window"
+    );
+    let dest = g.list_open_documents_for("win-detach");
+    assert_eq!(dest.len(), 1, "exactly one tab in the new window — no duplicate");
+    assert_eq!(dest[0].id, tab_b);
+}
+
+#[test]
+fn d1_one_owner_focus_existing_wired() {
+    // open_document and open_in_new_window must consult the one-owner
+    // resolution (A1) before creating a tab so an already-open path focuses
+    // its existing window+tab rather than duplicating it.
+    let main_rs = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    )
+    .expect("read main.rs");
+    // open_in_new_window resolves via open_in_new_window_resolve.
+    let oinw_start = main_rs
+        .find("fn open_in_new_window(")
+        .expect("main.rs must declare fn open_in_new_window(");
+    let oinw = &main_rs[oinw_start..];
+    assert!(
+        oinw.contains("open_in_new_window_resolve("),
+        "open_in_new_window must consult Workspace::open_in_new_window_resolve",
+    );
+    assert!(
+        oinw.contains("set_focus()"),
+        "open_in_new_window must set_focus the existing window on a one-owner hit",
+    );
+    // open_document focuses an already-open path's owning window+tab.
+    let od_start = main_rs
+        .find("fn open_document(")
+        .expect("main.rs must declare fn open_document(");
+    let rest = &main_rs[od_start..];
+    let od_end = rest[1..]
+        .find("#[tauri::command]")
+        .map(|i| i + 1)
+        .unwrap_or(rest.len());
+    let od = &rest[..od_end];
+    assert!(
+        od.contains("owning_window_label(") || od.contains("open_in_new_window_resolve("),
+        "open_document must consult the one-owner resolution (owning_window_label / resolve)",
+    );
 }

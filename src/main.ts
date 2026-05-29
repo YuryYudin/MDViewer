@@ -239,6 +239,21 @@ export async function main(): Promise<void> {
     })();
   });
 
+  // C2: File → New Window. The native menu (B3) emits `menu-action`
+  // ("new-window") to the focused window; the menu bridge fans that out as
+  // the `mdviewer:new-window` CustomEvent, which we turn into the `new_window`
+  // IPC (registered by C1) that spawns a fresh window on the StartPage. We
+  // invoke it RAW via `@tauri-apps/api/core`'s `invoke` rather than a typed
+  // `ipc.ts` binding because that binding lands in D1; `core:default` permits
+  // app commands so the raw call is the correct surface today. Fire-and-
+  // forget with a catch so a spawn failure (OS/Tauri) surfaces in the console
+  // instead of an unhandled rejection.
+  document.addEventListener('mdviewer:new-window', () => {
+    void invoke('new_window').catch((err) => {
+      console.warn('new-window flow failed:', err);
+    });
+  });
+
   // Global "open another document" entry point. The TabBar's "+" button
   // and the open_file keymap action both dispatch this, plus StartPage
   // dispatches it from its Open button so the three paths converge on
@@ -307,22 +322,94 @@ export async function main(): Promise<void> {
     await mountWorkspaceAndStash();
   }
 
-  // Rust emits `workspace-changed` when a path enters the workspace from
-  // outside the WebView's own IPC flow — macOS RunEvent::Opened (Phase 2)
-  // and tauri-plugin-single-instance second invocations (Phase 3). Both
-  // already mutated Workspace state on the Rust side; the frontend just
-  // needs to re-fetch and repaint. Fire-and-forget; if the runtime is
-  // missing (jsdom unit tests), the import fails silently.
+  // C2: window-addressed event routing (contract 04-window-addressed-events).
+  // Under multi-window the backend (B2) addresses each event to the specific
+  // window that owns the affected document via `app.emit_to(<label>, …)`
+  // rather than broadcasting. So we resolve THIS window's identity once at
+  // boot (`getCurrentWindow().label`) and subscribe via the window-scoped
+  // `getCurrentWindow().listen(...)` — NOT the broadcast global `listen` —
+  // so a sibling window's change never double-refreshes us.
+  //
+  // Loaded lazily + guarded so jsdom unit tests (no Tauri runtime) skip the
+  // subscription; tests that DO exercise routing mock `@tauri-apps/api/window`.
   void (async () => {
     try {
-      const { listen } = await import('@tauri-apps/api/event');
-      await listen('workspace-changed', () => {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window');
+      const thisWindow = getCurrentWindow();
+      // Resolve the boot label (used for diagnostics + to make the
+      // window-scoped contract explicit). Reading it here also forces the
+      // getCurrentWindow() call that the addressed-event contract hinges on.
+      const windowLabel = thisWindow.label;
+      void windowLabel;
+
+      // G2 (multi-window e2e): each window's own main.ts runs on boot, so
+      // every window self-reports its label here. The e2e `switchToWindow`
+      // helper reads `window.__mdviewerE2E.windowLabel` from each WebDriver
+      // handle to find the one matching a given label — replacing the old
+      // `window.__TAURI__...getCurrentWebviewWindow().label` path, which is
+      // unavailable because `withGlobalTauri` is OFF. Guarded on the e2e
+      // side-channel's presence so production boot is unaffected. The
+      // side-channel object is populated synchronously below (before this
+      // async import resolves) on `__WEBDRIVER__` builds.
+      const e2e = (window as unknown as { __mdviewerE2E?: Record<string, unknown> }).__mdviewerE2E;
+      if (e2e) e2e.windowLabel = windowLabel;
+
+      // `workspace-changed`: this window's tab set changed from outside its
+      // own IPC flow (CLI / second-instance open into it, Drive/SSH open,
+      // move_tab). Rust already mutated Workspace state; we just re-fetch
+      // and repaint our own tabs.
+      await thisWindow.listen('workspace-changed', () => {
         if (workspace) void workspace.refresh();
+      });
+
+      // `show-conflict` / `external-change`: addressed to the window owning
+      // the affected tab. The Workspace view installs its own handlers for
+      // routing to the Conflict view / reload banner; we register no-op
+      // window-scoped subscriptions here so the boot contract (subscribe to
+      // every addressed event on THIS window) is satisfied and the
+      // Workspace's listeners only ever see this window's events.
+      await thisWindow.listen('show-conflict', () => {
+        // Workspace.ts owns the routing; this subscription documents that
+        // the event is window-addressed and keeps the boot surface complete.
+      });
+      await thisWindow.listen('external-change', () => {
+        // Likewise owned by Workspace.ts's watcher banner path.
+      });
+
+      // `confirm-window-close`: the OS titlebar close was intercepted by the
+      // backend (B2 `CloseRequested` guard) because a tab in THIS window is
+      // dirty. Run the save-or-discard confirm, then drive the backend close
+      // via `close_window` so the prevented close can proceed.
+      await thisWindow.listen('confirm-window-close', () => {
+        void confirmWindowClose();
       });
     } catch {
       // No Tauri runtime — skip (unit tests stub the bridge anyway).
     }
   })();
+
+  // C2: save-or-discard confirm for a dirty window close. The backend
+  // prevented the OS close while a dirty tab exists; we ask the user, flush
+  // the active editor's pending bytes when they choose to save, and then call
+  // `close_window` (raw invoke; the typed binding lands in D1) so the
+  // backend completes the close it had deferred. Cancel leaves the window
+  // open and does NOT call close_window.
+  async function confirmWindowClose(): Promise<void> {
+    const save = window.confirm(
+      'This window has unsaved changes. Save and close?\n\n' +
+        'OK saves and closes; Cancel keeps the window open.',
+    );
+    if (!save) return;
+    // Flush the active editor via the canonical save event (Document.ts's
+    // `mdviewer:save-document` handler force-flushes the dirty buffer). It's
+    // a no-op outside Edit mode, which is fine — a clean tab needs no flush.
+    document.dispatchEvent(new CustomEvent('mdviewer:save-document'));
+    try {
+      await invoke('close_window');
+    } catch (err) {
+      console.warn('close_window failed:', err);
+    }
+  }
 
   // E2E side-channel: tauri-webdriver-automation can't drive the OS file
   // dialog and `setValue` on a <input type=file> uploads file *contents*
@@ -399,6 +486,29 @@ export async function main(): Promise<void> {
         // because that script isn't part of the bundle.
         const { emit } = await import('@tauri-apps/api/event');
         await emit('menu-action', action);
+      },
+      async dispatchCli(args: string[]): Promise<void> {
+        // E2 (S8): the OS can't shell a second `mdviewer foo.md` invocation
+        // under WebDriver, so the spec drives the running-app CLI dispatch by
+        // emitting `e2e-dispatch-cli` with the argv. The Rust setup() listener
+        // (debug-only) routes it through the real
+        // parse_positional_args → dispatch_cli_targets focused-window path.
+        const { emit } = await import('@tauri-apps/api/event');
+        await emit('e2e-dispatch-cli', JSON.stringify(args));
+      },
+      /**
+       * G2 (multi-window e2e): spawn a native window with the EXACT label
+       * via the `e2e_create_window` IPC (registered only under
+       * `--features e2e`). We invoke RAW via `@tauri-apps/api/core` — the
+       * same path `mdviewer:new-window` uses — rather than reaching for
+       * `window.__TAURI__`, which is undefined here because `withGlobalTauri`
+       * is OFF (the app bundles `@tauri-apps/api`). The returned promise
+       * resolves once the backend has spawned + registered the window; the
+       * helper then polls `switchToWindow(label)` until the new window's own
+       * boot reports its `windowLabel` (set below).
+       */
+      createWindow(label: string): Promise<void> {
+        return invoke<void>('e2e_create_window', { label });
       },
       fireKeymapAction(action: 'font_increase' | 'font_decrease' | 'font_reset'): void {
         // tauri-webdriver-automation does not deliver the W3C Meta key

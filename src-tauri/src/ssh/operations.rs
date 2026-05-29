@@ -75,6 +75,14 @@ impl Operations {
         }
     }
 
+    /// The cache-mirror base directory. Callers that need to predict where a
+    /// given URL would land WITHOUT fetching (e.g. the `-w` new-window
+    /// dispatch's already-open one-owner check) pair this with
+    /// `cache_path_for_url(ops.cache_base(), &url)`.
+    pub fn cache_base(&self) -> &Path {
+        &self.cache_base
+    }
+
     /// Resolve the cache base from `MDVIEWER_REMOTE_CACHE_DIR` (override)
     /// or the Tauri-provided per-platform cache dir. Mirrors the env-var
     /// override pattern from `MDVIEWER_DATA_DIR` at `main.rs:1167-1169`.

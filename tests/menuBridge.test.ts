@@ -45,6 +45,15 @@ describe('menuBridge', () => {
     expect(MENU_ACTION_TO_EVENT['open-remote']).toBe('mdviewer:open-remote');
   });
 
+  it('File → "New Window" maps to mdviewer:new-window (B3)', () => {
+    // B3: the Rust menu builds a `New Window` item (id `menu-new-window`,
+    // CmdOrCtrl+Shift+N). `menu_id_to_action` translates that to the action
+    // string `new-window`, which lands here and must surface as the
+    // `mdviewer:new-window` CustomEvent the Workspace listens for to spawn a
+    // second window (the spawn IPC wiring lands in C1/C2/D1).
+    expect(MENU_ACTION_TO_EVENT['new-window']).toBe('mdviewer:new-window');
+  });
+
   it('View → Zoom items map to the three font-zoom CustomEvents', () => {
     // The native View menu uses kebab-case action ids (`zoom-in`, `zoom-out`,
     // `zoom-reset`) per `menu_id_to_action`. The bridge translates them to

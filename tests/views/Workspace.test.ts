@@ -254,6 +254,40 @@ describe('Workspace', () => {
     document.body.removeChild(root);
   });
 
+  it('C2: refresh() calls the window-scoped list_open_documents with no client-supplied label', async () => {
+    // Window identity is derived backend-side from the calling
+    // `tauri::Window` arg (contract 02), so the JS side must NOT pass a
+    // label. If a regression starts threading a label through from the
+    // frontend, this catches it: the call must carry no positional argument.
+    const root = document.createElement('div');
+    const ipc = makeIpc(['t1']);
+    const handle = await mountWorkspace(root, ipc);
+    (ipc.listOpenDocuments as any).mockClear();
+    await handle.refresh();
+    expect(ipc.listOpenDocuments).toHaveBeenCalled();
+    for (const call of (ipc.listOpenDocuments as any).mock.calls) {
+      expect(call.length).toBe(0);
+    }
+  });
+
+  it('C2: a received show-conflict event drives a window-scoped refresh', async () => {
+    // Workspace reacts only to the addressed events it actually receives
+    // (emit_to backend-side). Firing the captured `show-conflict` listener
+    // must re-fetch this window's own tab list via list_open_documents.
+    const root = document.createElement('div');
+    const ipc = makeIpc(['t1']);
+    await mountWorkspace(root, ipc);
+    (ipc.listOpenDocuments as any).mockClear();
+    const cbs = tauriListeners['show-conflict'] ?? [];
+    expect(cbs.length).toBeGreaterThan(0);
+    cbs[0]({
+      payload: { tab_id: 't1', path: '/docs/t1.md', local: 'a', incoming: 'b' },
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(ipc.listOpenDocuments).toHaveBeenCalled();
+  });
+
   it('refresh() picks up new tabs and replaces StartPage with Document', async () => {
     const root = document.createElement('div');
     let ids: string[] = [];
