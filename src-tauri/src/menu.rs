@@ -18,6 +18,58 @@
 use tauri::menu::{Menu, MenuBuilder, MenuItem, PredefinedMenuItem, Submenu, SubmenuBuilder};
 use tauri::{AppHandle, Runtime};
 
+use crate::workspace::WindowSummaryData;
+
+/// Prefix on every dynamic Window-submenu entry id. The `<label>` of the
+/// target window is appended; `on_menu_event` (main.rs) strips this prefix via
+/// [`window_select_label`] and raises the matching `WebviewWindow`. Kept in
+/// sync with the `menu_id_to_action` guard above, which returns `None` for any
+/// id carrying this prefix so a window-select never bridges into a frontend
+/// action.
+pub const WINDOW_SELECT_PREFIX: &str = "window-select:";
+
+/// Label shown for a window that has no active document (the StartPage). A
+/// blank menu item would be unclickable-looking, so we render a stable
+/// placeholder instead of the empty string.
+pub const WINDOW_MENU_PLACEHOLDER: &str = "Untitled";
+
+/// One dynamic Window-submenu entry: the muda item `id` and its visible
+/// `label`. Computed purely from a [`WindowSummaryData`] so the mapping
+/// (id = `window-select:<label>`, label = active doc name or placeholder) is
+/// unit-testable without an `AppHandle`. `build` / `rebuild_menu` turn these
+/// into real `MenuItem`s.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WindowMenuEntry {
+    pub id: String,
+    pub label: String,
+}
+
+/// Pure builder for the dynamic Window-submenu entries: one per open window,
+/// in registry order. The id carries the window's label so the raise path can
+/// recover it; the visible label is the window's active document name (or the
+/// placeholder when the window is on the StartPage).
+pub fn window_submenu_entries(windows: &[WindowSummaryData]) -> Vec<WindowMenuEntry> {
+    windows
+        .iter()
+        .map(|w| WindowMenuEntry {
+            id: format!("{WINDOW_SELECT_PREFIX}{}", w.label),
+            label: w
+                .active_doc_name
+                .clone()
+                .unwrap_or_else(|| WINDOW_MENU_PLACEHOLDER.to_string()),
+        })
+        .collect()
+}
+
+/// Recover the `<label>` from a `window-select:<label>` menu id, or `None` for
+/// any id that is not a window-select (or carries an empty label). Total over
+/// arbitrary ids so `on_menu_event` can call it on every click. The label may
+/// itself contain colons — we split only on the first prefix occurrence.
+pub fn window_select_label(id: &str) -> Option<&str> {
+    id.strip_prefix(WINDOW_SELECT_PREFIX)
+        .filter(|label| !label.is_empty())
+}
+
 /// Frontend listens for this event name on the global Tauri bus. Payload is
 /// the action string that the frontend re-dispatches as a CustomEvent
 /// (`mdviewer:<action>` minus the prefix).
@@ -44,7 +96,7 @@ pub fn menu_id_to_action(id: &str) -> Option<&'static str> {
     // focuses that window) and must never bridge into a frontend action. Pin
     // that here explicitly rather than relying on the catch-all so the
     // contract is intentional, not incidental.
-    if id.starts_with("window-select:") {
+    if id.starts_with(WINDOW_SELECT_PREFIX) {
         return None;
     }
     match id {
@@ -75,7 +127,10 @@ pub fn menu_id_to_action(id: &str) -> Option<&'static str> {
 /// from the user's settings via the keymap layer; the menu accelerators
 /// here are the platform conventions (Cmd+O, Cmd+,, etc.) and are intended
 /// to mirror the keymap defaults.
-pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
+pub fn build<R: Runtime>(
+    app: &AppHandle<R>,
+    windows: &[WindowSummaryData],
+) -> tauri::Result<Menu<R>> {
     // App menu — macOS surfaces this as the bold app-name item. On
     // Windows/Linux the menu bar starts with File, but we still include
     // `Settings…` here because muda hides the platform-irrelevant items
@@ -241,12 +296,31 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         )?)
         .build()?;
 
-    let window_menu = SubmenuBuilder::new(app, "Window")
+    // C1: the Window submenu keeps the static OS items (minimize / maximize /
+    // close) and appends one dynamic entry per open window. Each dynamic entry
+    // carries a `window-select:<label>` id; `on_menu_event` parses the label
+    // and raises that window. The whole menu is rebuilt + re-applied on every
+    // registry change (spawn / close / active-doc-rename) via main.rs's
+    // `rebuild_menu`, so this list never goes stale.
+    let mut window_menu_builder = SubmenuBuilder::new(app, "Window")
         .minimize()
         .maximize()
         .separator()
-        .close_window()
-        .build()?;
+        .close_window();
+    let entries = window_submenu_entries(windows);
+    if !entries.is_empty() {
+        window_menu_builder = window_menu_builder.separator();
+        for entry in &entries {
+            window_menu_builder = window_menu_builder.item(&MenuItem::with_id(
+                app,
+                entry.id.as_str(),
+                entry.label.as_str(),
+                true,
+                None::<&str>,
+            )?);
+        }
+    }
+    let window_menu = window_menu_builder.build()?;
 
     MenuBuilder::new(app)
         .item(&app_menu)
@@ -350,5 +424,78 @@ mod tests {
     fn cli_installer_menu_ids_are_stable() {
         assert_eq!(MENU_ID_INSTALL_CLI, "menu-install-cli");
         assert_eq!(MENU_ID_UNINSTALL_CLI, "menu-uninstall-cli");
+    }
+
+    // === C1: dynamic Window submenu ===
+
+    use crate::workspace::WindowSummaryData;
+
+    fn summary(label: &str, active: Option<&str>, tabs: u32) -> WindowSummaryData {
+        WindowSummaryData {
+            label: label.to_string(),
+            active_doc_name: active.map(str::to_string),
+            tab_count: tabs,
+        }
+    }
+
+    /// Each open window contributes exactly one Window-submenu entry, in
+    /// registry order, whose id is `window-select:<label>`. This is the
+    /// contract the dynamic builder + the `on_menu_event` raise path share.
+    #[test]
+    fn window_submenu_entries_one_per_window_with_select_id() {
+        let windows = vec![
+            summary("main", Some("notes.md"), 2),
+            summary("win-42", None, 0),
+            summary("win-99", Some("draft.md"), 1),
+        ];
+        let entries = window_submenu_entries(&windows);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].id, "window-select:main");
+        assert_eq!(entries[1].id, "window-select:win-42");
+        assert_eq!(entries[2].id, "window-select:win-99");
+    }
+
+    /// A window with an active document labels its entry after that document;
+    /// a window with none (the StartPage) falls back to a placeholder rather
+    /// than rendering a blank menu item.
+    #[test]
+    fn window_submenu_label_uses_active_doc_or_placeholder() {
+        let windows = vec![
+            summary("main", Some("notes.md"), 2),
+            summary("win-42", None, 0),
+        ];
+        let entries = window_submenu_entries(&windows);
+        assert_eq!(entries[0].label, "notes.md");
+        assert_eq!(entries[1].label, WINDOW_MENU_PLACEHOLDER);
+    }
+
+    /// The empty-registry case yields no dynamic entries (the static
+    /// minimize/maximize/close items still ship; that's the builder's job).
+    #[test]
+    fn window_submenu_empty_registry_yields_no_entries() {
+        assert!(window_submenu_entries(&[]).is_empty());
+    }
+
+    /// `on_menu_event` (main.rs) calls this to recover the `<label>` from a
+    /// `window-select:<label>` id. Non-matching ids return None so the parse
+    /// is unambiguous; the label may itself contain colons (none of ours do,
+    /// but the parse must be total).
+    #[test]
+    fn window_select_label_parses_suffix() {
+        assert_eq!(window_select_label("window-select:main"), Some("main"));
+        assert_eq!(window_select_label("window-select:win-123"), Some("win-123"));
+        // A trailing-colon label-with-colons still recovers the full suffix.
+        assert_eq!(
+            window_select_label("window-select:win:weird"),
+            Some("win:weird")
+        );
+    }
+
+    #[test]
+    fn window_select_label_rejects_non_matching_ids() {
+        assert_eq!(window_select_label("menu-open-file"), None);
+        assert_eq!(window_select_label(""), None);
+        // The bare prefix with no label is not a valid selection.
+        assert_eq!(window_select_label("window-select:"), None);
     }
 }
