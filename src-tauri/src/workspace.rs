@@ -1604,7 +1604,14 @@ impl Workspace {
     /// window stays open on the StartPage, NOT auto-closed), and appends it
     /// to the destination `order` as the destination's active tab. Errors if
     /// `tab_id` is unknown or `to_window` is not registered.
-    pub fn move_tab(&mut self, tab_id: &str, to_window: &str) -> Result<()> {
+    ///
+    /// Returns the source window label the tab was moved away from (its owner
+    /// before the reassign). The IPC layer needs this to emit
+    /// `workspace-changed` to BOTH the source and destination windows so both
+    /// tab strips repaint (design S4) — the frontend deliberately does not
+    /// locally repaint the source on a successful move. For a same-window move
+    /// the returned label equals `to_window`.
+    pub fn move_tab(&mut self, tab_id: &str, to_window: &str) -> Result<String> {
         if !self.tabs.contains_key(tab_id) {
             anyhow::bail!("no such tab: {tab_id}");
         }
@@ -1620,7 +1627,7 @@ impl Workspace {
             // Moving within the same window: make it active, no order churn.
             self.active.insert(to_window.to_string(), Some(tab_id.to_string()));
             self.persist_session();
-            return Ok(());
+            return Ok(from);
         }
         // Reassign the owning label.
         if let Some(tab) = self.tabs.get_mut(tab_id) {
@@ -1641,7 +1648,7 @@ impl Workspace {
             .push(tab_id.to_string());
         self.active.insert(to_window.to_string(), Some(tab_id.to_string()));
         self.persist_session();
-        Ok(())
+        Ok(from)
     }
 
     /// Detach `tab_id` into a brand-new window labeled `new_label`: register
@@ -2742,8 +2749,12 @@ mod tests {
         assert_eq!(ws.active_tab_id_for(MAIN_LABEL), Some(b.as_str()));
 
         ws.new_window("win-1".to_string());
-        ws.move_tab(&b, "win-1").expect("move ok");
+        let from = ws.move_tab(&b, "win-1").expect("move ok");
 
+        // move_tab returns the source window label it moved the tab away from
+        // (b was opened in main). The IPC layer relies on this to emit
+        // workspace-changed to the source as well as the destination (S4).
+        assert_eq!(from, MAIN_LABEL, "returns the original owning window");
         // Source active repaired to the next remaining tab (a).
         assert_eq!(ws.active_tab_id_for(MAIN_LABEL), Some(a.as_str()));
         // Destination active is the moved tab.
@@ -2948,8 +2959,11 @@ mod tests {
         let a = open_md(&mut ws, dir.path(), "a.md", "# a");
         let b = open_md(&mut ws, dir.path(), "b.md", "# b");
         // b is active; move a (same window) → a becomes active, order intact.
-        ws.move_tab(&a, MAIN_LABEL).expect("same-window move ok");
+        let from = ws.move_tab(&a, MAIN_LABEL).expect("same-window move ok");
 
+        // A same-window move returns to_window as the from-label so the IPC
+        // layer's `from != to_window` guard suppresses the redundant emit.
+        assert_eq!(from, MAIN_LABEL, "same-window move returns to_window");
         assert_eq!(ws.active_tab_id_for(MAIN_LABEL), Some(a.as_str()));
         let ids: Vec<&str> = ws
             .list_open_documents_for(MAIN_LABEL)
