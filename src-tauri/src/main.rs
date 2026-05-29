@@ -1502,9 +1502,15 @@ fn main() {
                 // file may have moved/been deleted since last launch);
                 // the rest still load. SessionStore::open already pruned
                 // missing paths at load time, so this is defense in depth.
+                // B1: the store is now v2 (per-window). B2 replaces this
+                // flatten with a real per-window restore loop; for now we
+                // concatenate every window's tabs in order and re-activate
+                // the first window's active tab so the build stays green.
                 let saved = ws.session_store().get();
-                let active_target = saved.active_tab.clone();
-                for path in saved.open_tabs {
+                let active_target = saved.windows.iter().find_map(|w| w.active.clone());
+                let open_tabs: Vec<PathBuf> =
+                    saved.windows.iter().flat_map(|w| w.tabs.iter().cloned()).collect();
+                for path in open_tabs {
                     // Skip synthetic `drive-api://<file_id>` paths — those
                     // tabs are reopened via `drive_open_url` (which the user
                     // re-pastes), not the local-fs `open_document` flow.

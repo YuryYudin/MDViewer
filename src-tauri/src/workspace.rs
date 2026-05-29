@@ -1194,19 +1194,22 @@ impl Workspace {
     /// store. Called by `open_document`, `close_tab`, and `activate_tab`
     /// so the on-disk session.json always reflects the live state.
     fn persist_session(&self) {
-        // A1: build per-window snapshots (the v2 shape B1 swaps the store to
-        // and B2 calls v2-save against). To keep A1 compiling and existing
-        // session tests green, flatten the snapshots back onto the existing
-        // v1 `session.save(open_tabs, active_tab)` path: concatenate every
-        // window's tabs in registry order and take the active of the first
-        // window that has one. B1/B2 replace this flatten with a real v2 save.
-        let snapshots = self.window_snapshots();
-        let open_tabs: Vec<PathBuf> = snapshots
-            .iter()
-            .flat_map(|w| w.tabs.iter().cloned())
+        // A1/B1: build per-window snapshots and save them via the v2 store.
+        // One `WindowSession` per registered window, in registry order, each
+        // carrying its left-to-right tab paths, its active tab's path, and
+        // its last-known geometry. B2 extends the call sites that feed live
+        // window geometry; the store canonicalizes local paths and repairs
+        // each window's `active` on write.
+        let windows: Vec<crate::session::WindowSession> = self
+            .window_snapshots()
+            .into_iter()
+            .map(|w| crate::session::WindowSession {
+                tabs: w.tabs,
+                active: w.active,
+                geometry: w.geometry,
+            })
             .collect();
-        let active_tab = snapshots.iter().find_map(|w| w.active.clone());
-        if let Err(e) = self.session.save(open_tabs, active_tab) {
+        if let Err(e) = self.session.save_windows(windows) {
             // Session is best-effort — never let a save failure block
             // open / close / activate flow. Log and move on.
             tracing::warn!(?e, "session.json save failed");
