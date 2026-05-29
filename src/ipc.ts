@@ -30,6 +30,9 @@ export type {
   RecentEntry,
   TabSummary,
   DocPref,
+  // D1: per-window summary returned by list_windows (label + active_doc_name +
+  // tab_count + focused).
+  WindowSummary,
   // B2: typed save_document outcome — Ok{etag} | Conflict{local,remote,drive_source}.
   SaveOutcome,
   // A8: Drive integration types — re-exported here so callers don't need
@@ -59,6 +62,7 @@ import type {
   DriveStatus,
   DriveCollaborator,
   SaveOutcome,
+  WindowSummary,
 } from './types-generated';
 
 // `Anchor` is the canonical name across the wire. Older planning notes used
@@ -214,6 +218,39 @@ export interface Ipc {
    * verbatim. The adapter does NOT wrap or normalize the error string.
    */
   sshListDir(url: string): Promise<DirEntry[]>;
+  /**
+   * D1 (multi-window): spawn a fresh StartPage window. The new window's label
+   * is derived Rust-side (`win-{nanos}`) — there is no client-supplied label.
+   * Registered by C1; the typed wrapper lives here so the frontend reaches the
+   * full window surface through one seam. Supersedes C2's interim raw
+   * `invoke('new_window')`.
+   */
+  newWindow(): Promise<void>;
+  /**
+   * D1: close the calling window — Rust drops every tab the window owns from
+   * the workspace registry and closes the native window. Identity is derived
+   * from the injected `tauri::Window`, so there is no label argument.
+   */
+  closeWindow(): Promise<void>;
+  /**
+   * D1: enumerate every open window as a `WindowSummary` (label,
+   * active_doc_name, tab_count, and the live `focused` flag). Drives the
+   * multi-window UI surfaces.
+   */
+  listWindows(): Promise<WindowSummary[]>;
+  /**
+   * D1: open `path` in a new window, honoring the one-owner invariant. If the
+   * path is already open in any window, that window+tab is focused (no
+   * duplicate); otherwise a fresh window is spawned with the document.
+   */
+  openInNewWindow(path: string): Promise<void>;
+  /**
+   * D1: move tab `tabId` into the window `toWindow`. `toWindow` is the one
+   * explicit client-supplied window label in the surface (per
+   * contracts/02-ipc-window-commands.md); the source window is derived from
+   * the tab's current owner.
+   */
+  moveTab(tabId: string, toWindow: string): Promise<void>;
 }
 
 /**
@@ -309,6 +346,16 @@ export const tauriIpc: Ipc = {
   sshPasswordResponse: (reqId, value) =>
     invoke<void>('ssh_password_response', { reqId, value }),
   sshListDir: (url) => invoke<DirEntry[]>('ssh_list_dir', { url }),
+  // D1 (multi-window) window surface. `new_window` is registered by C1 — the
+  // typed binding lives here alongside the four D1-registered commands so the
+  // frontend reaches the full surface through one seam. `moveTab`'s `toWindow`
+  // is the only client-supplied window label; every other command derives its
+  // window identity Rust-side from the injected `tauri::Window`.
+  newWindow: () => invoke<void>('new_window'),
+  closeWindow: () => invoke<void>('close_window'),
+  listWindows: () => invoke<WindowSummary[]>('list_windows'),
+  openInNewWindow: (path) => invoke<void>('open_in_new_window', { path }),
+  moveTab: (tabId, toWindow) => invoke<void>('move_tab', { tabId, toWindow }),
   // Subscribe to `ssh:askpass-request`. `listen` is async (it round-trips
   // through Tauri's event API) so the unlisten handle isn't available
   // synchronously — capture it asynchronously and have the returned

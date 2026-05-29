@@ -76,10 +76,28 @@ fn open_document(
     path: PathBuf,
 ) -> Result<OpenOutcome, String> {
     let label = window.label().to_string();
+    // D1 one-owner: if `path` is already open in a *different* window, focus
+    // that window + activate its tab instead of duplicating the document into
+    // the calling window. `owning_window_label` is the A1 resolution helper;
+    // when it points at another live window we set_focus it and re-target the
+    // open into that window so the existing tab is activated (not duplicated).
+    let owner: Option<String> = {
+        let ws = state.lock().map_err(|e| e.to_string())?;
+        ws.owning_window_label(&path).map(|s| s.to_string())
+    };
+    let open_label = match &owner {
+        Some(owner_label) if owner_label != &label => {
+            if let Some(win) = app.get_webview_window(owner_label) {
+                let _ = win.set_focus();
+            }
+            owner_label.clone()
+        }
+        _ => label.clone(),
+    };
     let outcome = {
         let mut ws = state.lock().map_err(|e| e.to_string())?;
         let outcome = ws
-            .open_document_for(&label, &path, OpenOpts::default())
+            .open_document_for(&open_label, &path, OpenOpts::default())
             .map_err(|e| e.to_string())?;
 
         // Register the .md and its sidecar with the watcher so external
@@ -102,11 +120,12 @@ fn open_document(
         incoming,
     } = &outcome
     {
-        // B2: address the show-conflict event to the calling window (where
-        // the open was requested) rather than broadcasting it to every
-        // window. Workspace itself stays handle-free for testability.
+        // B2: address the show-conflict event to the window that actually
+        // shows the document — `open_label` is the calling window unless D1's
+        // one-owner re-targeted the open into the window that already owns the
+        // path. Workspace itself stays handle-free for testability.
         let _ = app.emit_to(
-            label.as_str(),
+            open_label.as_str(),
             "show-conflict",
             serde_json::json!({
                 "tab_id": tab_id,
@@ -1476,6 +1495,164 @@ fn new_window(app: tauri::AppHandle, state: State<'_, Ws>) -> Result<(), String>
     Ok(())
 }
 
+/// D1: project the workspace's pure per-window summaries onto the IPC wire
+/// shape, filling each `focused` flag from the live Tauri window list. Pure
+/// over `(summaries, focused_label)` so it unit-tests without an `AppHandle`;
+/// `list_windows` passes the OS-reported focused label.
+fn window_summaries_with_focus(
+    summaries: Vec<mdviewer_lib::workspace::WindowSummaryData>,
+    focused_label: Option<&str>,
+) -> Vec<mdviewer_lib::workspace::WindowSummary> {
+    use mdviewer_lib::workspace::WindowSummary;
+    summaries
+        .into_iter()
+        .map(|d| WindowSummary {
+            focused: focused_label == Some(d.label.as_str()),
+            label: d.label,
+            active_doc_name: d.active_doc_name,
+            tab_count: d.tab_count,
+        })
+        .collect()
+}
+
+/// D1: enumerate every registered window as a wire-shaped `WindowSummary`. The
+/// pure per-window fields come from `Workspace::list_windows`; the `focused`
+/// flag is filled from the live Tauri window list (the OS-reported focused
+/// window), which the pure core can't see. No window-set mutation here, so no
+/// `rebuild_menu`.
+#[tauri::command]
+fn list_windows(app: tauri::AppHandle, state: State<'_, Ws>) -> Vec<mdviewer_lib::workspace::WindowSummary> {
+    let summaries = state
+        .lock()
+        .map(|ws| ws.list_windows())
+        .unwrap_or_default();
+    let focused_label = app
+        .webview_windows()
+        .iter()
+        .find(|(_, w)| w.is_focused().unwrap_or(false))
+        .map(|(label, _)| label.clone());
+    window_summaries_with_focus(summaries, focused_label.as_deref())
+}
+
+/// D1: close the window identified by the injected `tauri::Window` — drop all
+/// of its tabs from the workspace registry, then close the native window. The
+/// window-set shrinks, so rebuild the Window submenu afterward. Identity comes
+/// from the injected window arg, never a client argument (per
+/// contracts/02-ipc-window-commands.md).
+#[tauri::command]
+fn close_window(
+    window: tauri::Window,
+    app: tauri::AppHandle,
+    state: State<'_, Ws>,
+) -> Result<(), String> {
+    let label = window.label().to_string();
+    state.lock().map_err(|e| e.to_string())?.close_window(&label);
+    // Close the native window (best-effort — the registry entry is already
+    // gone, so a failed OS close just leaves an empty shell).
+    if let Some(win) = app.get_webview_window(&label) {
+        let _ = win.close();
+    }
+    // The registry shrank — re-apply the menu so the Window submenu drops the
+    // closed window's entry.
+    rebuild_menu(&app);
+    Ok(())
+}
+
+/// D1: open `path` in a new window, honoring the one-owner invariant. If the
+/// path is already open in any window, focus that window + activate its tab
+/// (no duplicate). Otherwise spawn a fresh window and open the document there.
+/// Window identity for the new window is derived (a `win-{nanos}` label),
+/// never client-supplied. The window set may grow, so rebuild the menu.
+#[tauri::command]
+fn open_in_new_window(
+    app: tauri::AppHandle,
+    state: State<'_, Ws>,
+    watcher: State<'_, Mutex<mdviewer_lib::watcher::Watcher>>,
+    path: PathBuf,
+) -> Result<(), String> {
+    use mdviewer_lib::workspace::OneOwnerResolution;
+    // One-owner resolution: already open → focus the existing window+tab.
+    let resolution = {
+        let mut ws = state.lock().map_err(|e| e.to_string())?;
+        ws.open_in_new_window_resolve(&path)
+    };
+    match resolution {
+        OneOwnerResolution::Existing { label, tab_id } => {
+            {
+                let mut ws = state.lock().map_err(|e| e.to_string())?;
+                ws.activate_tab_for(&label, &tab_id)
+                    .map_err(|e| e.to_string())?;
+            }
+            if let Some(win) = app.get_webview_window(&label) {
+                let _ = win.set_focus();
+            }
+            // Active-doc-name may have changed on the focused window.
+            rebuild_menu(&app);
+            Ok(())
+        }
+        OneOwnerResolution::NeedsNew => {
+            // Spawn a fresh window (mirrors `new_window`'s label scheme), open
+            // the document into it, register lifecycle, and focus it.
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let label = format!("win-{nanos}");
+            let new_win = spawn_window(&app, &label).map_err(|e| e.to_string())?;
+            {
+                let mut ws = state.lock().map_err(|e| e.to_string())?;
+                ws.new_window(label.clone());
+                ws.open_document_for(&label, &path, OpenOpts::default())
+                    .map_err(|e| e.to_string())?;
+                // Register the .md + sidecar with the watcher, mirroring
+                // open_document so external changes surface for the new window.
+                let pattern = ws.settings_store().get().comments.sidecar_pattern.clone();
+                if let Ok(mut w) = watcher.lock() {
+                    let _ = w.watch_md(&path);
+                    let _ = w.watch_sidecar(&mdviewer_lib::sidecar::sidecar_path(&path, &pattern));
+                    w.mark_unsaved(&path, false);
+                }
+            }
+            register_window_event_handler(&app, &new_win);
+            // The new window now owns the doc — refresh its tab strip + the
+            // Window submenu, then bring it forward.
+            let _ = app.emit_to(label.as_str(), "workspace-changed", ());
+            rebuild_menu(&app);
+            let _ = new_win.set_focus();
+            Ok(())
+        }
+    }
+}
+
+/// D1: move tab `tab_id` into the window `to_window`. `to_window` is the ONE
+/// explicit client-supplied label in the window IPC surface (per
+/// contracts/02-ipc-window-commands.md) — the source window is derived from
+/// the tab's current owner inside `Workspace::move_tab`. Both source and
+/// destination active-doc-names can change, so rebuild the Window submenu and
+/// nudge both windows to repaint their tab strips.
+#[tauri::command]
+fn move_tab(
+    app: tauri::AppHandle,
+    state: State<'_, Ws>,
+    tab_id: String,
+    to_window: String,
+) -> Result<(), String> {
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .move_tab(&tab_id, &to_window)
+        .map_err(|e| e.to_string())?;
+    // Repaint the destination's tab strip (and focus it forward).
+    let _ = app.emit_to(to_window.as_str(), "workspace-changed", ());
+    if let Some(win) = app.get_webview_window(&to_window) {
+        let _ = win.set_focus();
+    }
+    // The tab moved between windows — both windows' active-doc-names may have
+    // changed, so re-apply the menu.
+    rebuild_menu(&app);
+    Ok(())
+}
+
 /// B2: compute the virtual-screen bounds (union work area) from the live
 /// monitor list so `clamp_geometry` can pull an off-screen restored window
 /// back onto a reachable display. Falls back to a single 1920x1080 origin
@@ -2028,6 +2205,11 @@ fn main() {
             // B2 + Workspace::new_window A1 + rebuild_menu C1). D1 adds the
             // OTHER window commands and must NOT re-register new_window.
             new_window,
+            // D1: the remaining window IPC surface (new_window is C1's above).
+            close_window,
+            list_windows,
+            open_in_new_window,
+            move_tab,
             open_document,
             close_tab,
             activate_tab,
