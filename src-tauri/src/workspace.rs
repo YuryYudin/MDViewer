@@ -121,9 +121,79 @@ pub struct SshTabState {
     pub last_open_sha256: [u8; 32],
 }
 
+/// A1 (multi-window): the label of the first window. Spawned windows get
+/// `win-{nanos}`; the first window keeps the stable `"main"` label so the
+/// v1→v2 session migration and the delegating single-window wrappers
+/// (`open_document`, `close_tab`, …) have a known target. Window identity is
+/// a `String` label, never a client-supplied id — see the design's "Key
+/// Decisions".
+pub const MAIN_LABEL: &str = "main";
+
+/// A1: per-window position + size in logical pixels. Persisted to
+/// `session.json` v2 (`03-session-schema-v2.md`) and used at restore to
+/// place each window. `None` ⇒ let the OS place it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, serde::Deserialize)]
+pub struct WindowGeometry {
+    pub x: i32,
+    pub y: i32,
+    pub w: u32,
+    pub h: u32,
+}
+
+/// A1: a registered window in the workspace. Holds the window's stable label
+/// and its last-known geometry. The window's tab list + active tab live in
+/// the workspace's per-window `order`/`active` maps keyed by this label —
+/// there is a single mutex-guarded `Workspace` with a window-keyed view over
+/// one global tab map (per-window `Workspace` instances were rejected; see
+/// the task "Avoid" notes).
+#[derive(Debug, Clone)]
+pub struct WindowEntry {
+    pub label: String,
+    pub geometry: Option<WindowGeometry>,
+}
+
+/// A1: wire-shaped per-window summary for `list_windows` / `new_window` /
+/// `detach_tab`. The IPC layer (B2) adds the `focused` flag from the live
+/// window list; the pure-Rust core only knows `label` / `active_doc_name` /
+/// `tab_count`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WindowSummaryData {
+    pub label: String,
+    pub active_doc_name: Option<String>,
+    pub tab_count: u32,
+}
+
+/// A1: result of `open_in_new_window_resolve` — the one-owner decision the
+/// IPC layer (B2) acts on. `Existing` means `path` is already open in a
+/// window; the caller focuses that window+tab. `NeedsNew` means no tab owns
+/// `path`; the caller spawns a new window and opens it there.
+#[derive(Debug, Clone, PartialEq)]
+pub enum OneOwnerResolution {
+    Existing { label: String, tab_id: String },
+    NeedsNew,
+}
+
+/// A1: per-window snapshot used to build the v2 session payload
+/// (`03-session-schema-v2.md`). `persist_session` collects one of these per
+/// registered window. B1 swaps the `SessionStore` to a v2 shape that
+/// consumes these; B2 calls the v2 save. A1 keeps the existing v1 save path.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WindowSnapshot {
+    pub label: String,
+    pub tabs: Vec<PathBuf>,
+    pub active: Option<PathBuf>,
+    pub geometry: Option<WindowGeometry>,
+}
+
 pub struct Tab {
     pub id: String,
     pub path: PathBuf,
+    /// A1 (multi-window): which window owns this tab. Defaults to
+    /// `MAIN_LABEL` at every construction site for now; B2 threads the real
+    /// caller label through `open_document`/`drive_open_url`/`open_ssh_url`.
+    /// `move_tab`/`detach_tab` edit this field — a cross-window move is a
+    /// label edit over the single global tab map, never a serialize-out/in.
+    pub window_label: String,
     pub source: String,
     pub render: RenderResult,
     pub comments: CommentsStore,
@@ -254,8 +324,25 @@ pub struct Workspace {
     /// open/close so a crash doesn't lose the state. See `src/session.rs`.
     session: crate::session::SessionStore,
     tabs: HashMap<String, Tab>,
-    order: Vec<String>,
-    active: Option<String>,
+    /// A1 (multi-window): the window registry. One entry per open window;
+    /// seeded with a single `"main"` entry in `Workspace::new`. A zero-tab
+    /// window keeps its registry entry (it shows the StartPage) — windows
+    /// are only dropped by `close_window`.
+    windows: Vec<WindowEntry>,
+    /// A1: per-window left-to-right tab order, keyed by window label. The
+    /// global `tabs` map is the single owner of every `Tab`; `order[label]`
+    /// is the window's view over it. A cross-window move edits `Tab.window_label`
+    /// and shuffles ids between two `order` vecs without touching `tabs`.
+    order: HashMap<String, Vec<String>>,
+    /// A1: per-window active tab, keyed by window label. `None` ⇒ the window
+    /// shows the StartPage (no active tab). Repaired by `close_tab_for` and
+    /// `move_tab` to the next remaining tab in the window's order.
+    active: HashMap<String, Option<String>>,
+    /// A1: most-recently-focused window label. Seeded `"main"`; updated by
+    /// the IPC focus handler (B2) via `set_mrf_label`. Used to route a
+    /// file-association/CLI open with no explicit window to the window the
+    /// user last touched.
+    mrf_label: String,
     /// C2: persists each path's last-saved bytes across `close_tab` so a
     /// subsequent open of the same path can detect external divergence.
     /// Without this, closing a tab would erase the snapshot needed for the
@@ -332,8 +419,23 @@ impl Workspace {
             doc_prefs: DocPrefsStore::open(data_dir)?,
             session: crate::session::SessionStore::open(data_dir)?,
             tabs: HashMap::new(),
-            order: Vec::new(),
-            active: None,
+            // A1: seed one "main" window with empty order/active. Every
+            // workspace boots with exactly one window on the StartPage.
+            windows: vec![WindowEntry {
+                label: MAIN_LABEL.to_string(),
+                geometry: None,
+            }],
+            order: {
+                let mut m = HashMap::new();
+                m.insert(MAIN_LABEL.to_string(), Vec::new());
+                m
+            },
+            active: {
+                let mut m = HashMap::new();
+                m.insert(MAIN_LABEL.to_string(), None);
+                m
+            },
+            mrf_label: MAIN_LABEL.to_string(),
             closed_snapshots: HashMap::new(),
             // A7: stash data_dir for lazy Drive queue/id_map opens later.
             config_dir: data_dir.to_path_buf(),
@@ -554,6 +656,8 @@ impl Workspace {
         let synthetic_path = std::path::PathBuf::from(format!("drive-api://{}", file_id));
         let tab = Tab {
             id: id.clone(),
+            // A1: B2 threads the real caller label; default to main for now.
+            window_label: MAIN_LABEL.to_string(),
             path: synthetic_path,
             source: source.clone(),
             render,
@@ -566,9 +670,10 @@ impl Workspace {
             etag: Some(outcome.etag.clone()),
         };
         let summary = tab.summary();
+        let label = tab.window_label.clone();
         self.tabs.insert(id.clone(), tab);
-        self.order.push(id.clone());
-        self.active = Some(id);
+        self.order.entry(label.clone()).or_default().push(id.clone());
+        self.active.insert(label, Some(id));
         // Mirror the open_document/close_tab/activate_tab pattern so the
         // restored-session list picks up Drive-opened tabs across restarts.
         self.persist_session();
@@ -652,6 +757,8 @@ impl Workspace {
         );
         let tab = Tab {
             id: id.clone(),
+            // A1: B2 threads the real caller label; default to main for now.
+            window_label: MAIN_LABEL.to_string(),
             path: outcome.cache_path.clone(),
             source: source.clone(),
             render,
@@ -667,9 +774,10 @@ impl Workspace {
             etag: None,
         };
         let summary = tab.summary();
+        let label = tab.window_label.clone();
         self.tabs.insert(id.clone(), tab);
-        self.order.push(id.clone());
-        self.active = Some(id.clone());
+        self.order.entry(label.clone()).or_default().push(id.clone());
+        self.active.insert(label, Some(id.clone()));
         // A8 review-cycle-1 fix: stash the `SshUrl` and the open-time
         // `OpenOutcome.sha256` per tab so the future B5 save-back path can
         // recover both. The previous `let _ = url; let _ = outcome.sha256;`
@@ -1086,21 +1194,57 @@ impl Workspace {
     /// store. Called by `open_document`, `close_tab`, and `activate_tab`
     /// so the on-disk session.json always reflects the live state.
     fn persist_session(&self) {
-        let open_tabs: Vec<PathBuf> = self
-            .order
+        // A1: build per-window snapshots (the v2 shape B1 swaps the store to
+        // and B2 calls v2-save against). To keep A1 compiling and existing
+        // session tests green, flatten the snapshots back onto the existing
+        // v1 `session.save(open_tabs, active_tab)` path: concatenate every
+        // window's tabs in registry order and take the active of the first
+        // window that has one. B1/B2 replace this flatten with a real v2 save.
+        let snapshots = self.window_snapshots();
+        let open_tabs: Vec<PathBuf> = snapshots
             .iter()
-            .filter_map(|id| self.tabs.get(id).map(|t| t.path.clone()))
+            .flat_map(|w| w.tabs.iter().cloned())
             .collect();
-        let active_tab = self
-            .active
-            .as_ref()
-            .and_then(|id| self.tabs.get(id))
-            .map(|t| t.path.clone());
+        let active_tab = snapshots.iter().find_map(|w| w.active.clone());
         if let Err(e) = self.session.save(open_tabs, active_tab) {
             // Session is best-effort — never let a save failure block
             // open / close / activate flow. Log and move on.
             tracing::warn!(?e, "session.json save failed");
         }
+    }
+
+    /// A1: build the per-window session snapshot list (the v2 payload shape,
+    /// `03-session-schema-v2.md`). One `WindowSnapshot` per registered
+    /// window, in registry order, each carrying its left-to-right tab paths,
+    /// its active tab's path (if any), and its last-known geometry. B1's
+    /// `SessionStore` v2 + B2's v2-save consume this directly.
+    pub fn window_snapshots(&self) -> Vec<WindowSnapshot> {
+        self.windows
+            .iter()
+            .map(|w| {
+                let tabs: Vec<PathBuf> = self
+                    .order
+                    .get(&w.label)
+                    .map(|ids| {
+                        ids.iter()
+                            .filter_map(|id| self.tabs.get(id).map(|t| t.path.clone()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let active = self
+                    .active
+                    .get(&w.label)
+                    .and_then(|a| a.as_ref())
+                    .and_then(|id| self.tabs.get(id))
+                    .map(|t| t.path.clone());
+                WindowSnapshot {
+                    label: w.label.clone(),
+                    tabs,
+                    active,
+                    geometry: w.geometry,
+                }
+            })
+            .collect()
     }
 
     pub fn open_document(&mut self, path: &Path, _opts: OpenOpts) -> Result<OpenOutcome> {
@@ -1136,7 +1280,16 @@ impl Workspace {
                     }
                 }
             }
-            self.active = Some(id.clone());
+            // A1: activate within the tab's owning window. open_document
+            // currently always targets MAIN_LABEL (B2 threads the caller
+            // window); read the label off the tab so a moved tab still
+            // activates in the right window.
+            let label = self
+                .tabs
+                .get(&id)
+                .map(|t| t.window_label.clone())
+                .unwrap_or_else(|| MAIN_LABEL.to_string());
+            self.active.insert(label, Some(id.clone()));
             self.persist_session();
             return Ok(OpenOutcome::Document(OpenResult {
                 tab_id: id,
@@ -1208,6 +1361,8 @@ impl Workspace {
             id.clone(),
             Tab {
                 id: id.clone(),
+                // A1: B2 threads the real caller label; default to main for now.
+                window_label: MAIN_LABEL.to_string(),
                 path: canonical.clone(),
                 source: source.clone(),
                 render,
@@ -1221,8 +1376,12 @@ impl Workspace {
                 etag: None,
             },
         );
-        self.order.push(id.clone());
-        self.active = Some(id.clone());
+        // A1: register into the new tab's owning window (MAIN_LABEL today).
+        self.order
+            .entry(MAIN_LABEL.to_string())
+            .or_default()
+            .push(id.clone());
+        self.active.insert(MAIN_LABEL.to_string(), Some(id.clone()));
         let _ = self.recents.push(&canonical);
         self.persist_session();
         Ok(OpenOutcome::Document(result))
@@ -1258,25 +1417,11 @@ impl Workspace {
         Ok(())
     }
 
+    /// A1: single-window delegating wrapper. Closes a tab in the `main`
+    /// window. Kept so existing tests + the (B2-pending) IPC layer keep
+    /// compiling until B2 rewires them to `close_tab_for(window_label, id)`.
     pub fn close_tab(&mut self, id: &str) -> Result<()> {
-        // C2: stash the last-saved bytes keyed by path so the next open of
-        // this path can detect divergence from disk. Tabs without a snapshot
-        // (theoretically impossible — every open path primes one — but
-        // defensive) just don't seed the map.
-        if let Some(tab) = self.tabs.remove(id) {
-            if let Some(snap) = tab.last_saved_snapshot {
-                self.closed_snapshots.insert(tab.path, snap);
-            }
-        }
-        // A8 review-cycle-1: clear the per-tab SSH state. Non-SSH tabs
-        // never seeded the map so this is a no-op for them.
-        self.ssh_tabs.remove(id);
-        self.order.retain(|x| x != id);
-        if self.active.as_deref() == Some(id) {
-            self.active = self.order.last().cloned();
-        }
-        self.persist_session();
-        Ok(())
+        self.close_tab_for(MAIN_LABEL, id)
     }
 
     /// C2: clears the closed-tab snapshot for `path` after the user resolves
@@ -1291,21 +1436,267 @@ impl Workspace {
         self.closed_snapshots.insert(canonical, contents);
     }
 
+    /// A1: single-window delegating wrapper over `activate_tab_for(main, id)`.
     pub fn activate_tab(&mut self, id: &str) -> Result<()> {
-        if !self.tabs.contains_key(id) {
-            anyhow::bail!("no such tab");
+        self.activate_tab_for(MAIN_LABEL, id)
+    }
+
+    /// A1: single-window delegating wrapper over `list_open_documents_for(main)`.
+    pub fn list_open_documents(&self) -> Vec<&Tab> {
+        self.list_open_documents_for(MAIN_LABEL)
+    }
+
+    /// A1: single-window delegating wrapper over `active_tab_id_for(main)`.
+    pub fn active_tab_id(&self) -> Option<&str> {
+        self.active_tab_id_for(MAIN_LABEL)
+    }
+
+    // === A1 (multi-window): window registry + window-scoped methods ===
+
+    /// Register a new window with the given `label`, empty order/active, no
+    /// geometry, and return its summary. Idempotent on an existing label
+    /// (re-registering "main" is a no-op rather than duplicating the entry).
+    pub fn new_window(&mut self, label: String) -> WindowSummaryData {
+        if !self.windows.iter().any(|w| w.label == label) {
+            self.windows.push(WindowEntry {
+                label: label.clone(),
+                geometry: None,
+            });
+            self.order.entry(label.clone()).or_default();
+            self.active.entry(label.clone()).or_insert(None);
         }
-        self.active = Some(id.into());
+        self.window_summary(&label)
+    }
+
+    /// Close a window: drop every tab it owns from the global tab map (and
+    /// their per-tab SSH state), then remove the window's registry entry +
+    /// order/active slots. Persists session. No-op-safe if the label is
+    /// already gone.
+    pub fn close_window(&mut self, label: &str) {
+        let ids: Vec<String> = self
+            .order
+            .get(label)
+            .map(|ids| ids.clone())
+            .unwrap_or_default();
+        for id in ids {
+            // Drop the tab, seeding closed_snapshots so a later reopen can
+            // still detect divergence (mirrors close_tab_for).
+            if let Some(tab) = self.tabs.remove(&id) {
+                if let Some(snap) = tab.last_saved_snapshot {
+                    self.closed_snapshots.insert(tab.path, snap);
+                }
+            }
+            self.ssh_tabs.remove(&id);
+        }
+        self.windows.retain(|w| w.label != label);
+        self.order.remove(label);
+        self.active.remove(label);
+        // If the most-recently-focused window just closed, fall back to the
+        // first remaining window (or "main" if somehow none remain).
+        if self.mrf_label == label {
+            self.mrf_label = self
+                .windows
+                .first()
+                .map(|w| w.label.clone())
+                .unwrap_or_else(|| MAIN_LABEL.to_string());
+        }
+        self.persist_session();
+    }
+
+    /// All registered windows as wire-shaped summaries, in registry order.
+    pub fn list_windows(&self) -> Vec<WindowSummaryData> {
+        self.windows
+            .iter()
+            .map(|w| self.window_summary(&w.label))
+            .collect()
+    }
+
+    /// One-owner resolution for "open in new window": if `path` is already
+    /// open in any window, return `Existing { label, tab_id }` so the caller
+    /// focuses that window+tab; otherwise `NeedsNew` so it spawns a window.
+    /// Matches `open_document`'s canonicalization so the path comparison
+    /// lines up with how tabs store their path.
+    pub fn open_in_new_window_resolve(&mut self, path: &Path) -> OneOwnerResolution {
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        match self.tabs.values().find(|t| t.path == canonical) {
+            Some(tab) => OneOwnerResolution::Existing {
+                label: tab.window_label.clone(),
+                tab_id: tab.id.clone(),
+            },
+            None => OneOwnerResolution::NeedsNew,
+        }
+    }
+
+    /// Move `tab_id` to `to_window` (must be a registered label). Reassigns
+    /// the tab's `window_label`, removes it from the source `order` (repairing
+    /// the source active to the next remaining tab, or `None` — the source
+    /// window stays open on the StartPage, NOT auto-closed), and appends it
+    /// to the destination `order` as the destination's active tab. Errors if
+    /// `tab_id` is unknown or `to_window` is not registered.
+    pub fn move_tab(&mut self, tab_id: &str, to_window: &str) -> Result<()> {
+        if !self.tabs.contains_key(tab_id) {
+            anyhow::bail!("no such tab: {tab_id}");
+        }
+        if !self.windows.iter().any(|w| w.label == to_window) {
+            anyhow::bail!("no such window: {to_window}");
+        }
+        let from = self
+            .tabs
+            .get(tab_id)
+            .map(|t| t.window_label.clone())
+            .expect("tab existence checked above");
+        if from == to_window {
+            // Moving within the same window: make it active, no order churn.
+            self.active.insert(to_window.to_string(), Some(tab_id.to_string()));
+            self.persist_session();
+            return Ok(());
+        }
+        // Reassign the owning label.
+        if let Some(tab) = self.tabs.get_mut(tab_id) {
+            tab.window_label = to_window.to_string();
+        }
+        // Remove from source order + repair source active.
+        if let Some(src_order) = self.order.get_mut(&from) {
+            src_order.retain(|x| x != tab_id);
+            if self.active.get(&from).and_then(|a| a.as_deref()) == Some(tab_id) {
+                let next = src_order.last().cloned();
+                self.active.insert(from.clone(), next);
+            }
+        }
+        // Append to destination order + make active there.
+        self.order
+            .entry(to_window.to_string())
+            .or_default()
+            .push(tab_id.to_string());
+        self.active.insert(to_window.to_string(), Some(tab_id.to_string()));
         self.persist_session();
         Ok(())
     }
 
-    pub fn list_open_documents(&self) -> Vec<&Tab> {
-        self.order.iter().filter_map(|id| self.tabs.get(id)).collect()
+    /// Detach `tab_id` into a brand-new window labeled `new_label`: register
+    /// the window then `move_tab` the tab into it as its sole tab. Returns
+    /// the new window's summary. Errors if `tab_id` is unknown.
+    pub fn detach_tab(&mut self, tab_id: &str, new_label: String) -> Result<WindowSummaryData> {
+        if !self.tabs.contains_key(tab_id) {
+            anyhow::bail!("no such tab: {tab_id}");
+        }
+        self.new_window(new_label.clone());
+        self.move_tab(tab_id, &new_label)?;
+        Ok(self.window_summary(&new_label))
     }
 
-    pub fn active_tab_id(&self) -> Option<&str> {
-        self.active.as_deref()
+    /// The tabs of window `label`, in left-to-right order. Empty for an
+    /// unknown or zero-tab window.
+    pub fn list_open_documents_for(&self, label: &str) -> Vec<&Tab> {
+        self.order
+            .get(label)
+            .map(|ids| ids.iter().filter_map(|id| self.tabs.get(id)).collect())
+            .unwrap_or_default()
+    }
+
+    /// The active tab id of window `label`, or `None` if it shows the
+    /// StartPage / is unknown.
+    pub fn active_tab_id_for(&self, label: &str) -> Option<&str> {
+        self.active.get(label).and_then(|a| a.as_deref())
+    }
+
+    /// Activate tab `id` within window `label`. Errors if `id` isn't a tab
+    /// of that window (a window may only activate its own tabs).
+    pub fn activate_tab_for(&mut self, label: &str, id: &str) -> Result<()> {
+        let owns = self
+            .order
+            .get(label)
+            .map(|ids| ids.iter().any(|x| x == id))
+            .unwrap_or(false);
+        if !owns {
+            anyhow::bail!("no such tab in window {label}: {id}");
+        }
+        self.active.insert(label.to_string(), Some(id.to_string()));
+        self.persist_session();
+        Ok(())
+    }
+
+    /// Close tab `id` within window `label`. Mirrors the global `close_tab`
+    /// (closed_snapshots + ssh_tabs cleanup) scoped to that window's
+    /// order/active. Closing the last tab leaves the window open on the
+    /// StartPage (active=None) — the window is NOT auto-closed.
+    pub fn close_tab_for(&mut self, label: &str, id: &str) -> Result<()> {
+        // C2: stash the last-saved bytes keyed by path so the next open of
+        // this path can detect divergence from disk.
+        if let Some(tab) = self.tabs.remove(id) {
+            if let Some(snap) = tab.last_saved_snapshot {
+                self.closed_snapshots.insert(tab.path, snap);
+            }
+        }
+        // A8: clear the per-tab SSH state (no-op for non-SSH tabs).
+        self.ssh_tabs.remove(id);
+        if let Some(order) = self.order.get_mut(label) {
+            order.retain(|x| x != id);
+            if self.active.get(label).and_then(|a| a.as_deref()) == Some(id) {
+                let next = order.last().cloned();
+                self.active.insert(label.to_string(), next);
+            }
+        }
+        self.persist_session();
+        Ok(())
+    }
+
+    /// Watcher routing: the `window_label` of the tab that owns `path`, or
+    /// `None` if no tab is open for it. The watcher uses this to address an
+    /// external-change event to the window that has the file open. Compares
+    /// against `Tab.path` as stored (callers should pass a canonicalized
+    /// path to match `open_document`'s storage).
+    pub fn owning_window_label(&self, path: &Path) -> Option<&str> {
+        self.tabs
+            .values()
+            .find(|t| t.path == path)
+            .map(|t| t.window_label.as_str())
+    }
+
+    /// Record a window's last-known geometry (position + size). Persisted to
+    /// session v2 via `window_snapshots`. No-op for an unknown label.
+    pub fn set_window_geometry(&mut self, label: &str, geo: WindowGeometry) {
+        if let Some(w) = self.windows.iter_mut().find(|w| w.label == label) {
+            w.geometry = Some(geo);
+        }
+    }
+
+    /// Set the most-recently-focused window label (the IPC focus handler
+    /// calls this). Routes a window-less open to the user's last window.
+    pub fn set_mrf_label(&mut self, label: &str) {
+        self.mrf_label = label.to_string();
+    }
+
+    /// The most-recently-focused window label.
+    pub fn mrf_label(&self) -> &str {
+        &self.mrf_label
+    }
+
+    /// Build the wire-shaped summary for one window: tab count + the active
+    /// tab's file name (the StartPage shows `None`). Returns a zero-count
+    /// summary for an unknown label so `new_window`/`list_windows` callers
+    /// always get a value.
+    fn window_summary(&self, label: &str) -> WindowSummaryData {
+        let tab_count = self
+            .order
+            .get(label)
+            .map(|ids| ids.len() as u32)
+            .unwrap_or(0);
+        let active_doc_name = self
+            .active
+            .get(label)
+            .and_then(|a| a.as_ref())
+            .and_then(|id| self.tabs.get(id))
+            .and_then(|t| {
+                t.path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+            });
+        WindowSummaryData {
+            label: label.to_string(),
+            active_doc_name,
+            tab_count,
+        }
     }
 
     fn find_by_path(&self, p: &Path) -> Option<(String, &Tab)> {
@@ -1661,6 +2052,7 @@ impl Workspace {
             id.clone(),
             Tab {
                 id: id.clone(),
+                window_label: MAIN_LABEL.to_string(),
                 path: std::path::PathBuf::from(format!("drive-api://{}", file_id)),
                 source: content.into(),
                 render,
@@ -1671,8 +2063,11 @@ impl Workspace {
                 etag: None,
             },
         );
-        self.order.push(id.clone());
-        self.active = Some(id.clone());
+        self.order
+            .entry(MAIN_LABEL.to_string())
+            .or_default()
+            .push(id.clone());
+        self.active.insert(MAIN_LABEL.to_string(), Some(id.clone()));
         id
     }
 
@@ -2184,6 +2579,278 @@ mod tests {
             state.last_open_sha256,
             sha256_of(&bytes),
             "stashed hash must match the transport-reported open-time hash",
+        );
+    }
+
+    // === A1 (multi-window): window-aware state + registry tests ===
+
+    use super::{OneOwnerResolution, WindowGeometry, Workspace, MAIN_LABEL};
+
+    /// Write a markdown file under `dir` and open it into the `main` window,
+    /// returning the new tab id. Shared by the A1 window tests so each gets a
+    /// real on-disk path (open_document canonicalizes + reads).
+    fn open_md(ws: &mut Workspace, dir: &Path, name: &str, body: &str) -> String {
+        let p = dir.join(name);
+        std::fs::write(&p, body).expect("write md");
+        match ws
+            .open_document(&p, super::OpenOpts::default())
+            .expect("open_document ok")
+        {
+            super::OpenOutcome::Document(r) => r.tab_id,
+            super::OpenOutcome::Conflict { .. } => panic!("unexpected conflict"),
+        }
+    }
+
+    /// Per-window `order`/`active` are isolated: a tab opened in `main` and a
+    /// tab moved into a second window each show only in their own window's
+    /// list, and the global `tabs` map keeps both.
+    #[test]
+    fn per_window_isolation() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::new_for_test(dir.path());
+        let a = open_md(&mut ws, dir.path(), "a.md", "# a");
+        let b = open_md(&mut ws, dir.path(), "b.md", "# b");
+
+        let summary = ws.new_window("win-1".to_string());
+        assert_eq!(summary.label, "win-1");
+        assert_eq!(summary.tab_count, 0);
+
+        ws.move_tab(&b, "win-1").expect("move ok");
+
+        let main_ids: Vec<&str> = ws
+            .list_open_documents_for(MAIN_LABEL)
+            .iter()
+            .map(|t| t.id.as_str())
+            .collect();
+        let win1_ids: Vec<&str> = ws
+            .list_open_documents_for("win-1")
+            .iter()
+            .map(|t| t.id.as_str())
+            .collect();
+        assert_eq!(main_ids, vec![a.as_str()], "main keeps only a");
+        assert_eq!(win1_ids, vec![b.as_str()], "win-1 owns b");
+        // Global tab map still owns both tabs.
+        assert!(ws.tab(&a).is_some());
+        assert!(ws.tab(&b).is_some());
+        // The moved tab carries the new window label.
+        assert_eq!(ws.tab(&b).unwrap().window_label, "win-1");
+    }
+
+    /// move_tab reassigns the label, repairs the source active to the next
+    /// remaining tab, and makes the moved tab active in the destination.
+    #[test]
+    fn move_tab_reassigns_and_repairs_source_active() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::new_for_test(dir.path());
+        let a = open_md(&mut ws, dir.path(), "a.md", "# a");
+        let b = open_md(&mut ws, dir.path(), "b.md", "# b");
+        // b is active in main (last opened).
+        assert_eq!(ws.active_tab_id_for(MAIN_LABEL), Some(b.as_str()));
+
+        ws.new_window("win-1".to_string());
+        ws.move_tab(&b, "win-1").expect("move ok");
+
+        // Source active repaired to the next remaining tab (a).
+        assert_eq!(ws.active_tab_id_for(MAIN_LABEL), Some(a.as_str()));
+        // Destination active is the moved tab.
+        assert_eq!(ws.active_tab_id_for("win-1"), Some(b.as_str()));
+        // Label reassigned.
+        assert_eq!(ws.tab(&b).unwrap().window_label, "win-1");
+
+        // Unknown tab / unknown window error out.
+        assert!(ws.move_tab("nope", "win-1").is_err());
+        assert!(ws.move_tab(&a, "ghost-window").is_err());
+    }
+
+    /// Moving the *last* tab out of a window leaves that window registered
+    /// with active=None (StartPage) — it is NOT auto-closed.
+    #[test]
+    fn move_last_tab_leaves_source_on_startpage() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::new_for_test(dir.path());
+        let a = open_md(&mut ws, dir.path(), "a.md", "# a");
+
+        ws.new_window("win-1".to_string());
+        ws.move_tab(&a, "win-1").expect("move ok");
+
+        // Main window still registered, now empty + StartPage.
+        assert!(
+            ws.list_windows().iter().any(|w| w.label == MAIN_LABEL),
+            "source window stays registered",
+        );
+        assert!(ws.list_open_documents_for(MAIN_LABEL).is_empty());
+        assert_eq!(ws.active_tab_id_for(MAIN_LABEL), None);
+    }
+
+    /// open_in_new_window_resolve focuses an existing tab when the path is
+    /// already open (one-owner), else returns NeedsNew.
+    #[test]
+    fn open_in_new_window_resolve_focus_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::new_for_test(dir.path());
+        let pa = dir.path().join("a.md");
+        std::fs::write(&pa, "# a").unwrap();
+        let a = open_md(&mut ws, dir.path(), "a.md", "# a");
+
+        // Already-open path → focus existing window+tab.
+        match ws.open_in_new_window_resolve(&pa) {
+            OneOwnerResolution::Existing { label, tab_id } => {
+                assert_eq!(label, MAIN_LABEL);
+                assert_eq!(tab_id, a);
+            }
+            OneOwnerResolution::NeedsNew => panic!("expected Existing for an open path"),
+        }
+
+        // Unknown path → NeedsNew.
+        let pb = dir.path().join("never-opened.md");
+        std::fs::write(&pb, "# b").unwrap();
+        assert_eq!(
+            ws.open_in_new_window_resolve(&pb),
+            OneOwnerResolution::NeedsNew,
+        );
+    }
+
+    /// Closing the last tab in a window keeps the window open on the
+    /// StartPage (active=None), mirroring today's single-window behavior.
+    #[test]
+    fn last_tab_close_keeps_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::new_for_test(dir.path());
+        let a = open_md(&mut ws, dir.path(), "a.md", "# a");
+
+        ws.close_tab_for(MAIN_LABEL, &a).expect("close ok");
+
+        assert!(
+            ws.list_windows().iter().any(|w| w.label == MAIN_LABEL),
+            "window survives last-tab-close",
+        );
+        assert!(ws.list_open_documents_for(MAIN_LABEL).is_empty());
+        assert_eq!(ws.active_tab_id_for(MAIN_LABEL), None);
+    }
+
+    /// close_window drops the window's tabs from the global map and removes
+    /// its registry entry / order / active slots.
+    #[test]
+    fn close_window_drops_tabs_and_registry_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::new_for_test(dir.path());
+        let a = open_md(&mut ws, dir.path(), "a.md", "# a");
+        ws.new_window("win-1".to_string());
+        let b = open_md(&mut ws, dir.path(), "b.md", "# b");
+        ws.move_tab(&b, "win-1").expect("move ok");
+
+        ws.close_window("win-1");
+
+        assert!(
+            !ws.list_windows().iter().any(|w| w.label == "win-1"),
+            "registry entry removed",
+        );
+        // The window's tab is dropped from the global map.
+        assert!(ws.tab(&b).is_none(), "closed window's tab removed");
+        // The other window is untouched.
+        assert!(ws.tab(&a).is_some());
+        assert!(ws.list_windows().iter().any(|w| w.label == MAIN_LABEL));
+    }
+
+    /// owning_window_label routes a path to the window_label of the tab that
+    /// owns it — the watcher uses this to address external-change events to
+    /// the right window.
+    #[test]
+    fn path_to_owning_window_resolves() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::new_for_test(dir.path());
+        let pa = dir.path().join("a.md");
+        std::fs::write(&pa, "# a").unwrap();
+        let _a = open_md(&mut ws, dir.path(), "a.md", "# a");
+        let b = open_md(&mut ws, dir.path(), "b.md", "# b");
+        ws.new_window("win-1".to_string());
+        ws.move_tab(&b, "win-1").expect("move ok");
+
+        let canonical_a = pa.canonicalize().unwrap_or(pa.clone());
+        assert_eq!(ws.owning_window_label(&canonical_a), Some(MAIN_LABEL));
+        let pb = dir.path().join("b.md").canonicalize().unwrap();
+        assert_eq!(ws.owning_window_label(&pb), Some("win-1"));
+        // Unknown path → None.
+        assert_eq!(
+            ws.owning_window_label(Path::new("/nonexistent/x.md")),
+            None,
+        );
+    }
+
+    /// detach_tab spawns a new window and moves the tab into it as the sole
+    /// tab; geometry/mrf setters round-trip; window_snapshots reflect state.
+    #[test]
+    fn detach_tab_and_geometry_and_mrf_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::new_for_test(dir.path());
+        let _a = open_md(&mut ws, dir.path(), "a.md", "# a");
+        let b = open_md(&mut ws, dir.path(), "b.md", "# b");
+
+        let summary = ws.detach_tab(&b, "win-detach".to_string()).expect("detach ok");
+        assert_eq!(summary.label, "win-detach");
+        assert_eq!(summary.tab_count, 1);
+        assert_eq!(ws.tab(&b).unwrap().window_label, "win-detach");
+        assert_eq!(ws.active_tab_id_for("win-detach"), Some(b.as_str()));
+
+        // Geometry setter is reflected in window_snapshots.
+        let geo = WindowGeometry { x: 10, y: 20, w: 800, h: 600 };
+        ws.set_window_geometry("win-detach", geo);
+        let snaps = ws.window_snapshots();
+        let snap = snaps.iter().find(|s| s.label == "win-detach").unwrap();
+        assert_eq!(snap.geometry, Some(geo));
+        assert_eq!(snap.tabs.len(), 1);
+
+        // MRF setter round-trips.
+        assert_eq!(ws.mrf_label(), MAIN_LABEL);
+        ws.set_mrf_label("win-detach");
+        assert_eq!(ws.mrf_label(), "win-detach");
+    }
+
+    /// Closing the most-recently-focused window falls the mrf label back to
+    /// the first remaining window so a window-less open still has a target.
+    #[test]
+    fn close_window_repoints_mrf_to_first_remaining() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::new_for_test(dir.path());
+        ws.new_window("win-1".to_string());
+        ws.set_mrf_label("win-1");
+        assert_eq!(ws.mrf_label(), "win-1");
+
+        ws.close_window("win-1");
+
+        // Falls back to the first remaining window (main).
+        assert_eq!(ws.mrf_label(), MAIN_LABEL);
+    }
+
+    /// move_tab into the tab's own window just re-activates it (no order
+    /// churn, no error) — the same-window short-circuit branch.
+    #[test]
+    fn move_tab_into_same_window_just_activates() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::new_for_test(dir.path());
+        let a = open_md(&mut ws, dir.path(), "a.md", "# a");
+        let b = open_md(&mut ws, dir.path(), "b.md", "# b");
+        // b is active; move a (same window) → a becomes active, order intact.
+        ws.move_tab(&a, MAIN_LABEL).expect("same-window move ok");
+
+        assert_eq!(ws.active_tab_id_for(MAIN_LABEL), Some(a.as_str()));
+        let ids: Vec<&str> = ws
+            .list_open_documents_for(MAIN_LABEL)
+            .iter()
+            .map(|t| t.id.as_str())
+            .collect();
+        assert_eq!(ids, vec![a.as_str(), b.as_str()], "order unchanged");
+    }
+
+    /// detach_tab on an unknown tab errors before registering the window.
+    #[test]
+    fn detach_unknown_tab_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::new_for_test(dir.path());
+        assert!(ws.detach_tab("nope", "win-x".to_string()).is_err());
+        assert!(
+            !ws.list_windows().iter().any(|w| w.label == "win-x"),
+            "failed detach must not leave a dangling window",
         );
     }
 
