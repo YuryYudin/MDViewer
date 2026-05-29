@@ -163,6 +163,21 @@ pub struct WindowSummaryData {
     pub tab_count: u32,
 }
 
+/// D1: wire-shaped per-window summary returned by the `list_windows` IPC
+/// command. Mirrors [`WindowSummaryData`] (the pure-core projection) and adds
+/// the `focused` flag the IPC layer fills from the live Tauri window list —
+/// the pure core can't know which native window the OS currently has focused.
+/// Crosses IPC, so it carries `#[derive(ts_rs::TS)]` and is exported into
+/// `src/types-generated.ts`.
+#[derive(Debug, Clone, PartialEq, Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct WindowSummary {
+    pub label: String,
+    pub active_doc_name: Option<String>,
+    pub tab_count: u32,
+    pub focused: bool,
+}
+
 /// A1: result of `open_in_new_window_resolve` — the one-owner decision the
 /// IPC layer (B2) acts on. `Existing` means `path` is already open in a
 /// window; the caller focuses that window+tab. `NeedsNew` means no tab owns

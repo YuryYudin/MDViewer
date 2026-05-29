@@ -748,6 +748,52 @@ mod window_scoping {
         }
     }
 
+    /// D1: mirror of main.rs's pure `window_summaries_with_focus` — project the
+    /// per-window summaries onto the IPC wire shape, marking exactly the
+    /// `focused_label` window focused. The production `list_windows` handler
+    /// passes the OS-reported focused label; this exercises the projection
+    /// logic without an AppHandle.
+    fn window_summaries_with_focus(
+        summaries: Vec<mdviewer_lib::workspace::WindowSummaryData>,
+        focused_label: Option<&str>,
+    ) -> Vec<mdviewer_lib::workspace::WindowSummary> {
+        use mdviewer_lib::workspace::WindowSummary;
+        summaries
+            .into_iter()
+            .map(|d| WindowSummary {
+                focused: focused_label == Some(d.label.as_str()),
+                label: d.label,
+                active_doc_name: d.active_doc_name,
+                tab_count: d.tab_count,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn d1_window_summaries_mark_only_focused_window() {
+        let (state, _tmp) = ws();
+        let mut g = state.lock().unwrap();
+        g.new_window("win-2".to_string());
+        let summaries = g.list_windows();
+        assert_eq!(summaries.len(), 2, "main + win-2 registered");
+
+        // win-2 focused → exactly one focused, and it is win-2.
+        let out = window_summaries_with_focus(summaries.clone(), Some("win-2"));
+        assert_eq!(out.len(), 2);
+        assert_eq!(out.iter().filter(|s| s.focused).count(), 1);
+        assert!(out.iter().find(|s| s.label == "win-2").unwrap().focused);
+        assert!(!out.iter().find(|s| s.label == MAIN_LABEL).unwrap().focused);
+
+        // No focused window reported (backgrounded app) → none flagged, and
+        // the pure fields still carry through verbatim.
+        let none = window_summaries_with_focus(summaries.clone(), None);
+        assert!(none.iter().all(|s| !s.focused), "no focus → none flagged");
+        let main = none.iter().find(|s| s.label == MAIN_LABEL).unwrap();
+        let main_data = summaries.iter().find(|d| d.label == MAIN_LABEL).unwrap();
+        assert_eq!(main.tab_count, main_data.tab_count);
+        assert_eq!(main.active_doc_name, main_data.active_doc_name);
+    }
+
     #[test]
     fn open_document_for_owns_tab_in_its_window() {
         // open_document_for(label, ...) must register the tab into THAT
@@ -1331,5 +1377,101 @@ fn window_select_label_helper_is_reachable() {
     assert_eq!(
         mdviewer_lib::menu::window_select_label("window-select:"),
         None,
+    );
+}
+
+// ----------------------------------------------------------------------------
+// D1: the remaining window IPC surface + one-owner focus-existing.
+//
+// D1 registers the FOUR remaining window commands (`new_window` is C1's and is
+// asserted above — D1 must NOT re-register it). Each window-set-mutating
+// command (close_window, open_in_new_window, move_tab) must call rebuild_menu
+// so the Window submenu stays current. The one-owner invariant lives in A1's
+// Workspace (unit-tested there); D1 wires open_document + open_in_new_window to
+// consult open_in_new_window_resolve / owning_window_label before creating a
+// tab. These source-smoke checks mirror the existing pattern (we can't link
+// main.rs's `#[tauri::command] fn`s into this crate).
+// ----------------------------------------------------------------------------
+
+#[test]
+fn d1_window_ipc_commands_registered() {
+    let main_rs = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    )
+    .expect("read main.rs");
+    for cmd in ["close_window", "list_windows", "open_in_new_window", "move_tab"] {
+        assert!(
+            main_rs.contains(&format!("fn {cmd}(")),
+            "main.rs must declare `fn {cmd}(...)` (D1)",
+        );
+        assert!(
+            main_rs.contains(&format!("            {cmd},")),
+            "main.rs must register `{cmd}` in the invoke_handler! list (D1)",
+        );
+    }
+}
+
+#[test]
+fn d1_window_mutating_commands_rebuild_menu() {
+    // close_window / open_in_new_window / move_tab change the window set or a
+    // window's active doc, so each must rebuild the Window submenu afterward.
+    let main_rs = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    )
+    .expect("read main.rs");
+    for cmd in ["close_window", "open_in_new_window", "move_tab"] {
+        let start = main_rs
+            .find(&format!("fn {cmd}("))
+            .unwrap_or_else(|| panic!("main.rs must declare fn {cmd}("));
+        // Body span up to the next top-level `#[tauri::command]` so we only
+        // scan this handler.
+        let rest = &main_rs[start..];
+        let body_end = rest[1..]
+            .find("#[tauri::command]")
+            .map(|i| i + 1)
+            .unwrap_or(rest.len());
+        let body = &rest[..body_end];
+        assert!(
+            body.contains("rebuild_menu("),
+            "{cmd} must call rebuild_menu after mutating the window set",
+        );
+    }
+}
+
+#[test]
+fn d1_one_owner_focus_existing_wired() {
+    // open_document and open_in_new_window must consult the one-owner
+    // resolution (A1) before creating a tab so an already-open path focuses
+    // its existing window+tab rather than duplicating it.
+    let main_rs = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+    )
+    .expect("read main.rs");
+    // open_in_new_window resolves via open_in_new_window_resolve.
+    let oinw_start = main_rs
+        .find("fn open_in_new_window(")
+        .expect("main.rs must declare fn open_in_new_window(");
+    let oinw = &main_rs[oinw_start..];
+    assert!(
+        oinw.contains("open_in_new_window_resolve("),
+        "open_in_new_window must consult Workspace::open_in_new_window_resolve",
+    );
+    assert!(
+        oinw.contains("set_focus()"),
+        "open_in_new_window must set_focus the existing window on a one-owner hit",
+    );
+    // open_document focuses an already-open path's owning window+tab.
+    let od_start = main_rs
+        .find("fn open_document(")
+        .expect("main.rs must declare fn open_document(");
+    let rest = &main_rs[od_start..];
+    let od_end = rest[1..]
+        .find("#[tauri::command]")
+        .map(|i| i + 1)
+        .unwrap_or(rest.len());
+    let od = &rest[..od_end];
+    assert!(
+        od.contains("owning_window_label(") || od.contains("open_in_new_window_resolve("),
+        "open_document must consult the one-owner resolution (owning_window_label / resolve)",
     );
 }

@@ -24,6 +24,11 @@ describe('types-generated.ts', () => {
     expect(out).toMatch(/export\s+(type|interface)\s+BuildInfo\b/);
     expect(out).toContain('version: string');
     expect(out).toContain('commit_hash: string');
+    // D1: the window surface emits a `WindowSummary` type. Assert it is
+    // generated and re-exported from ipc.ts.
+    expect(out).toMatch(/export\s+(type|interface)\s+WindowSummary\b/);
+    const ipcTs = fs.readFileSync(path.join(repoRoot, 'src', 'ipc.ts'), 'utf8');
+    expect(ipcTs).toContain('WindowSummary');
   });
 
   it('exports BuildInfo as a usable type', async () => {
