@@ -1297,6 +1297,62 @@ fn run_first_run_cli_prompt(app: &tauri::AppHandle) {
     }
 }
 
+// When invoked from an interactive terminal on Unix, re-spawn self as a
+// detached background process so the shell prompt returns immediately
+// instead of blocking on the GUI process.
+//
+// Second-invocation routing is unaffected: the detached child still runs
+// `tauri_plugin_single_instance`, which forwards argv to the running
+// primary (if any) and exits — meaning `mdviewer foo.md` opens a new tab
+// in the existing window and the terminal returns at once. First-launch
+// `mdviewer foo.md` likewise returns at once: the parent exits after
+// spawn, the child becomes the primary and brings up the window.
+//
+// Skip detachment when:
+//   - we're already the detached child (MDVIEWER_DETACHED set);
+//   - neither stdin nor stdout is a TTY (already non-interactive, e.g.
+//     launched by a .desktop entry, Launch Services, or systemd);
+//   - we couldn't determine our own exe path (fall through to foreground
+//     so the user at least sees the window).
+//
+// Windows is a no-op: release builds use `windows_subsystem = "windows"`
+// (see the crate-level attribute at the top of this file), so cmd.exe
+// and PowerShell don't wait for the GUI process anyway.
+#[cfg(unix)]
+fn detach_from_terminal_if_needed() {
+    use std::io::IsTerminal;
+    use std::os::unix::process::CommandExt;
+
+    if std::env::var_os("MDVIEWER_DETACHED").is_some() {
+        return;
+    }
+    if !std::io::stdin().is_terminal() && !std::io::stdout().is_terminal() {
+        return;
+    }
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    let argv: Vec<_> = std::env::args_os().skip(1).collect();
+    let spawned = std::process::Command::new(exe)
+        .args(&argv)
+        .env("MDVIEWER_DETACHED", "1")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        // New process group — detaches from the controlling terminal's
+        // foreground group so SIGINT/SIGQUIT from the shell don't reach
+        // the GUI process.
+        .process_group(0)
+        .spawn();
+    if spawned.is_ok() {
+        std::process::exit(0);
+    }
+}
+
+#[cfg(not(unix))]
+fn detach_from_terminal_if_needed() {}
+
 fn main() {
     // C3: lightweight CLI dispatch before the Tauri runtime spins up. The
     // subcommand intentionally bypasses tauri::Builder so it can be used
@@ -1315,6 +1371,10 @@ fn main() {
             }
         }
     }
+
+    // After the migrate-sidecars CLI subcommand — that path is meant to
+    // run synchronously to completion and shouldn't background itself.
+    detach_from_terminal_if_needed();
 
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
