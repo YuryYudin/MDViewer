@@ -1476,7 +1476,7 @@ impl Workspace {
         let ids: Vec<String> = self
             .order
             .get(label)
-            .map(|ids| ids.clone())
+            .cloned()
             .unwrap_or_default();
         for id in ids {
             // Drop the tab, seeding closed_snapshots so a later reopen can
