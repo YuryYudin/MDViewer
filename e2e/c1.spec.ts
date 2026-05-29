@@ -1,6 +1,11 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { prepareFixture, openDocByE2eHook, switchToWindow } from './helpers/app';
+import {
+  prepareFixture,
+  openDocByE2eHook,
+  switchToWindow,
+  allWindowLabels,
+} from './helpers/app';
 
 /**
  * C1 — Window menu lists and raises open windows (wireframe 04, scenario S11).
@@ -113,26 +118,41 @@ describe('C1 — Window menu lists and raises open windows (S11)', () => {
     );
 
     // Enumeration: the Window submenu is built from the Workspace window
-    // registry, which now lists all three open windows. Every live window
-    // handle resolves to a registered label.
-    const labels = await openWindowLabels();
-    expect(labels.length).toBe(3);
-    expect(labels).toContain('main');
+    // registry, exposed verbatim by the `list_windows` IPC. We assert on that
+    // IPC because it is the EXACT data the native submenu is constructed from
+    // — the menu itself is a native Tauri menu (not in the DOM), so it cannot
+    // be queried through tauri-wd. `list_windows` now reports all three open
+    // windows, each carrying the `label` that keys its `window-select:<label>`
+    // menu id and the `active_doc_name` that is its display label.
+    const rows = await listWindows();
+    expect(rows.length).toBe(3);
 
-    // Raise: picking a Window-menu entry resolves to `set_focus()` on the
-    // matching WebviewWindow. Pick a window that is NOT main, focus it via
-    // the same primitive the menu click drives, and assert it is raised.
-    const target = labels.find((l) => l !== 'main')!;
-    await switchToWindow('main');
-    await switchToWindow(target);
-    const raised = await browser.executeAsync(function (done: (v: unknown) => void): void {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const cur = (window as any).__TAURI__?.webviewWindow?.getCurrentWebviewWindow?.();
-      if (!cur?.setFocus) { done({ error: 'setFocus missing' }); return; }
-      cur.setFocus()
-        .then(() => cur.isFocused())
-        .then((f: boolean) => done(f), (e: unknown) => done({ error: String(e) }));
-    });
-    expect(raised).toBe(true);
+    const rowLabels = rows.map((r) => r.label);
+    expect(rowLabels).toContain('main');
+
+    // The window we opened gamma.md in (main) surfaces its active-doc-name in
+    // its row — that is the string the Window-menu entry renders.
+    const mainRow = rows.find((r) => r.label === 'main')!;
+    expect(mainRow.active_doc_name).toBe('gamma.md');
+
+    // Every live WebDriver window handle corresponds to a registered row, so
+    // the menu enumerates exactly the open windows with no stragglers/leaks.
+    const liveLabels = await allWindowLabels();
+    expect(liveLabels.length).toBe(3);
+    expect([...rowLabels].sort()).toEqual([...liveLabels].sort());
+
+    // Raise (the second half of S11): picking a Window-menu entry resolves to
+    // Rust's `on_menu_event` parsing the `window-select:<label>` suffix and
+    // calling `set_focus()` on the matching `WebviewWindow`. That path is a
+    // NATIVE menu click + OS window-focus change — neither the native menu
+    // click nor the resulting OS focus raise is observable under a headless
+    // Xvfb WebDriver session (`window.__TAURI__` is undefined because
+    // `withGlobalTauri` is OFF, and WebDriver `switchToWindow` does not move
+    // OS focus). The raise is therefore verified deterministically by the
+    // `menu.rs` / `main.rs` unit tests instead — specifically the
+    // `window-select:<label>` id parse (`window_select_label`) and the
+    // `on_menu_event` set_focus dispatch — not by this e2e gate. This spec
+    // owns the observable half: that every open window is enumerated for the
+    // menu with its active-doc-name.
   });
 });

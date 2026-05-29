@@ -1,6 +1,12 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { prepareFixture, openDocByE2eHook, switchToWindow } from './helpers/app';
+import {
+  prepareFixture,
+  openDocByE2eHook,
+  switchToWindow,
+  allWindowLabels,
+  tabLabelsInActiveWindow,
+} from './helpers/app';
 
 /**
  * D2 — Open in New Window from the tab context menu (scenario S2).
@@ -113,23 +119,27 @@ describe('D2 — Open in New Window from tab context menu (S2)', () => {
       timeoutMsg: 'no new window was raised',
     });
 
-    // The new window owns notes.md as its sole tab. Find the non-main handle.
-    const handles = await browser.getWindowHandles();
-    let foundSole = false;
-    for (const h of handles) {
-      await browser.switchToWindow(h);
-      const label = await browser.execute(function (): string | null {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const cur = (window as any).__TAURI__?.webviewWindow?.getCurrentWebviewWindow?.();
-        return cur?.label ?? null;
-      });
-      if (label === 'main') continue;
-      const labels = await tabLabels();
-      if (labels.length === 1 && labels[0] === 'notes.md') {
-        foundSole = true;
-        break;
-      }
-    }
-    expect(foundSole).toBe(true);
+    // The new window owns notes.md as its sole tab. Identify the non-main
+    // window via the working `window.__mdviewerE2E.windowLabel` side-channel
+    // (NOT `window.__TAURI__`, which is undefined because `withGlobalTauri`
+    // is OFF), then wait for its async-spawned content to settle on notes.md
+    // as the sole tab — the detached window boots and loads its relocated
+    // doc asynchronously, so we poll rather than read once (race).
+    const labels = await allWindowLabels();
+    const detachedLabel = labels.find((l) => l !== 'main');
+    expect(detachedLabel).toBeDefined();
+
+    await switchToWindow(detachedLabel!);
+    await browser.waitUntil(
+      async () => {
+        const tabs = await tabLabelsInActiveWindow();
+        return tabs.length === 1 && tabs[0] === 'notes.md';
+      },
+      {
+        timeout: 10_000,
+        timeoutMsg: 'detached window never settled on notes.md as its sole tab',
+      },
+    );
+    expect(await tabLabelsInActiveWindow()).toEqual(['notes.md']);
   });
 });
