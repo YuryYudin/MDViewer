@@ -125,6 +125,25 @@ export const config: Options.Testrunner = {
   framework: 'mocha',
   mochaOpts: { ui: 'bdd', timeout: 60_000 },
   specs: ['./e2e/**/*.spec.ts'],
+  // SSH specs 21-24 drive a real `ssh` against the local sshd fixture. On the
+  // arm64 macOS CI runner, /usr/bin/ssh is a SIP platform binary and AMFI
+  // denies it exec'ing our ad-hoc-signed `mdviewer-askpass` helper (EACCES:
+  // "ssh_askpass: exec(...): Permission denied" -> "Host key verification
+  // failed" -> ssh exit 255), so the in-app askpass modal never appears. This
+  // is a runner exec-policy quirk, not a product bug, and is unfixable without
+  // a Developer ID signing identity we don't have in PR CI. The same paths are
+  // covered by the Rust SSH integration tests (all 3 OSes) and by this suite on
+  // Linux. Exclude them on macOS only so E2E (macOS) can gate everything else.
+  // Tracking: https://github.com/YuryYudin/MDViewer/issues/20
+  exclude:
+    process.platform === 'darwin'
+      ? [
+          './e2e/21-ssh-open-from-cli.spec.ts',
+          './e2e/22-ssh-open-from-dialog.spec.ts',
+          './e2e/23-ssh-save-back.spec.ts',
+          './e2e/24-ssh-conflict.spec.ts',
+        ]
+      : [],
   reporters: ['spec'],
   // Force sequential execution. Each session shares the same dataDir
   // (MDVIEWER_DATA_DIR), the same Vite port (1420), and the same

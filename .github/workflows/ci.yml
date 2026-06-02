@@ -203,4 +203,8 @@ jobs:
         run: cargo install tauri-webdriver-automation --version 0.1.3 --locked
       - run: npm ci
       - name: Run e2e
+        # SSH specs 21-24 are excluded on macOS in wdio.conf.ts (AMFI denies
+        # /usr/bin/ssh exec'ing the ad-hoc-signed askpass helper; see the note
+        # there). They stay covered by the Rust SSH integration tests on all
+        # three OSes and by this suite on Linux.
         run: npm run test:e2e

@@ -36,6 +36,14 @@ describe('StartPage → click a recent → document mounts', () => {
     );
     // Force a fresh session so the running app re-reads recents.json.
     await browser.reloadSession();
+    // After a session reload the fresh WebView needs a moment before its DOM
+    // is queryable — on the macOS CI runner the first immediate query raced
+    // ahead of the window ("no window" / "no such element"). Wait for the
+    // StartPage to actually mount before any assertion.
+    await browser.waitUntil(async () => browser.$('[data-view="start"]').isExisting(), {
+      timeout: 20_000,
+      timeoutMsg: 'StartPage did not mount after session reload',
+    });
   });
   after(async () => { await fixture.cleanup(); });
 
@@ -43,8 +51,8 @@ describe('StartPage → click a recent → document mounts', () => {
     expect(await browser.$('[data-view="start"]').isExisting()).toBe(true);
 
     // Wireframe-01 fidelity: the StartPage greets by display_name, the
-    // action row holds Open · New · Settings in that order, and each
-    // recent shows filename + ~tilde-path + relative when.
+    // action row holds Open · Open-from-remote · New · Settings in that
+    // order, and each recent shows filename + ~tilde-path + relative when.
     const heading = await browser.$('[data-test="welcome-heading"]').getText();
     expect(heading).toMatch(/Welcome (back, .+|to MDViewer)/);
 
@@ -55,7 +63,12 @@ describe('StartPage → click a recent → document mounts', () => {
         ),
       ).map((b) => b.getAttribute('data-action')),
     );
-    expect(actionAttrs).toEqual(['open-file', 'new-document', 'open-settings']);
+    expect(actionAttrs).toEqual([
+      'open-file',
+      'open-from-remote',
+      'new-document',
+      'open-settings',
+    ]);
 
     const recent = browser.$('[data-test="recent-item"]');
     expect(await recent.isExisting()).toBe(true);
