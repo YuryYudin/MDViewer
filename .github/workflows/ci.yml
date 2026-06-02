@@ -206,15 +206,20 @@ jobs:
         run: npm run build:e2e
       - name: Ensure askpass helper is executable
         # The SSH e2e specs invoke `ssh` with SSH_ASKPASS pointing at the
-        # cargo-built `mdviewer-askpass` (resolved via the app's resource dir).
-        # On the macOS runner that exec was failing with "Permission denied",
-        # which cascaded into the 21-24 SSH specs ("askpass modal never
-        # appeared"). Set the helper +x defensively, and log its path/perms so
-        # any remaining resolution issue is diagnosable from the run log.
+        # cargo-built `mdviewer-askpass`, resolved at runtime via the app's
+        # resource dir to `<workspace-root>/target/debug/mdviewer-askpass`
+        # (root Cargo.toml is the workspace, so `cargo build` from src-tauri/
+        # still writes artifacts to the REPO-ROOT target/, not src-tauri/target/).
+        # On the macOS runner that exec failed with "Permission denied" — the
+        # binary was present but missing the execute bit — which made ssh report
+        # "Host key verification failed" (it couldn't run askpass to confirm the
+        # fixture host key) and exit 255, so the 21-24 SSH specs never reached
+        # the in-app askpass modal. Set +x on the correct path; log perms so any
+        # residual issue is diagnosable.
         run: |
-          ls -la src-tauri/target/debug/mdviewer-askpass || echo "askpass helper not at expected path"
-          chmod +x src-tauri/target/debug/mdviewer-askpass || true
-          ls -la src-tauri/target/debug/mdviewer-askpass || true
+          ls -la target/debug/mdviewer-askpass || echo "askpass helper not at expected path"
+          chmod +x target/debug/mdviewer-askpass || true
+          ls -la target/debug/mdviewer-askpass || true
       - name: Run e2e
         # Run wdio directly to skip pretest:e2e's rebuild (already built above),
         # so the chmod above is not undone by a fresh build step.
