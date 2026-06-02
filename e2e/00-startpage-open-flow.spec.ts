@@ -36,6 +36,14 @@ describe('StartPage → click a recent → document mounts', () => {
     );
     // Force a fresh session so the running app re-reads recents.json.
     await browser.reloadSession();
+    // After a session reload the fresh WebView needs a moment before its DOM
+    // is queryable — on the macOS CI runner the first immediate query raced
+    // ahead of the window ("no window" / "no such element"). Wait for the
+    // StartPage to actually mount before any assertion.
+    await browser.waitUntil(async () => browser.$('[data-view="start"]').isExisting(), {
+      timeout: 20_000,
+      timeoutMsg: 'StartPage did not mount after session reload',
+    });
   });
   after(async () => { await fixture.cleanup(); });
 

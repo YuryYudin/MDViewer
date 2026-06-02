@@ -202,5 +202,20 @@ jobs:
       - name: Install tauri-wd
         run: cargo install tauri-webdriver-automation --version 0.1.3 --locked
       - run: npm ci
+      - name: Build e2e binary (incl. mdviewer-askpass helper)
+        run: npm run build:e2e
+      - name: Ensure askpass helper is executable
+        # The SSH e2e specs invoke `ssh` with SSH_ASKPASS pointing at the
+        # cargo-built `mdviewer-askpass` (resolved via the app's resource dir).
+        # On the macOS runner that exec was failing with "Permission denied",
+        # which cascaded into the 21-24 SSH specs ("askpass modal never
+        # appeared"). Set the helper +x defensively, and log its path/perms so
+        # any remaining resolution issue is diagnosable from the run log.
+        run: |
+          ls -la src-tauri/target/debug/mdviewer-askpass || echo "askpass helper not at expected path"
+          chmod +x src-tauri/target/debug/mdviewer-askpass || true
+          ls -la src-tauri/target/debug/mdviewer-askpass || true
       - name: Run e2e
-        run: npm run test:e2e
+        # Run wdio directly to skip pretest:e2e's rebuild (already built above),
+        # so the chmod above is not undone by a fresh build step.
+        run: npx wdio run wdio.conf.ts
