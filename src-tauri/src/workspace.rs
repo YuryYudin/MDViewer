@@ -426,6 +426,23 @@ pub struct Workspace {
     pub(crate) ssh_tabs: HashMap<String, SshTabState>,
 }
 
+/// Canonicalize a path for tab-lookup comparison, falling back to the path
+/// as-given when canonicalization fails (e.g. the path doesn't exist on disk).
+///
+/// Tab-path lookups must canonicalize BOTH the query and each stored
+/// `Tab.path`. Local-file tabs store a canonical path (`open_document`
+/// canonicalizes on store), but SSH tabs store the raw cache path
+/// un-canonicalized. On Linux `/tmp` is not a symlink so raw == canonical and
+/// raw-to-raw comparison happened to match; on macOS (`/tmp` → `/private/tmp`,
+/// `/var` → `/private/var`) and Windows the raw stored SSH path differs from
+/// `canonicalize(query)`, so a raw comparison MISSED the existing SSH tab and
+/// the one-owner/relocate flow silently failed. Canonicalizing both sides is
+/// idempotent for already-canonical local paths (no behavior change) and fixes
+/// the SSH case without touching how tabs are stored.
+fn canon(p: &Path) -> PathBuf {
+    p.canonicalize().unwrap_or_else(|_| p.to_path_buf())
+}
+
 impl Workspace {
     pub fn new(data_dir: &Path) -> Result<Self> {
         Ok(Self {
@@ -1588,8 +1605,8 @@ impl Workspace {
     /// Matches `open_document`'s canonicalization so the path comparison
     /// lines up with how tabs store their path.
     pub fn open_in_new_window_resolve(&mut self, path: &Path) -> OneOwnerResolution {
-        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        match self.tabs.values().find(|t| t.path == canonical) {
+        let canonical = canon(path);
+        match self.tabs.values().find(|t| canon(&t.path) == canonical) {
             Some(tab) => OneOwnerResolution::Existing {
                 label: tab.window_label.clone(),
                 tab_id: tab.id.clone(),
@@ -1734,9 +1751,10 @@ impl Workspace {
     /// against `Tab.path` as stored (callers should pass a canonicalized
     /// path to match `open_document`'s storage).
     pub fn owning_window_label(&self, path: &Path) -> Option<&str> {
+        let canonical = canon(path);
         self.tabs
             .values()
-            .find(|t| t.path == path)
+            .find(|t| canon(&t.path) == canonical)
             .map(|t| t.window_label.as_str())
     }
 
@@ -1810,9 +1828,10 @@ impl Workspace {
     }
 
     fn find_by_path(&self, p: &Path) -> Option<(String, &Tab)> {
+        let canonical = canon(p);
         self.tabs
             .iter()
-            .find(|(_, t)| t.path == p)
+            .find(|(_, t)| canon(&t.path) == canonical)
             .map(|(id, t)| (id.clone(), t))
     }
 
@@ -3013,6 +3032,70 @@ mod tests {
         assert!(
             ws.ssh_state(&summary.id).is_none(),
             "close_tab must clear the per-tab SSH state",
+        );
+    }
+
+    /// Regression for the macOS/Windows SSH one-owner/relocate miss: a tab
+    /// stored under one form of a path (here the canonical `realdir/doc.md`)
+    /// must be found when the lookup is given a different-but-equivalent form
+    /// (here the symlink `link/doc.md`, which canonicalizes to the same real
+    /// path). On Linux `/tmp` isn't a symlink so the production SSH-cache miss
+    /// never reproduces; this test forces the symlink divergence explicitly so
+    /// the canonicalize-both-sides fix is verifiable on Linux. Before the fix
+    /// `find_by_path` / `owning_window_label` compared raw-to-raw and missed.
+    #[cfg(unix)]
+    #[test]
+    fn lookup_matches_across_symlinked_path_canonicalization() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::new_for_test(dir.path());
+
+        // Real directory holding the doc, plus a sibling symlink to it.
+        let realdir = dir.path().join("realdir");
+        std::fs::create_dir(&realdir).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&realdir, &link).unwrap();
+
+        // Open the doc through the REAL path → tab stored canonically.
+        let real_doc = realdir.join("doc.md");
+        std::fs::write(&real_doc, "# doc").unwrap();
+        let tab_id = match ws
+            .open_document(&real_doc, super::OpenOpts::default())
+            .expect("open_document ok")
+        {
+            super::OpenOutcome::Document(r) => r.tab_id,
+            super::OpenOutcome::Conflict { .. } => panic!("unexpected conflict"),
+        };
+
+        // Query via the SYMLINK form — canonicalizes to realdir/doc.md.
+        let symlink_doc = link.join("doc.md");
+        assert!(
+            symlink_doc.canonicalize().unwrap() == real_doc.canonicalize().unwrap(),
+            "symlink form must canonicalize to the real form for this test to be meaningful",
+        );
+
+        // open_in_new_window_resolve → Existing (same tab).
+        match ws.open_in_new_window_resolve(&symlink_doc) {
+            OneOwnerResolution::Existing { label, tab_id: found } => {
+                assert_eq!(label, MAIN_LABEL);
+                assert_eq!(found, tab_id);
+            }
+            OneOwnerResolution::NeedsNew => {
+                panic!("expected Existing for a symlink-equivalent open path")
+            }
+        }
+
+        // owning_window_label → the owning label.
+        assert_eq!(
+            ws.owning_window_label(&symlink_doc),
+            Some(MAIN_LABEL),
+            "owning_window_label must match across symlink canonicalization",
+        );
+
+        // find_by_path → the same tab id.
+        assert_eq!(
+            ws.find_by_path(&symlink_doc).map(|(id, _)| id),
+            Some(tab_id),
+            "find_by_path must match across symlink canonicalization",
         );
     }
 }
