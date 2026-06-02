@@ -31,6 +31,6 @@ jobs:
         run: tests/scripts/check_coverage_test.sh
       - name: Gate mdviewer-core at 80% line coverage
         run: scripts/check-coverage.sh coverage.lcov 80 crates/mdviewer-core/
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with: { name: coverage-lcov, path: coverage.lcov }
