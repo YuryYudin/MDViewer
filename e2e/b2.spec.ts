@@ -158,14 +158,15 @@ describe('B2 — window isolation + restore positions', () => {
       const heading = await browser.$('[data-view="document"] h1').getText();
       if (heading === 'Beta Document') {
         expect((await tabLabelsInActiveWindow()).sort()).toEqual(['beta.md']);
-        // Geometry survived: the second window's size matches the saved
-        // 900x640 (clamped on-screen, size preserved by clamp_geometry).
-        const size = await browser.execute(function (): { w: number; h: number } {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          return { w: window.outerWidth, h: window.outerHeight };
-        });
-        expect(size.w).toBeGreaterThan(0);
-        expect(size.h).toBeGreaterThan(0);
+        // Geometry restore (saved 900x640, clamped on-screen) is exercised by
+        // the restore loop applying `clamp_geometry` per window, and is verified
+        // at the unit level (session.rs `clamp_geometry` round-trip + the
+        // restore window-mapping). A DOM `window.outerWidth/outerHeight` probe is
+        // NOT a reliable cross-platform signal — a headless macOS CI WebView
+        // reports 0 — so S7's e2e assertion stays on the observable restoration:
+        // both windows reappear with their distinct tab sets and correct active
+        // document. (Previously a brittle `outerWidth > 0` check that passed on
+        // Linux but failed on macOS CI.)
         foundBeta = true;
         break;
       }
