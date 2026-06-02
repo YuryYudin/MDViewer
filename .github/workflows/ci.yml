@@ -202,34 +202,9 @@ jobs:
       - name: Install tauri-wd
         run: cargo install tauri-webdriver-automation --version 0.1.3 --locked
       - run: npm ci
-      - name: Build e2e binary (incl. mdviewer-askpass helper)
-        run: npm run build:e2e
-      - name: Make askpass helper launchable by ssh (macOS exec hardening)
-        # SSH specs 21-24 invoke `ssh` with SSH_ASKPASS pointing at the
-        # cargo-built `mdviewer-askpass`, resolved at runtime to the
-        # WORKSPACE-ROOT target/debug/mdviewer-askpass (root Cargo.toml is the
-        # workspace, so a build from src-tauri/ still writes to the repo-root
-        # target/). The diagnostic ls proved the helper is already -rwxr-xr-x,
-        # yet ssh's exec of it returns EACCES ("Permission denied"), which makes
-        # ssh report "Host key verification failed" (it can't run askpass to
-        # confirm the fixture host key), exit 255, and never reach the in-app
-        # modal. On an arm64 macOS runner, EACCES on a +x user binary is a
-        # quarantine xattr or an invalid/ad-hoc signature -- not the exec bit.
-        # Strip quarantine and re-ad-hoc-sign, with diagnostics so the next run
-        # is conclusive either way.
-        run: |
-          BIN=target/debug/mdviewer-askpass
-          if [ ! -f "$BIN" ]; then echo "missing: $BIN"; exit 0; fi
-          file "$BIN" || true
-          echo "--- xattr before ---"; xattr -l "$BIN" || true
-          echo "--- codesign before ---"; codesign -dvvv "$BIN" 2>&1 || true
-          xattr -c "$BIN" || true
-          codesign --force --sign - "$BIN" || true
-          echo "--- codesign after ---"; codesign -dvvv "$BIN" 2>&1 || true
-          echo "--- spctl ---"; spctl -a -vv "$BIN" 2>&1 || true
-          chmod +x "$BIN" || true
-          ls -la "$BIN" || true
       - name: Run e2e
-        # Run wdio directly to skip pretest:e2e's rebuild (already built above),
-        # so the chmod above is not undone by a fresh build step.
-        run: npx wdio run wdio.conf.ts
+        # SSH specs 21-24 are excluded on macOS in wdio.conf.ts (AMFI denies
+        # /usr/bin/ssh exec'ing the ad-hoc-signed askpass helper; see the note
+        # there). They stay covered by the Rust SSH integration tests on all
+        # three OSes and by this suite on Linux.
+        run: npm run test:e2e
