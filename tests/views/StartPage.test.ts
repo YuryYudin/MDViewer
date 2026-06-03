@@ -1,6 +1,17 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mountStartPage } from '../../src/views/StartPage';
 import type { Ipc } from '../../src/ipc';
+
+// The StartPage open-file handler dynamically `import()`s
+// `@tauri-apps/plugin-dialog`. A per-test `vi.doMock` raced that dynamic
+// import (and intermittently failed to intercept it at all, letting the real
+// plugin run and throw `Cannot read properties of undefined (reading
+// 'invoke')`). A hoisted `vi.mock` reliably intercepts every import of the
+// module for the whole file; each test configures the shared `open` mock's
+// resolved value. The E2E-mode and recents tests never reach this import, so
+// the file-wide mock is inert for them.
+const { dialogOpen } = vi.hoisted(() => ({ dialogOpen: vi.fn() }));
+vi.mock('@tauri-apps/plugin-dialog', () => ({ open: dialogOpen }));
 
 function fakeIpc(recentPaths: string[] = ['/docs/a.md', '/docs/b.md']): Ipc {
   // listRecents now returns RecentEntry[] with optional mtime; tests
@@ -36,6 +47,12 @@ function fakeIpc(recentPaths: string[] = ['/docs/a.md', '/docs/b.md']): Ipc {
 }
 
 describe('StartPage', () => {
+  beforeEach(() => {
+    // Clear the shared dialog mock's history + implementation so the two
+    // dialog tests don't see each other's calls or resolved values.
+    dialogOpen.mockReset();
+  });
+
   it('renders recents and Open / Settings buttons', async () => {
     const root = document.createElement('div');
     const ipc = fakeIpc();
@@ -202,42 +219,32 @@ describe('StartPage', () => {
   });
 
   it('clicking Open out of E2E mode opens the native dialog and forwards the picked path', async () => {
-    // Mock the dynamic import target so the dialog branch is exercised
-    // without needing a real Tauri runtime.
-    vi.doMock('@tauri-apps/plugin-dialog', () => ({
-      open: vi.fn().mockResolvedValue('/picked/path.md'),
-    }));
-    try {
-      const root = document.createElement('div');
-      const ipc = fakeIpc();
-      delete (window as any).__MDVIEWER_E2E;
-      await mountStartPage(root, ipc);
-      (root.querySelector('[data-action="open-file"]') as HTMLButtonElement).click();
-      // Allow the dynamic import + dialog promise chain to resolve.
-      await new Promise((r) => setTimeout(r, 0));
-      await new Promise((r) => setTimeout(r, 0));
-      expect(ipc.openDocument).toHaveBeenCalledWith('/picked/path.md');
-    } finally {
-      vi.doUnmock('@tauri-apps/plugin-dialog');
-    }
+    // The dialog branch is exercised via the hoisted plugin-dialog mock.
+    dialogOpen.mockResolvedValue('/picked/path.md');
+    const root = document.createElement('div');
+    const ipc = fakeIpc();
+    delete (window as any).__MDVIEWER_E2E;
+    await mountStartPage(root, ipc);
+    (root.querySelector('[data-action="open-file"]') as HTMLButtonElement).click();
+    // Poll until the dynamic-import → dialog → openDocument chain completes,
+    // instead of guessing a fixed number of macrotask ticks (the old race).
+    await vi.waitFor(() =>
+      expect(ipc.openDocument).toHaveBeenCalledWith('/picked/path.md'),
+    );
   });
 
   it('clicking Open ignores a cancelled dialog (non-string result)', async () => {
-    vi.doMock('@tauri-apps/plugin-dialog', () => ({
-      open: vi.fn().mockResolvedValue(null),
-    }));
-    try {
-      const root = document.createElement('div');
-      const ipc = fakeIpc();
-      delete (window as any).__MDVIEWER_E2E;
-      await mountStartPage(root, ipc);
-      (root.querySelector('[data-action="open-file"]') as HTMLButtonElement).click();
-      await new Promise((r) => setTimeout(r, 0));
-      await new Promise((r) => setTimeout(r, 0));
-      expect(ipc.openDocument).not.toHaveBeenCalled();
-    } finally {
-      vi.doUnmock('@tauri-apps/plugin-dialog');
-    }
+    dialogOpen.mockResolvedValue(null);
+    const root = document.createElement('div');
+    const ipc = fakeIpc();
+    delete (window as any).__MDVIEWER_E2E;
+    await mountStartPage(root, ipc);
+    (root.querySelector('[data-action="open-file"]') as HTMLButtonElement).click();
+    // Wait until the dialog actually resolved, then let the handler's
+    // string-check continuation settle; only then assert it stayed a no-op.
+    await vi.waitFor(() => expect(dialogOpen).toHaveBeenCalled());
+    await Promise.resolve();
+    expect(ipc.openDocument).not.toHaveBeenCalled();
   });
 
   // B2: the "Open from remote…" button mounts OpenRemoteDialog. The
