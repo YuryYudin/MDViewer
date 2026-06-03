@@ -247,16 +247,22 @@ describe('main()', () => {
   });
 
   it('applies follow_system based on prefers-color-scheme', async () => {
-    const mq = vi.spyOn(window, 'matchMedia').mockImplementation((q) => ({
-      matches: q.includes('dark'),
-      media: q,
-      onchange: null,
-      addListener: vi.fn(),
-      removeListener: vi.fn(),
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-      dispatchEvent: vi.fn(),
-    }));
+    // vitest 4 made vi.spyOn strict — it throws if the target isn't an
+    // existing function, and jsdom doesn't implement window.matchMedia. Stub
+    // it as a fresh global instead (cleared in finally via unstubAllGlobals).
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn((q: string) => ({
+        matches: q.includes('dark'),
+        media: q,
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    );
     try {
       fakeIpc.getSettings.mockResolvedValueOnce(
         settingsWith({
@@ -273,7 +279,7 @@ describe('main()', () => {
       expect(document.body.classList.contains('theme-dark')).toBe(true);
       expect(document.body.classList.contains('theme-follow-system')).toBe(true);
     } finally {
-      mq.mockRestore();
+      vi.unstubAllGlobals();
     }
   });
 

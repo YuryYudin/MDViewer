@@ -12,6 +12,24 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const invoke = vi.fn();
 vi.mock('@tauri-apps/api/core', () => ({ invoke: (...args: unknown[]) => invoke(...args) }));
 
+// onSshAskpassRequest dynamically imports '@tauri-apps/api/event'. Under
+// vitest 4 a per-test vi.doMock can't override that import once an earlier
+// test has cached the real module — and the already-imported adapter is bound
+// to the original module graph, so vi.resetModules doesn't help either. Hoist
+// a single mock whose `listen` delegates to a per-test-swappable impl.
+const eventMock = vi.hoisted(() => ({
+  listen: undefined as undefined | ((...args: any[]) => unknown),
+}));
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: (...args: any[]) => eventMock.listen!(...args),
+}));
+
+// Default: simulate "no Tauri runtime" — listen rejects. The bare-adapter
+// test (no mocked listen) relies on this; the mocked-listen tests override it.
+beforeEach(() => {
+  eventMock.listen = () => Promise.reject(new Error('no tauri runtime'));
+});
+
 import { tauriIpc, type Ipc } from '../src/ipc';
 import type { Anchor, DocPref, Settings } from '../src/ipc';
 
@@ -436,7 +454,7 @@ describe('onSshAskpassRequest (mocked listen)', () => {
       captured = cb;
       return unlistenMock;
     });
-    vi.doMock('@tauri-apps/api/event', () => ({ listen: listenMock }));
+    eventMock.listen = listenMock;
 
     try {
       const handler = vi.fn();
@@ -458,7 +476,7 @@ describe('onSshAskpassRequest (mocked listen)', () => {
       dispose();
       expect(unlistenMock).toHaveBeenCalledTimes(1);
     } finally {
-      vi.doUnmock('@tauri-apps/api/event');
+      eventMock.listen = undefined;
     }
   });
 
@@ -475,7 +493,7 @@ describe('onSshAskpassRequest (mocked listen)', () => {
           resolveListen = res;
         }),
     );
-    vi.doMock('@tauri-apps/api/event', () => ({ listen: listenMock }));
+    eventMock.listen = listenMock;
 
     try {
       const dispose = tauriIpc.onSshAskpassRequest(() => {});
@@ -491,7 +509,7 @@ describe('onSshAskpassRequest (mocked listen)', () => {
       await waitForCondition(() => unlistenMock.mock.calls.length > 0);
       expect(unlistenMock).toHaveBeenCalledTimes(1);
     } finally {
-      vi.doUnmock('@tauri-apps/api/event');
+      eventMock.listen = undefined;
     }
   });
 
@@ -502,7 +520,7 @@ describe('onSshAskpassRequest (mocked listen)', () => {
     // rejection that kills the WebView in production. The catch block in
     // src/ipc.ts is the safety net.
     const listenMock = vi.fn(() => Promise.reject(new Error('listen failed')));
-    vi.doMock('@tauri-apps/api/event', () => ({ listen: listenMock }));
+    eventMock.listen = listenMock;
     try {
       const handler = vi.fn();
       const dispose = tauriIpc.onSshAskpassRequest(handler);
@@ -516,7 +534,7 @@ describe('onSshAskpassRequest (mocked listen)', () => {
       // Handler was never called because listen never resolved.
       expect(handler).not.toHaveBeenCalled();
     } finally {
-      vi.doUnmock('@tauri-apps/api/event');
+      eventMock.listen = undefined;
     }
   });
 
@@ -526,7 +544,7 @@ describe('onSshAskpassRequest (mocked listen)', () => {
     // implementation's first `if (disposed) return` arm guards this —
     // listen() should NEVER be called because we know it'll just leak.
     const listenMock = vi.fn(async () => () => undefined);
-    vi.doMock('@tauri-apps/api/event', () => ({ listen: listenMock }));
+    eventMock.listen = listenMock;
 
     try {
       const dispose = tauriIpc.onSshAskpassRequest(() => {});
@@ -540,7 +558,7 @@ describe('onSshAskpassRequest (mocked listen)', () => {
       await new Promise((r) => setTimeout(r, 50));
       expect(listenMock).not.toHaveBeenCalled();
     } finally {
-      vi.doUnmock('@tauri-apps/api/event');
+      eventMock.listen = undefined;
     }
   });
 });

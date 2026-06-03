@@ -54,10 +54,11 @@ describe('DriveStatus — cancellation + error paths', () => {
     const host = document.createElement('div');
     const dispose = mountDriveStatus(host);
 
-    // Let the dynamic imports inside the two IIFEs resolve so listen() and
-    // invoke('drive_status') get called and their pending promises register.
-    await flushAsync();
-    expect(listenHandles.length).toBe(1);
+    // Poll (real timers) until the listen IIFE's dynamic import resolves and
+    // registers. vitest 4 needs more than a fixed microtask count to settle a
+    // dynamic import(), so a 10-tick flush is no longer enough; vi.waitFor
+    // gives the event loop real time.
+    await vi.waitFor(() => expect(listenHandles.length).toBe(1));
 
     // Trip cancelled=true BEFORE the listen promise resolves so the
     // post-await `if (cancelled) { u(); return; }` branch fires
@@ -66,12 +67,11 @@ describe('DriveStatus — cancellation + error paths', () => {
 
     const unsub = vi.fn();
     listenHandles[0]!.resolve(unsub);
-    await flushAsync();
 
     // The cancellation branch tears the listener down by calling the unsub
-    // returned from listen() — this is the only way we can verify the
-    // branch ran since render() is a no-op when cancelled.
-    expect(unsub).toHaveBeenCalledTimes(1);
+    // returned from listen() — poll until it fires (the post-await guard runs
+    // once the listen promise settles).
+    await vi.waitFor(() => expect(unsub).toHaveBeenCalledTimes(1));
   });
 
   it('skips render() when dispose() runs before driveStatus() resolves', async () => {
@@ -80,17 +80,13 @@ describe('DriveStatus — cancellation + error paths', () => {
     const dispose = mountDriveStatus(host);
 
     // The status-fetch IIFE awaits a dynamic import of '../ipc' before
-    // calling driveStatus(); poll the call list so we don't depend on a
-    // fixed number of microtasks.
-    for (let i = 0; i < 50 && invokeCalls.length === 0; i++) {
-      await flushAsync();
-      await new Promise((r) => setTimeout(r, 0));
-    }
+    // calling driveStatus(); poll (real timers) until that lands so we don't
+    // depend on a fixed number of microtasks (insufficient under vitest 4).
+    await vi.waitFor(() => expect(invokeCalls).toContain('drive_status'));
     // dispose before driveStatus resolves → render() must NOT be called
     // (DriveStatus.ts:76 — `if (!cancelled) render(s);`).
     dispose();
 
-    expect(invokeCalls).toContain('drive_status');
     invokeHandles[invokeCalls.indexOf('drive_status')]!.resolve({
       connected: true,
       account_email: 'late@example.com',
@@ -110,8 +106,7 @@ describe('DriveStatus — cancellation + error paths', () => {
     const host = document.createElement('div');
     const dispose = mountDriveStatus(host);
 
-    await flushAsync();
-    expect(listenHandles.length).toBe(1);
+    await vi.waitFor(() => expect(listenHandles.length).toBe(1));
 
     // Reject the listen promise — the catch in DriveStatus.ts swallows it
     // (covers the catch arm in the listen IIFE for completeness).
