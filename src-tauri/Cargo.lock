@@ -3322,7 +3322,7 @@ dependencies = [
  "tauri-plugin-stronghold",
  "tauri-plugin-webdriver-automation",
  "tempfile",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tiny_http",
  "tokio",
  "toml 0.8.2",

@@ -59,7 +59,7 @@ serde_json = "1"
 # needed here, and listing them would let versions drift between the
 # two crates.
 anyhow = "1"
-thiserror = "1"
+thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ts-rs = "8"
