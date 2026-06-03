@@ -29,10 +29,11 @@ describe('types-generated.ts', () => {
     expect(out).toMatch(/export\s+(type|interface)\s+WindowSummary\b/);
     const ipcTs = fs.readFileSync(path.join(repoRoot, 'src', 'ipc.ts'), 'utf8');
     expect(ipcTs).toContain('WindowSummary');
-    // Re-running the Rust exporter compiles the bin (cold ~40s on CI); raise
-    // the per-test timeout well above vitest 4's 5s default — v2 didn't
-    // enforce it on this synchronous execFileSync, v4 does.
-  }, 120_000);
+    // Re-running the Rust exporter compiles the bin, which can exceed 2 min on
+    // a cold CI runner (observed ~124s). vitest 4 enforces the per-test timeout
+    // on this synchronous execFileSync (v2 did not), so give it generous
+    // headroom — a single-bin cargo build with rust-cache stays well under 5m.
+  }, 300_000);
 
   it('exports BuildInfo as a usable type', () => {
     // BuildInfo is a type, not a runtime value; its compile-time usability is
