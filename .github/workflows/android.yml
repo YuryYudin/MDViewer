@@ -65,7 +65,7 @@ jobs:
             cargo-android-${{ runner.os }}-
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
+        uses: gradle/actions/setup-gradle@v6
 
       - name: Setup Android SDK + NDK
         uses: android-actions/setup-android@v3
@@ -178,7 +178,7 @@ jobs:
             cargo-android-${{ runner.os }}-
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
+        uses: gradle/actions/setup-gradle@v6
 
       - name: Setup Android SDK + NDK
         uses: android-actions/setup-android@v3
@@ -285,7 +285,7 @@ jobs:
             cargo-android-${{ runner.os }}-
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
+        uses: gradle/actions/setup-gradle@v6
 
       - name: Setup Android SDK + NDK
         uses: android-actions/setup-android@v3
