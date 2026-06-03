@@ -425,18 +425,23 @@ describe('Settings', () => {
   it('follow_system theme uses matchMedia when available', async () => {
     const root = document.createElement('div');
     const ipc = makeIpc();
-    const mm = vi.spyOn(window, 'matchMedia').mockImplementation(
-      () =>
-        ({
-          matches: true,
-          media: '(prefers-color-scheme: dark)',
-          addEventListener: () => {},
-          removeEventListener: () => {},
-          addListener: () => {},
-          removeListener: () => {},
-          dispatchEvent: () => false,
-          onchange: null,
-        }) as unknown as MediaQueryList,
+    // vitest 4's vi.spyOn throws on a non-existent target (jsdom has no
+    // matchMedia). Stub it as a global instead; cleared via unstubAllGlobals.
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn(
+        () =>
+          ({
+            matches: true,
+            media: '(prefers-color-scheme: dark)',
+            addEventListener: () => {},
+            removeEventListener: () => {},
+            addListener: () => {},
+            removeListener: () => {},
+            dispatchEvent: () => false,
+            onchange: null,
+          }) as unknown as MediaQueryList,
+      ),
     );
     await mountSettings(root, ipc as any);
     const select = root.querySelector<HTMLSelectElement>('[data-test="theme-select"]')!;
@@ -444,7 +449,7 @@ describe('Settings', () => {
     select.dispatchEvent(new Event('change'));
     expect(document.body.classList.contains('theme-dark')).toBe(true);
     expect(document.body.classList.contains('theme-follow-system')).toBe(true);
-    mm.mockRestore();
+    vi.unstubAllGlobals();
   });
 
   it('falls back to default color when settings.color is empty', async () => {
