@@ -48,7 +48,7 @@ diff-match-patch-rs = "0.4"
 automerge = "0.5"
 base64 = "0.22"
 similar = "2.5"
-ts-rs = "8"
+ts-rs = "12"
 
 # Optional: pulled in only when the `uniffi` feature is on. The runtime
 # (procmacros + ffi support) is gated so desktop builds never see it.
