@@ -68,7 +68,7 @@ notify = "8"
 # base64 + similar are still used directly by drive/keyring.rs and
 # conflict.rs respectively, so they stay listed here.
 base64 = "0.22"
-similar = "2.5"
+similar = "3.1"
 walkdir = "2"
 # A7: the polling loop spawns Tokio tasks via `tauri::async_runtime::spawn`,
 # uses `tokio::sync::Semaphore` to bound concurrent in-flight Drive requests
