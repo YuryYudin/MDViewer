@@ -379,7 +379,7 @@ jobs:
       # draft and tauri-action attaches the desktop bundles to it.
       # `draft: true` keeps the human Publish gate intact.
       - name: Upload signed APK to draft release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           name: 'MDViewer ${{ github.ref_name }}'
