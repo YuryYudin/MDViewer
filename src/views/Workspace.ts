@@ -336,6 +336,13 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
   // Cache the active tab's data the most recent open_document call gave us
   // so refresh() doesn't have to re-open just to re-render.
   const activeTab: { tabId?: string; path?: string; source?: string; threads?: Thread[]; html?: string } = {};
+  // Per-tab render scroll offset. refresh() rebuilds the document subtree on
+  // every tab switch, so the render element resets to scrollTop=0; we stash
+  // each tab's offset here (updated live via Document's onScrollChange) and
+  // restore it on the next mount. Survives refreshes because it lives in the
+  // mount closure; pruned to the live tab set in refresh() so closed/detached
+  // tabs don't linger.
+  const scrollByTab = new Map<string, number>();
   // C2: when the most recent OpenOutcome was a Conflict, refresh() routes
   // to Conflict.ts instead of Document.ts. Cleared when a Document outcome
   // arrives or when the user finishes the merge.
@@ -593,6 +600,11 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
     }
     const summaries = await ipc.listOpenDocuments();
     state.tabs = summaries.map((s) => ({ id: s.id, path: s.path }));
+    // Drop remembered scroll offsets for tabs that are no longer open
+    // (closed or detached to another window).
+    for (const id of [...scrollByTab.keys()]) {
+      if (!state.tabs.some((t) => t.id === id)) scrollByTab.delete(id);
+    }
     // Align state.activeId with Rust's authoritative active tab when the
     // WebView's local cache is empty. This is the session-restore boot
     // path: Rust restored open_tabs + active_tab from session.json, and
@@ -844,13 +856,20 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
     sidebarRoot.addEventListener('thread-replied', refreshThreads);
     sidebarRoot.addEventListener('thread-resolved', refreshThreads);
 
+    const activeTabId = tab.tabId ?? state.activeId!;
     const view = await mountDocument(docRoot, ipc, {
-      tabId: tab.tabId ?? state.activeId!,
+      tabId: activeTabId,
       html: tab.html ?? '',
       threads: tab.threads ?? [],
       source: tab.source,
       path: tab.path,
       settings: settings ?? undefined,
+      // Restore where this tab was last scrolled; keep it current as the user
+      // scrolls so the next switch back lands in the same place.
+      initialScrollTop: scrollByTab.get(activeTabId) ?? 0,
+      onScrollChange: (top) => {
+        scrollByTab.set(activeTabId, top);
+      },
       onOrphansChanged: (orphans) => {
         // Re-mount sidebar when orphan list changes so the orphan
         // section reflects the latest reattachment outcome.

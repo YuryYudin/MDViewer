@@ -30,6 +30,18 @@ export interface DocumentMountArgs {
    * whatever the active tab's effective size is at mount time.
    */
   fontSizePx?: number;
+  /**
+   * Scroll offset (px) to restore on the render region after mount. The
+   * Workspace remembers this per tab so switching tabs returns to where the
+   * reader left off instead of snapping to the top (refresh() rebuilds this
+   * element on every switch). Defaults to 0.
+   */
+  initialScrollTop?: number;
+  /**
+   * Called whenever the render region scrolls, so the Workspace can keep the
+   * per-tab scroll offset current for the next `initialScrollTop`.
+   */
+  onScrollChange?(scrollTop: number): void;
 }
 
 /**
@@ -185,6 +197,26 @@ export async function mountDocument(
   view.appendChild(editRegion);
 
   root.appendChild(view);
+
+  // Per-tab scroll memory. `render` is freshly created on every tab switch
+  // (refresh() rebuilds the document subtree), so without this each switch
+  // snaps to the top. Report scroll changes up to the Workspace, and restore
+  // the saved offset now that `render` is connected. The rAF re-apply lets
+  // layout settle (and survives a synchronous height that isn't final yet);
+  // setting scrollTop fires a 'scroll' event that re-saves the same value,
+  // which is harmless.
+  if (args.onScrollChange) {
+    render.addEventListener('scroll', () => args.onScrollChange!(render.scrollTop), {
+      passive: true,
+    });
+  }
+  const initialScrollTop = args.initialScrollTop ?? 0;
+  if (initialScrollTop > 0) {
+    render.scrollTop = initialScrollTop;
+    requestAnimationFrame(() => {
+      render.scrollTop = initialScrollTop;
+    });
+  }
 
   // Wire SelectionPopover (wireframe-04) so triple-clicking a phrase shows
   // the Comment/Copy buttons. This was a pre-existing integration gap —
