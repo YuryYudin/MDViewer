@@ -113,6 +113,39 @@ fn syntax_highlighting_toggle_on_invokes_syntect() {
 }
 
 #[test]
+fn render_line_breaks_on_emits_br_for_single_newline() {
+    // Two metadata-style lines with only a single newline between them: with
+    // render_line_breaks ON they must NOT be joined into one run — a <br/>
+    // separates them. (The reported "mangled headers" bug.)
+    let src = "**Date:** 2026-06-10\n**Scope:** full-stack\n";
+    let opts = RenderOptions { render_line_breaks: true, ..RenderOptions::default() };
+    let html = render_markdown(src, &opts).html;
+    assert!(
+        html.contains("<br/>"),
+        "expected a <br/> between soft-broken lines, got: {html}"
+    );
+}
+
+#[test]
+fn render_line_breaks_off_keeps_strict_commonmark() {
+    // With render_line_breaks OFF, the single newline is a soft break that
+    // collapses to whitespace — no <br/> — matching strict CommonMark.
+    let src = "**Date:** 2026-06-10\n**Scope:** full-stack\n";
+    let opts = RenderOptions { render_line_breaks: false, ..RenderOptions::default() };
+    let html = render_markdown(src, &opts).html;
+    assert!(
+        !html.contains("<br/>"),
+        "strict CommonMark must not insert <br/> for a soft break: {html}"
+    );
+}
+
+#[test]
+fn render_line_breaks_default_is_on() {
+    // The RenderOptions default opts into note-style line breaks.
+    assert!(RenderOptions::default().render_line_breaks);
+}
+
+#[test]
 fn mermaid_passthrough_when_enabled() {
     let src = "```mermaid\ngraph TD; A-->B;\n```\n";
     let opts = RenderOptions { mermaid_enabled: true, ..RenderOptions::default() };
@@ -181,14 +214,19 @@ fn offsets_round_trip_property() {
 #[test]
 fn renders_headings_blockquote_breaks_and_rules() {
     let src = "# H1\n\n## H2\n\n> a quote\n\nline one  \nline two\n\nfirst\nsecond\n\n---\n";
-    let html = render_markdown(src, &RenderOptions::default()).html;
+    // Pin the STRICT-CommonMark distinction here: a hard break (two trailing
+    // spaces) is <br/>, a soft break (bare newline) is a literal '\n'. The
+    // note-style soft-break-as-<br/> path is covered by
+    // render_line_breaks_on_emits_br_for_single_newline.
+    let opts = RenderOptions { render_line_breaks: false, ..RenderOptions::default() };
+    let html = render_markdown(src, &opts).html;
     assert!(html.contains("<h1>"), "missing <h1>: {html}");
     assert!(html.contains("</h1>"), "missing </h1>: {html}");
     assert!(html.contains("<h2>") && html.contains("</h2>"), "missing <h2>: {html}");
     assert!(html.contains("<blockquote>") && html.contains("</blockquote>"), "blockquote: {html}");
     assert!(html.contains("<br/>"), "missing hard break: {html}");
     // Soft break inside a paragraph emits a literal newline between the two
-    // text spans (no <br/>, no extra <p>).
+    // text spans (no <br/>, no extra <p>) when render_line_breaks is off.
     assert!(
         html.contains("first</span>\n<span"),
         "missing soft break newline between spans: {html}"

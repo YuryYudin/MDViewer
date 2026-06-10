@@ -372,6 +372,20 @@ function buildEditor(ipc: Ipc, settings: Settings): HTMLElement {
     void ipc.setSettings(settings);
   });
 
+  // Render single line breaks (soft break -> <br>) — note-style markdown. On
+  // by default; turning it off restores strict CommonMark (single newlines
+  // collapse to spaces, joining hard-wrapped prose into one paragraph).
+  const breaks = labeledCheckbox(
+    'Render single line breaks',
+    settings.editor.render_line_breaks,
+    { 'data-test': 'render-line-breaks' },
+  );
+  s.appendChild(breaks.row);
+  breaks.input.addEventListener('change', () => {
+    settings.editor.render_line_breaks = breaks.input.checked;
+    void ipc.setSettings(settings);
+  });
+
   return s;
 }
 

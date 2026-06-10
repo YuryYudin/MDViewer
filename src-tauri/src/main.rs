@@ -346,8 +346,20 @@ fn persist_sidecar(
 }
 
 #[tauri::command]
-fn render_markdown(source: String) -> RenderResult {
-    document::render_markdown(&source, &RenderOptions::default())
+fn render_markdown(source: String, state: State<'_, Ws>) -> RenderResult {
+    // Honor the user's editor render settings (matches the Workspace open
+    // path). Previously this stand-alone command used RenderOptions::default(),
+    // ignoring syntax_highlighting / mermaid_enabled / render_line_breaks — so
+    // edit-mode live preview could render differently from the opened document.
+    let s = state.lock().unwrap().settings_store().get();
+    document::render_markdown(
+        &source,
+        &RenderOptions {
+            syntax_highlighting: s.editor.syntax_highlighting,
+            mermaid_enabled: s.editor.mermaid_enabled,
+            render_line_breaks: s.editor.render_line_breaks,
+        },
+    )
 }
 
 /// B2: rewritten save_document handler. Takes `(tab_id, body)` and

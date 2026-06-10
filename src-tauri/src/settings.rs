@@ -160,6 +160,14 @@ pub struct EditorSettings {
     pub mermaid_enabled: bool,
     pub show_whitespace: bool,
     pub word_wrap: bool,
+    /// When true, a single newline within a paragraph renders as a line break
+    /// (`<br>`) instead of collapsing to a space — the note-style markdown
+    /// behavior (Obsidian/Typora) most viewers expect. When false, strict
+    /// CommonMark paragraph-joining applies. `serde(default = ...)` keeps
+    /// legacy settings.toml files (written before this key existed) loading
+    /// cleanly; defaults to true.
+    #[serde(default = "default_render_line_breaks")]
+    pub render_line_breaks: bool,
     /// SSH autosave knobs. Lives in its own sub-struct so users can disable
     /// SSH autosave without affecting local autosave (Decision 6 — a 50 MB
     /// markdown over a tethered hotspot shouldn't force you to choose
@@ -200,6 +208,11 @@ fn default_ssh_interval_ms() -> u32 {
     60_000
 }
 fn default_ssh_enabled() -> bool {
+    true
+}
+/// serde default for `EditorSettings::render_line_breaks` — note-style line
+/// breaks are on by default (see the field doc).
+fn default_render_line_breaks() -> bool {
     true
 }
 
@@ -376,6 +389,7 @@ impl Default for Settings {
                 mermaid_enabled: true,
                 show_whitespace: false,
                 word_wrap: true,
+                render_line_breaks: true,
                 autosave: AutosaveSettings::default(),
             },
             comments: CommentsSettings {

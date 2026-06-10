@@ -18,6 +18,9 @@ fn render_pin_byte_identical_to_fixture() {
     let opts = RenderOptions {
         syntax_highlighting: true,
         mermaid_enabled: false,
+        // Keep strict-CommonMark soft breaks so the byte-identical fixture
+        // (render_pin_expected.html) stays valid without regeneration.
+        render_line_breaks: false,
     };
     let result = render_markdown(FIXTURE, &opts);
     assert_eq!(result.html.trim(), EXPECTED.trim());
