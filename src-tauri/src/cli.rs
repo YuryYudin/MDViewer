@@ -35,6 +35,13 @@
 //!   Local branch so the user gets a familiar "file not found" toast
 //!   rather than silent dropping. (The Workspace surfaces that error
 //!   from `open_document`.)
+//! * scp-style `[user@]host:path` args (e.g. `kubuntu:Work/notes.md`) are
+//!   recognized via scp's own rule — a `:` before any `/` denotes
+//!   `host:path` — and parsed via `mdviewer_core::ssh_url::parse_scp`. A
+//!   relative remote path is home-relative (`host:rel` == `~/rel`), matching
+//!   scp/ssh. A `:` after a `/` (a local path) or a Windows drive letter
+//!   (`C:\…`) is NOT treated as scp-style. Malformed scp-style args fall
+//!   through to Local like malformed ssh:// ones.
 //! * Every other surviving arg yields `OpenTarget::Local(canonical_or_raw)`.
 //!   Existing paths are canonicalized; non-existent paths round-trip
 //!   unchanged — the Workspace will report "no such file" when it tries
@@ -174,9 +181,51 @@ fn classify_arg(arg: &str) -> OpenTarget {
         }
         // Fall through: treat malformed ssh:// argv as a Local path so
         // the normal "file not found" toast surfaces from Workspace.
+    } else if is_scp_like(arg) {
+        if let Ok(url) = ssh_url::parse_scp(arg) {
+            return OpenTarget::Ssh(url);
+        }
+        // Fall through to Local on a malformed scp-style arg, same as ssh://.
     }
     let p = PathBuf::from(arg);
     OpenTarget::Local(p.canonicalize().unwrap_or(p))
+}
+
+/// Decide whether `arg` is an scp-style `[user@]host:path` remote target,
+/// using scp's own rule: a `:` that appears before any `/` denotes
+/// `host:path`. A `:` that comes after a `/` (e.g. `./a:b`, `/tmp/x:y`) is part
+/// of a local path and is left alone.
+///
+/// Guards:
+/// - a single ASCII-letter segment before the colon followed by `/` or `\`
+///   (e.g. `C:\dir`, `C:/dir`) is a Windows drive letter, not an scp host;
+/// - the host (after an optional `user@`) must be non-empty and the path part
+///   after the colon must be non-empty.
+///
+/// `ssh://...` is handled by the caller before this is reached, so the `//`
+/// after its scheme colon never trips the "colon before slash" test here.
+fn is_scp_like(arg: &str) -> bool {
+    let Some(colon) = arg.find(':') else {
+        return false;
+    };
+    let (before, after) = (&arg[..colon], &arg[colon + 1..]);
+    // A '/' before the colon means the colon belongs to a local path.
+    if before.contains('/') {
+        return false;
+    }
+    if after.is_empty() {
+        return false;
+    }
+    // Windows drive letter: single ASCII letter + separator.
+    if before.len() == 1
+        && before.chars().all(|c| c.is_ascii_alphabetic())
+        && (after.starts_with('/') || after.starts_with('\\'))
+    {
+        return false;
+    }
+    // Host is everything after an optional `user@`; it must be non-empty.
+    let host = before.rsplit('@').next().unwrap_or("");
+    !host.is_empty()
 }
 
 #[cfg(test)]
@@ -407,6 +456,62 @@ mod tests {
         match &parsed.targets[0] {
             OpenTarget::Local(_) => {}
             OpenTarget::Ssh(_) => panic!("malformed ssh URL must not classify as Ssh"),
+        }
+    }
+
+    #[test]
+    fn classifies_scp_style_relative_as_ssh_variant() {
+        // The reported bug: `mdviewer kubuntu:Work/...` must route through
+        // SSH, not be treated as a local file. The relative remote path is
+        // home-relative (scp `host:rel` == `~/rel`), so it's stored without a
+        // leading slash for the transport to resolve against $HOME.
+        let parsed = parse_positional_args(&argv(&[
+            "mdviewer",
+            "kubuntu:Work/Pocket/Rust/PockeoR/docs/analysis/file.md",
+        ]));
+        assert_eq!(parsed.targets.len(), 1);
+        let url = as_ssh(&parsed.targets[0]);
+        assert_eq!(url.user, None);
+        assert_eq!(url.host, "kubuntu");
+        assert_eq!(url.port, 22);
+        assert_eq!(url.path, "Work/Pocket/Rust/PockeoR/docs/analysis/file.md");
+    }
+
+    #[test]
+    fn classifies_scp_style_with_user_and_absolute_path() {
+        let parsed = parse_positional_args(&argv(&["mdviewer", "alice@host:/var/data/x.md"]));
+        assert_eq!(parsed.targets.len(), 1);
+        let url = as_ssh(&parsed.targets[0]);
+        assert_eq!(url.user.as_deref(), Some("alice"));
+        assert_eq!(url.host, "host");
+        assert_eq!(url.path, "/var/data/x.md");
+    }
+
+    #[test]
+    fn local_path_with_colon_after_slash_stays_local() {
+        // `./weird:name.md` and `/tmp/a:b.md` have their colon AFTER a slash —
+        // scp's rule says that's a local path, not host:path.
+        let parsed = parse_positional_args(&argv(&[
+            "mdviewer",
+            "/tmp/has:colon.md",
+            "./rel/has:colon.md",
+        ]));
+        assert_eq!(parsed.targets.len(), 2);
+        as_local(&parsed.targets[0]);
+        as_local(&parsed.targets[1]);
+    }
+
+    #[test]
+    fn windows_drive_letter_stays_local() {
+        // `C:\dir\file.md` (and the forward-slash variant) is a Windows drive
+        // path, NOT scp `host=C, path=\dir...`.
+        for arg in ["C:\\Users\\me\\notes.md", "C:/Users/me/notes.md"] {
+            let parsed = parse_positional_args(&argv(&["mdviewer", arg]));
+            assert_eq!(parsed.targets.len(), 1);
+            match &parsed.targets[0] {
+                OpenTarget::Local(_) => {}
+                OpenTarget::Ssh(_) => panic!("Windows drive path must not classify as Ssh: {arg}"),
+            }
         }
     }
 

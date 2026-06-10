@@ -9,11 +9,18 @@
 //! - scheme must be exactly `ssh://`
 //! - host must be non-empty
 //! - port must be a valid `u16` (defaults to 22 when omitted)
-//! - path must be absolute (start with `/`) AND non-empty beyond the leading
-//!   slash; bare `ssh://host/` is rejected because every consumer wants a
-//!   real path
+//! - path is normally absolute (start with `/`) AND non-empty beyond the
+//!   leading slash; bare `ssh://host/` is rejected because every consumer
+//!   wants a real path
+//! - the `/~/rel` path form is **home-relative** (scp `host:rel` semantics):
+//!   it is stored without a leading slash and the transport resolves it
+//!   against the remote login `$HOME`. `SshUrl::path` is therefore absolute
+//!   iff it starts with `/`; otherwise it is home-relative.
 //! - query strings (`?...`) and fragments (`#...`) are rejected outright
 //! - IPv6 literals are accepted in bracketed form: `[2001:db8::1]:port`
+//!
+//! [`parse_scp`] accepts the scp-style `[user@]host:path` form used on the
+//! command line (`mdviewer kubuntu:Work/notes.md`).
 
 use std::fmt;
 
@@ -58,6 +65,19 @@ pub fn parse(input: &str) -> Result<SshUrl, ParseError> {
     if path == "/" {
         return Err(ParseError::RelativePath);
     }
+
+    // Home-relative form: `ssh://host/~/rel` denotes a path resolved against
+    // the remote login home (the scp `host:rel` convention). Store it WITHOUT
+    // a leading slash — the transport resolves a relative path against the
+    // login `$HOME` (Unix runs the remote `cat` from the home CWD; SFTP
+    // resolves relative paths against the default dir). `ssh://host/~` and
+    // `ssh://host/~/` carry no actual file and are rejected.
+    let path = match path.strip_prefix("/~/") {
+        Some(rel) if !rel.is_empty() => rel.to_string(),
+        Some(_) => return Err(ParseError::RelativePath),
+        None if path == "/~" => return Err(ParseError::RelativePath),
+        None => path,
+    };
 
     let (user, hostport) = match authority.split_once('@') {
         Some((u, hp)) => (Some(u.to_string()), hp),
@@ -115,8 +135,53 @@ impl fmt::Display for SshUrl {
         if self.port != 22 {
             write!(f, ":{}", self.port)?;
         }
-        write!(f, "{}", self.path)
+        // Absolute paths emit verbatim; home-relative paths (no leading slash)
+        // round-trip through the `/~/` marker that `parse` recognizes.
+        if self.path.starts_with('/') {
+            write!(f, "{}", self.path)
+        } else {
+            write!(f, "/~/{}", self.path)
+        }
     }
+}
+
+/// Parse an scp-style `[user@]host:path` target into an [`SshUrl`].
+///
+/// Mirrors scp/ssh path semantics: a **relative** `path` (no leading `/`) is
+/// resolved against the remote login home (`host:rel` == `~/rel`) and is stored
+/// verbatim without a leading slash; `host:/abs` is an absolute remote path.
+/// The transport resolves a relative path against `$HOME`.
+///
+/// scp-style targets carry no inline port (ssh uses `-p` / `~/.ssh/config`), so
+/// the port defaults to 22 — and because the Unix transport omits `-p 22`, a
+/// per-host port from the user's ssh config still applies. Bracketed IPv6
+/// literals are rejected here; use the `ssh://[::1]/path` form for those.
+pub fn parse_scp(input: &str) -> Result<SshUrl, ParseError> {
+    let (authority, path) = input
+        .split_once(':')
+        .ok_or(ParseError::Malformed("not scp-style host:path"))?;
+    if authority.starts_with('[') {
+        return Err(ParseError::Malformed("use ssh:// for IPv6 literals"));
+    }
+    if path.is_empty() {
+        return Err(ParseError::RelativePath);
+    }
+    if path.contains('?') || path.contains('#') {
+        return Err(ParseError::QueryOrFragment);
+    }
+    let (user, host) = match authority.split_once('@') {
+        Some((u, h)) => (Some(u.to_string()), h),
+        None => (None, authority),
+    };
+    if host.is_empty() {
+        return Err(ParseError::EmptyHost);
+    }
+    Ok(SshUrl {
+        user: user.filter(|u| !u.is_empty()),
+        host: host.to_string(),
+        port: 22,
+        path: path.to_string(),
+    })
 }
 
 /// Apply the user's `comments.sidecar_pattern` (e.g. `"{name}.comments.json"`)
@@ -130,7 +195,10 @@ impl fmt::Display for SshUrl {
 pub fn sidecar_url(url: &SshUrl, pattern: &str) -> SshUrl {
     let (parent, file) = match url.path.rfind('/') {
         Some(i) => (&url.path[..=i], &url.path[i + 1..]),
-        None => ("/", url.path.as_str()),
+        // No slash at all: a home-relative single-segment path (e.g. `foo.md`).
+        // Keep the sidecar relative too — an empty parent, NOT `/` (which would
+        // wrongly turn `foo.md` into an absolute `/foo.comments.json`).
+        None => ("", url.path.as_str()),
     };
     let name = file.rsplit_once('.').map(|(n, _)| n).unwrap_or(file);
     let sidecar_name = pattern.replace("{name}", name);
@@ -329,12 +397,11 @@ mod tests {
     }
 
     #[test]
-    fn sidecar_url_pathless_struct_defensive_branch() {
-        // `parse()` always produces an absolute path so this branch is
-        // unreachable through the public surface. `SshUrl` is `pub` with
-        // `pub` fields though, so a caller could construct one by hand.
-        // Cover the defensive arm so a future refactor that drops it has
-        // to acknowledge the contract change.
+    fn sidecar_url_home_relative_single_segment() {
+        // A home-relative single-segment path (`file.md`, from scp `host:file.md`)
+        // must keep its sidecar relative too — NOT promote it to an absolute
+        // `/file.comments.json`, which would resolve against the remote root
+        // instead of the login home.
         let u = SshUrl {
             user: None,
             host: "host".to_string(),
@@ -342,7 +409,119 @@ mod tests {
             path: "file.md".to_string(),
         };
         let s = sidecar_url(&u, "{name}.comments.json");
-        assert_eq!(s.path, "/file.comments.json");
+        assert_eq!(s.path, "file.comments.json");
+    }
+
+    #[test]
+    fn sidecar_url_home_relative_nested() {
+        // A nested home-relative path keeps its relative parent.
+        let u = SshUrl {
+            user: None,
+            host: "host".to_string(),
+            port: 22,
+            path: "Work/report.md".to_string(),
+        };
+        let s = sidecar_url(&u, "{name}.comments.json");
+        assert_eq!(s.path, "Work/report.comments.json");
+    }
+
+    // --- home-relative (`/~/`) parse + round-trip ---
+
+    #[test]
+    fn parses_home_relative_path() {
+        let u = parse("ssh://kubuntu/~/Work/notes.md").unwrap();
+        assert_eq!(u.host, "kubuntu");
+        // Stored WITHOUT a leading slash — the transport resolves it against $HOME.
+        assert_eq!(u.path, "Work/notes.md");
+    }
+
+    #[test]
+    fn home_relative_round_trips_through_display() {
+        let u = parse("ssh://kubuntu/~/Work/notes.md").unwrap();
+        assert_eq!(u.to_string(), "ssh://kubuntu/~/Work/notes.md");
+        // And the Display output re-parses to the identical struct.
+        assert_eq!(parse(&u.to_string()).unwrap(), u);
+    }
+
+    #[test]
+    fn home_relative_empty_is_rejected() {
+        assert_eq!(parse("ssh://host/~"), Err(ParseError::RelativePath));
+        assert_eq!(parse("ssh://host/~/"), Err(ParseError::RelativePath));
+    }
+
+    #[test]
+    fn absolute_path_not_treated_as_home_relative() {
+        // A real file named `~weird` at root stays absolute (only `/~/` marks
+        // home-relative).
+        let u = parse("ssh://host/~weird.md").unwrap();
+        assert_eq!(u.path, "/~weird.md");
+    }
+
+    // --- parse_scp (scp-style `[user@]host:path`) ---
+
+    #[test]
+    fn parse_scp_relative_path_is_home_relative() {
+        let u = parse_scp("kubuntu:Work/Pocket/notes.md").unwrap();
+        assert_eq!(u.user, None);
+        assert_eq!(u.host, "kubuntu");
+        assert_eq!(u.port, 22);
+        // Relative remote path preserved verbatim (home-relative).
+        assert_eq!(u.path, "Work/Pocket/notes.md");
+    }
+
+    #[test]
+    fn parse_scp_absolute_path_preserved() {
+        let u = parse_scp("kubuntu:/var/data/notes.md").unwrap();
+        assert_eq!(u.path, "/var/data/notes.md");
+    }
+
+    #[test]
+    fn parse_scp_with_user() {
+        let u = parse_scp("alice@host:Work/x.md").unwrap();
+        assert_eq!(u.user.as_deref(), Some("alice"));
+        assert_eq!(u.host, "host");
+        assert_eq!(u.path, "Work/x.md");
+    }
+
+    #[test]
+    fn parse_scp_single_segment() {
+        let u = parse_scp("host:notes.md").unwrap();
+        assert_eq!(u.host, "host");
+        assert_eq!(u.path, "notes.md");
+    }
+
+    #[test]
+    fn parse_scp_rejects_missing_colon() {
+        assert!(matches!(
+            parse_scp("just-a-host"),
+            Err(ParseError::Malformed(_))
+        ));
+    }
+
+    #[test]
+    fn parse_scp_rejects_empty_path() {
+        assert_eq!(parse_scp("host:"), Err(ParseError::RelativePath));
+    }
+
+    #[test]
+    fn parse_scp_rejects_empty_host() {
+        assert_eq!(parse_scp(":Work/x.md"), Err(ParseError::EmptyHost));
+    }
+
+    #[test]
+    fn parse_scp_ipv6_directs_to_ssh_scheme() {
+        assert!(matches!(
+            parse_scp("[2001:db8::1]:Work/x.md"),
+            Err(ParseError::Malformed(_))
+        ));
+    }
+
+    #[test]
+    fn parse_scp_relative_round_trips_through_ssh_form() {
+        // scp-style relative → SshUrl → `ssh://host/~/...` → parse → identical.
+        let scp = parse_scp("kubuntu:Work/notes.md").unwrap();
+        assert_eq!(scp.to_string(), "ssh://kubuntu/~/Work/notes.md");
+        assert_eq!(parse(&scp.to_string()).unwrap(), scp);
     }
 
     // --- Display ---
