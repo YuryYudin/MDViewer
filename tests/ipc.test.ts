@@ -47,6 +47,7 @@ const dummySettings: Settings = {
     mermaid_enabled: true,
     show_whitespace: false,
     word_wrap: true,
+    render_line_breaks: true,
   },
   comments: {
     auto_merge: 'ask',

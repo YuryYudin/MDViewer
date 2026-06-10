@@ -681,6 +681,7 @@ impl Workspace {
         let opts = RenderOptions {
             syntax_highlighting: s.editor.syntax_highlighting,
             mermaid_enabled: s.editor.mermaid_enabled,
+            render_line_breaks: s.editor.render_line_breaks,
         };
         let render = render_markdown(&source, &opts);
 
@@ -795,6 +796,7 @@ impl Workspace {
         let opts = RenderOptions {
             syntax_highlighting: s.editor.syntax_highlighting,
             mermaid_enabled: s.editor.mermaid_enabled,
+            render_line_breaks: s.editor.render_line_breaks,
         };
         let render = render_markdown(&source, &opts);
 
@@ -1418,6 +1420,7 @@ impl Workspace {
         let opts = RenderOptions {
             syntax_highlighting: s.editor.syntax_highlighting,
             mermaid_enabled: s.editor.mermaid_enabled,
+            render_line_breaks: s.editor.render_line_breaks,
         };
         let render = render_markdown(&source, &opts);
 
@@ -1492,6 +1495,7 @@ impl Workspace {
         let opts = RenderOptions {
             syntax_highlighting: s.editor.syntax_highlighting,
             mermaid_enabled: s.editor.mermaid_enabled,
+            render_line_breaks: s.editor.render_line_breaks,
         };
         let render = render_markdown(&source, &opts);
         let tab = self
@@ -2175,6 +2179,7 @@ impl Workspace {
             &RenderOptions {
                 syntax_highlighting: false,
                 mermaid_enabled: false,
+                render_line_breaks: false,
             },
         );
         self.tabs.insert(
@@ -2536,6 +2541,7 @@ mod tests {
             mermaid_enabled: false,
             show_whitespace: false,
             word_wrap: true,
+            render_line_breaks: true,
             autosave: crate::settings::AutosaveSettings {
                 ssh_interval_ms: 30_000,
                 ssh_enabled: false,

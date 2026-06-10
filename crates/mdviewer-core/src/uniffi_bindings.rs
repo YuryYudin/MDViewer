@@ -737,6 +737,7 @@ mod tests {
             RenderOptions {
                 syntax_highlighting: false,
                 mermaid_enabled: false,
+                render_line_breaks: false,
             },
         )
         .expect("render");

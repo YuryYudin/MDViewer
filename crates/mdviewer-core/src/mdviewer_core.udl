@@ -60,6 +60,10 @@ namespace mdviewer_core {
 dictionary RenderOptions {
     boolean syntax_highlighting;
     boolean mermaid_enabled;
+    // Single newline -> <br>. Defaulted so existing Kotlin callers (which pass
+    // only the first two fields) keep compiling; Android stays strict-CommonMark
+    // until it grows its own toggle. Desktop sets this from EditorSettings.
+    boolean render_line_breaks = false;
 };
 
 dictionary RenderResult {

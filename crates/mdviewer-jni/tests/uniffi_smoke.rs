@@ -18,6 +18,7 @@ fn render_via_core_returns_html() {
         &RenderOptions {
             syntax_highlighting: false,
             mermaid_enabled: false,
+            render_line_breaks: false,
         },
     );
     assert!(
@@ -68,6 +69,7 @@ fn uniffi_render_markdown_wrapper_returns_html() {
         RenderOptions {
             syntax_highlighting: false,
             mermaid_enabled: false,
+            render_line_breaks: false,
         },
     )
     .expect("render_markdown wrapper should succeed");

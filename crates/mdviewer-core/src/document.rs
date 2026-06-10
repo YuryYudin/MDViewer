@@ -39,6 +39,11 @@ use syntect::util::LinesWithEndings;
 pub struct RenderOptions {
     pub syntax_highlighting: bool,
     pub mermaid_enabled: bool,
+    /// When true, a single newline within a paragraph (a CommonMark *soft
+    /// break*) renders as a `<br/>` line break instead of collapsing to a
+    /// space. Matches note-style markdown viewers (Obsidian/Typora); when
+    /// false the strict-CommonMark behavior (soft break → space) is kept.
+    pub render_line_breaks: bool,
 }
 
 impl Default for RenderOptions {
@@ -46,6 +51,7 @@ impl Default for RenderOptions {
         Self {
             syntax_highlighting: true,
             mermaid_enabled: true,
+            render_line_breaks: true,
         }
     }
 }
@@ -169,7 +175,15 @@ pub fn render_markdown(source: &str, opts: &RenderOptions) -> RenderResult {
             }
             Event::Start(tag) => emit_open(&mut html, &tag),
             Event::End(tag) => emit_close(&mut html, tag),
-            Event::SoftBreak => html.push('\n'),
+            Event::SoftBreak => {
+                // A single source newline: render as a real line break when the
+                // user opts in (note-style), else the CommonMark space-collapse.
+                if opts.render_line_breaks {
+                    html.push_str("<br/>");
+                } else {
+                    html.push('\n');
+                }
+            }
             Event::HardBreak => html.push_str("<br/>"),
             Event::Rule => html.push_str("<hr/>"),
             Event::TaskListMarker(checked) => {
