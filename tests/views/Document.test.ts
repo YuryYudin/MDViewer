@@ -88,6 +88,32 @@ describe('Document', () => {
     expect(offsets).toEqual({ start: 0, end: 5, exact: 'Hello' });
   });
 
+  it('restores initialScrollTop and reports scroll changes via onScrollChange', async () => {
+    const root = makeRoot();
+    const changes: number[] = [];
+    await mountDocument(root, ipc(), {
+      tabId: 't',
+      html,
+      threads: [],
+      initialScrollTop: 137,
+      onScrollChange: (top) => changes.push(top),
+    });
+    const render = root.querySelector('[data-region="render"]') as HTMLElement;
+    // Restore applied on mount (so a tab switch returns to where the reader was).
+    expect(render.scrollTop).toBe(137);
+    // Subsequent scrolls are reported up so the Workspace keeps the offset current.
+    render.scrollTop = 260;
+    render.dispatchEvent(new Event('scroll'));
+    expect(changes).toContain(260);
+  });
+
+  it('defaults to top (scrollTop 0) when no initialScrollTop is given', async () => {
+    const root = makeRoot();
+    await mountDocument(root, ipc(), { tabId: 't', html, threads: [] });
+    const render = root.querySelector('[data-region="render"]') as HTMLElement;
+    expect(render.scrollTop).toBe(0);
+  });
+
   // Regression guard for the orphan-on-long-selection bug. The anchor's
   // `exact` must be derived from the source markdown bytes between `start`
   // and `end` — not from `sel.toString()`, which returns rendered text
