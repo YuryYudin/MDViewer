@@ -81,6 +81,18 @@
   background: var(--surface-2);
   font-weight: 600;
   text-align: center;
+  /* Header labels are short — never wrap them. Without this, `table-layout:
+   * auto` under width pressure breaks headers like "Status (06-…)" onto two
+   * lines. */
+  white-space: nowrap;
+}
+/* The first column is almost always a key/ID (e.g. `AF-001`). Auto table
+ * layout, when squeezed by long prose / unbreakable file-path columns, shrank
+ * it below its content and broke the IDs at the `-`. Keep the first column on
+ * one line so it sizes to its content; the remaining columns still wrap, and
+ * the render region scrolls horizontally if the whole table overflows. */
+[data-region='render'] td:first-child {
+  white-space: nowrap;
 }
 /* Zebra striping for body rows — matches GitHub's alternating-row look so
  * wide tables stay scannable. Even rows pick up --surface-2; odd rows
