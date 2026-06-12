@@ -141,6 +141,113 @@ async fn open_save_back_round_trip() {
     assert_eq!(after_conflict, oob, "no push happens on Conflict");
 }
 
+/// SSH collaborative-commenting round-trip against a real sshd: a comment added
+/// to a remote document is pushed as a sidecar NEXT TO the remote file, and a
+/// fresh client pulls it back. Proves comments are saved near the document over
+/// ssh (the gap this feature closes), not kept only on the authoring machine.
+#[cfg(unix)]
+#[tokio::test]
+#[serial]
+async fn comment_sidecar_round_trips_next_to_remote_doc() {
+    if !sshd_available() {
+        eprintln!("skipping: /usr/sbin/sshd missing");
+        return;
+    }
+    let fixture = match start_fixture().await {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("skipping: ssh fixture failed to start ({e})");
+            return;
+        }
+    };
+
+    let scratch = tempfile::tempdir().expect("scratch tmpdir");
+    let target = scratch.path().join("report.md");
+    std::fs::write(&target, b"# report\n").expect("seed doc");
+
+    let key_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/ssh/id_test");
+    std::env::set_var("MDVIEWER_TEST_SSH_IDENTITY", &key_path);
+    std::env::set_var("MDVIEWER_TEST_SSH_PORT", fixture.port.to_string());
+
+    let target_path = target.to_str().expect("UTF-8 path");
+    let url = ssh_url::parse(&format!(
+        "ssh://{}@127.0.0.1:{}{}",
+        current_username(),
+        fixture.port,
+        target_path,
+    ))
+    .expect("parse url");
+
+    let transport = Arc::new(UnixTransport::new_with_test_identity());
+    let ops = Operations::new(transport.clone(), scratch.path().join("cache"));
+
+    // Open the remote doc — no sidecar exists yet.
+    ops.open_url(&url).await.expect("open_url");
+
+    // Build a local sidecar carrying one comment, then push it over ssh.
+    let pattern = "{name}.comments.json";
+    let sc_url = ssh_url::sidecar_url(&url, pattern);
+    let mut store = mdviewer_core::comments::CommentsStore::new();
+    store.create_thread(mdviewer_core::comments::NewThread {
+        anchor: mdviewer_core::anchor::Anchor {
+            start: 2,
+            end: 8,
+            exact: "report".into(),
+            prefix: "# ".into(),
+            suffix: "\n".into(),
+        },
+        first_comment: mdviewer_core::comments::NewComment {
+            author: "Reviewer".into(),
+            color: "#ffffff".into(),
+            body: "remote comment via ssh".into(),
+        },
+    });
+    let local_bytes =
+        mdviewer_core::sidecar::save_sidecar_bytes(&store).expect("serialize sidecar");
+    ops.save_sidecar(&sc_url, &local_bytes)
+        .await
+        .expect("push sidecar over ssh");
+
+    // PROOF 1: the sidecar landed NEXT TO the remote document. The fixture
+    // serves localhost, so the remote path is a real file the test can read.
+    let remote_sc = scratch.path().join("report.comments.json");
+    assert!(
+        remote_sc.exists(),
+        "comment sidecar was written next to the remote doc at {remote_sc:?}"
+    );
+    let remote_store = mdviewer_core::sidecar::load_sidecar_bytes(
+        &std::fs::read(&remote_sc).expect("read remote sidecar"),
+    )
+    .expect("parse remote sidecar");
+    assert!(
+        remote_store
+            .list_threads()
+            .iter()
+            .any(|t| t.comments.iter().any(|c| c.body == "remote comment via ssh")),
+        "remote sidecar carries the pushed comment"
+    );
+
+    // PROOF 2: a fresh client (separate cache) pulls the remote sidecar back —
+    // i.e. a teammate re-opening the same doc sees the comment.
+    let fresh_cache = scratch.path().join("cache2");
+    let fresh_doc_cache =
+        mdviewer_lib::ssh::operations::cache_path_for_url(&fresh_cache, &url);
+    let fresh_sc = mdviewer_lib::sidecar::sidecar_path(&fresh_doc_cache, pattern);
+    let ops2 = Operations::new(transport.clone(), fresh_cache.clone());
+    ops2.pull_sidecar(&sc_url, &fresh_sc)
+        .await
+        .expect("pull sidecar");
+    let pulled = mdviewer_lib::sidecar::load_sidecar(&fresh_sc).expect("load pulled sidecar");
+    assert!(
+        pulled
+            .list_threads()
+            .iter()
+            .any(|t| t.comments.iter().any(|c| c.body == "remote comment via ssh")),
+        "a fresh client pulls the comment from next to the remote doc"
+    );
+}
+
 #[cfg(unix)]
 #[tokio::test]
 #[serial]
