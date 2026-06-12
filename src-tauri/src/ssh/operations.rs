@@ -183,49 +183,80 @@ impl Operations {
             }
             Err(e) => return Err(e),
         };
-        let merged = mdviewer_core::comments::merge_stores_bytes(local_sidecar, &remote)
-            .map_err(|e| {
-                TransportError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    e.to_string(),
-                ))
-            })?;
-        // Skip the push when the merge produced no semantic change vs
-        // remote. We compare deserialized thread lists rather than raw
-        // bytes because each `merge_stores_bytes` call mints fresh
-        // Automerge actor ids — a byte-level `merged == remote` check
-        // would essentially never fire (header bytes differ even for
-        // identical thread content). The empty-remote case (Vec::new())
-        // is also handled here: an empty-vs-empty thread list still
-        // counts as "no change", so we don't push an empty merged blob
-        // back to a host that has no sidecar yet.
-        if remote_equals_merged_semantically(&remote, &merged) {
+        // The sidecar wire/disk format is the v2 JSON envelope (base64-wrapped
+        // Automerge) that `mdviewer_core::sidecar::{save,load}_sidecar_bytes`
+        // produce — the same bytes the local `.comments.json` holds — NOT raw
+        // Automerge. Decode both sides to stores, CRDT-merge, re-encode. An
+        // empty remote (no sidecar yet) decodes to an empty store.
+        let local_store =
+            mdviewer_core::sidecar::load_sidecar_bytes(local_sidecar).map_err(sidecar_io_err)?;
+        let remote_store =
+            mdviewer_core::sidecar::load_sidecar_bytes(&remote).map_err(sidecar_io_err)?;
+        let merged = mdviewer_core::comments::merge_stores(&local_store, &remote_store);
+        // Skip the push when the merge produced no semantic change vs the
+        // remote — compare thread content (ignoring Automerge actor-id churn,
+        // which a byte-level check would trip over).
+        if remote_store.list_threads() == merged.list_threads() {
             return Ok(());
         }
-        self.transport.push(sidecar_url, &merged).await
+        let merged_bytes =
+            mdviewer_core::sidecar::save_sidecar_bytes(&merged).map_err(sidecar_io_err)?;
+        self.transport.push(sidecar_url, &merged_bytes).await
+    }
+
+    /// Open-time counterpart to [`save_sidecar`](Self::save_sidecar): fetch the
+    /// remote comment sidecar (if any), CRDT-merge it with whatever sidecar is
+    /// already in the local cache, and write the merged result back to
+    /// `cache_sidecar_path` so the opened tab's comment load (which reads the
+    /// cache mirror) reflects remote + local comments.
+    ///
+    /// A missing remote sidecar is a no-op: the local cache sidecar (if any) is
+    /// left untouched. Like `save_sidecar`, only an explicit "does not exist"
+    /// stderr is treated as "no remote sidecar yet"; every other transport
+    /// error propagates so the caller can decide whether to surface it.
+    pub async fn pull_sidecar(
+        &self,
+        sidecar_url: &SshUrl,
+        cache_sidecar_path: &Path,
+    ) -> Result<(), TransportError> {
+        let remote = match self.transport.fetch(sidecar_url).await {
+            Ok(bytes) => bytes,
+            Err(TransportError::Ssh { ref stderr, .. })
+                if stderr.contains("No such file") || stderr.contains("does not exist") =>
+            {
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        };
+        if remote.is_empty() {
+            return Ok(());
+        }
+        // Same v2-envelope format as `save_sidecar`: decode remote + local-cache
+        // sidecars to stores, CRDT-merge, and write the merged envelope back to
+        // the cache so the comment load reflects remote + local.
+        let remote_store =
+            mdviewer_core::sidecar::load_sidecar_bytes(&remote).map_err(sidecar_io_err)?;
+        let local = std::fs::read(cache_sidecar_path).unwrap_or_default();
+        let local_store =
+            mdviewer_core::sidecar::load_sidecar_bytes(&local).map_err(sidecar_io_err)?;
+        let merged = mdviewer_core::comments::merge_stores(&local_store, &remote_store);
+        let merged_bytes =
+            mdviewer_core::sidecar::save_sidecar_bytes(&merged).map_err(sidecar_io_err)?;
+        if let Some(parent) = cache_sidecar_path.parent() {
+            std::fs::create_dir_all(parent).map_err(TransportError::Io)?;
+        }
+        std::fs::write(cache_sidecar_path, &merged_bytes).map_err(TransportError::Io)?;
+        Ok(())
     }
 }
 
-/// Compare two Automerge sidecar blobs by deserialized thread content,
-/// ignoring actor-id bookkeeping. An empty `remote` slice (no remote
-/// sidecar yet) is equivalent to an empty thread list. Falls back to
-/// byte equality if either decode fails so a deserialization edge case
-/// doesn't accidentally suppress a needed push.
-fn remote_equals_merged_semantically(remote: &[u8], merged: &[u8]) -> bool {
-    use mdviewer_core::comments::store_from_automerge;
-    let remote_threads = if remote.is_empty() {
-        Vec::new()
-    } else {
-        match store_from_automerge(remote) {
-            Ok(s) => s.list_threads().to_vec(),
-            Err(_) => return remote == merged,
-        }
-    };
-    let merged_threads = match store_from_automerge(merged) {
-        Ok(s) => s.list_threads().to_vec(),
-        Err(_) => return remote == merged,
-    };
-    remote_threads == merged_threads
+/// Map a core sidecar/merge error into a `TransportError::Io` so the SSH
+/// sidecar paths can use `?` on `anyhow::Result` returns.
+fn sidecar_io_err(e: impl std::fmt::Display) -> TransportError {
+    TransportError::Io(std::io::Error::new(
+        std::io::ErrorKind::Other,
+        e.to_string(),
+    ))
 }
 
 #[cfg(test)]
@@ -472,9 +503,7 @@ mod tests {
         comment_id: &str,
         anchor_text: &str,
     ) -> Vec<u8> {
-        use mdviewer_core::comments::{
-            store_to_automerge, Comment, CommentsStore, Thread,
-        };
+        use mdviewer_core::comments::{Comment, CommentsStore, Thread};
         let thread = Thread {
             id: thread_id.into(),
             anchor: fixture_anchor(anchor_text),
@@ -490,12 +519,15 @@ mod tests {
             resolved_at: None,
             resolved_by: None,
         };
-        store_to_automerge(&CommentsStore::from_threads(vec![thread])).unwrap()
+        // Produce the on-disk v2-envelope format (what save/pull_sidecar
+        // consume), not raw Automerge.
+        mdviewer_core::sidecar::save_sidecar_bytes(&CommentsStore::from_threads(vec![thread]))
+            .unwrap()
     }
 
     #[tokio::test]
     async fn save_sidecar_pushes_merged_when_local_diverges_from_remote() {
-        use mdviewer_core::comments::store_from_automerge;
+        use mdviewer_core::sidecar::load_sidecar_bytes;
         // Local has thread A; remote has thread B. The CRDT merge unions
         // both (distinct ids never conflict — see comments.rs's
         // store_to_automerge rationale). We assert:
@@ -515,7 +547,7 @@ mod tests {
 
         let pushed = fake.pushed.lock().unwrap();
         assert_eq!(pushed.len(), 1, "expected exactly one push");
-        let pushed_store = store_from_automerge(&pushed[0]).expect("decode pushed");
+        let pushed_store = load_sidecar_bytes(&pushed[0]).expect("decode pushed");
         let ids: Vec<&str> = pushed_store
             .list_threads()
             .iter()

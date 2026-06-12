@@ -241,66 +241,79 @@ fn list_threads(state: State<'_, Ws>, tab_id: String) -> Result<Vec<Thread>, Str
 }
 
 #[tauri::command]
-fn create_thread(
+async fn create_thread(
     state: State<'_, Ws>,
     watcher: State<'_, Mutex<Watcher>>,
+    ssh: State<'_, SshAppState>,
     tab_id: String,
     anchor: Anchor,
     body: String,
 ) -> Result<Thread, String> {
-    let mut ws = state.lock().map_err(|e| e.to_string())?;
-    let profile = ws.settings_store().get().profile.clone();
-    let store = ws.comments_for_mut(&tab_id).map_err(|e| e.to_string())?;
-    let thread = store.create_thread(NewThread {
-        anchor,
-        first_comment: NewComment {
-            author: profile.display_name,
-            color: profile.color,
-            body,
-        },
-    });
-    persist_sidecar(&ws, &watcher, &tab_id)?;
-    Ok(thread)
-}
-
-#[tauri::command]
-fn post_reply(
-    state: State<'_, Ws>,
-    watcher: State<'_, Mutex<Watcher>>,
-    tab_id: String,
-    thread_id: String,
-    body: String,
-) -> Result<(), String> {
-    let mut ws = state.lock().map_err(|e| e.to_string())?;
-    let profile = ws.settings_store().get().profile.clone();
-    let store = ws.comments_for_mut(&tab_id).map_err(|e| e.to_string())?;
-    store
-        .post_reply(
-            &thread_id,
-            NewComment {
+    let (thread, bytes, sc_url) = {
+        let mut ws = state.lock().map_err(|e| e.to_string())?;
+        let profile = ws.settings_store().get().profile.clone();
+        let store = ws.comments_for_mut(&tab_id).map_err(|e| e.to_string())?;
+        let thread = store.create_thread(NewThread {
+            anchor,
+            first_comment: NewComment {
                 author: profile.display_name,
                 color: profile.color,
                 body,
             },
-        )
-        .map_err(|e| e.to_string())?;
-    persist_sidecar(&ws, &watcher, &tab_id)
+        });
+        let (bytes, sc_url) = persist_sidecar(&ws, &watcher, &tab_id)?;
+        (thread, bytes, sc_url)
+    };
+    push_sidecar_remote(&ssh, sc_url, bytes).await?;
+    Ok(thread)
 }
 
 #[tauri::command]
-fn resolve_thread(
+async fn post_reply(
     state: State<'_, Ws>,
     watcher: State<'_, Mutex<Watcher>>,
+    ssh: State<'_, SshAppState>,
+    tab_id: String,
+    thread_id: String,
+    body: String,
+) -> Result<(), String> {
+    let (bytes, sc_url) = {
+        let mut ws = state.lock().map_err(|e| e.to_string())?;
+        let profile = ws.settings_store().get().profile.clone();
+        let store = ws.comments_for_mut(&tab_id).map_err(|e| e.to_string())?;
+        store
+            .post_reply(
+                &thread_id,
+                NewComment {
+                    author: profile.display_name,
+                    color: profile.color,
+                    body,
+                },
+            )
+            .map_err(|e| e.to_string())?;
+        persist_sidecar(&ws, &watcher, &tab_id)?
+    };
+    push_sidecar_remote(&ssh, sc_url, bytes).await
+}
+
+#[tauri::command]
+async fn resolve_thread(
+    state: State<'_, Ws>,
+    watcher: State<'_, Mutex<Watcher>>,
+    ssh: State<'_, SshAppState>,
     tab_id: String,
     thread_id: String,
 ) -> Result<(), String> {
-    let mut ws = state.lock().map_err(|e| e.to_string())?;
-    let by = ws.settings_store().get().profile.display_name.clone();
-    let store = ws.comments_for_mut(&tab_id).map_err(|e| e.to_string())?;
-    store
-        .resolve_thread(&thread_id, &by)
-        .map_err(|e| e.to_string())?;
-    persist_sidecar(&ws, &watcher, &tab_id)
+    let (bytes, sc_url) = {
+        let mut ws = state.lock().map_err(|e| e.to_string())?;
+        let by = ws.settings_store().get().profile.display_name.clone();
+        let store = ws.comments_for_mut(&tab_id).map_err(|e| e.to_string())?;
+        store
+            .resolve_thread(&thread_id, &by)
+            .map_err(|e| e.to_string())?;
+        persist_sidecar(&ws, &watcher, &tab_id)?
+    };
+    push_sidecar_remote(&ssh, sc_url, bytes).await
 }
 
 /// Drop a thread from the sidecar. Mirrors `resolve_thread`'s shape but
@@ -309,18 +322,22 @@ fn resolve_thread(
 /// re-read the file. Wired to the orphan-list "Delete" button on the
 /// frontend (`mdviewer:delete-thread` flow, wireframe 09).
 #[tauri::command]
-fn delete_thread(
+async fn delete_thread(
     state: State<'_, Ws>,
     watcher: State<'_, Mutex<Watcher>>,
+    ssh: State<'_, SshAppState>,
     tab_id: String,
     thread_id: String,
 ) -> Result<(), String> {
-    let mut ws = state.lock().map_err(|e| e.to_string())?;
-    let store = ws.comments_for_mut(&tab_id).map_err(|e| e.to_string())?;
-    store
-        .delete_thread(&thread_id)
-        .map_err(|e| e.to_string())?;
-    persist_sidecar(&ws, &watcher, &tab_id)
+    let (bytes, sc_url) = {
+        let mut ws = state.lock().map_err(|e| e.to_string())?;
+        let store = ws.comments_for_mut(&tab_id).map_err(|e| e.to_string())?;
+        store
+            .delete_thread(&thread_id)
+            .map_err(|e| e.to_string())?;
+        persist_sidecar(&ws, &watcher, &tab_id)?
+    };
+    push_sidecar_remote(&ssh, sc_url, bytes).await
 }
 
 /// After every comments-mutation IPC the in-memory CommentsStore is
@@ -329,11 +346,17 @@ fn delete_thread(
 /// the open tab and the active sidecar_pattern, write the v2 envelope, and
 /// prime the watcher's self-write suppression so MDViewer doesn't surface
 /// its own write as an external-change event.
+///
+/// Returns the bytes written plus — when the tab originated from
+/// `open_ssh_url` — the remote sidecar `SshUrl` next to the remote document.
+/// The caller drops the workspace lock and then `await`s the CRDT-merge push
+/// to that URL (the local write above is the authoritative on-disk copy; the
+/// remote push is what makes SSH comments travel with the document).
 fn persist_sidecar(
     ws: &Workspace,
     watcher: &Mutex<Watcher>,
     tab_id: &str,
-) -> Result<(), String> {
+) -> Result<(Vec<u8>, Option<mdviewer_core::ssh_url::SshUrl>), String> {
     let tab = ws.tab(tab_id).ok_or_else(|| "no such tab".to_string())?;
     let pattern = ws.settings_store().get().comments.sidecar_pattern.clone();
     let sc = mdviewer_lib::sidecar::sidecar_path(&tab.path, &pattern);
@@ -341,6 +364,30 @@ fn persist_sidecar(
     let bytes = mdviewer_lib::sidecar::save_sidecar(&sc, store).map_err(|e| e.to_string())?;
     if let Ok(w) = watcher.lock() {
         w.record_self_write(&sc, mdviewer_lib::watcher::quick_hash(&bytes));
+    }
+    // SSH tabs are pinned to TabBackend::Local; `ssh_state` presence is the
+    // marker that this tab came from a remote `ssh://` open (same discriminator
+    // `save_document` uses). Compute the remote sidecar URL next to the doc.
+    let sc_url = ws
+        .ssh_state(tab_id)
+        .map(|s| mdviewer_core::ssh_url::sidecar_url(&s.url, &pattern));
+    Ok((bytes, sc_url))
+}
+
+/// Push a locally-persisted sidecar to its remote counterpart when the tab is
+/// SSH-backed. No-op for local tabs. Awaited by the comment-mutation commands
+/// after the workspace lock is dropped so the `MutexGuard` never crosses the
+/// `.await` (Send bound on the Tauri worker future).
+async fn push_sidecar_remote(
+    ssh: &SshAppState,
+    sc_url: Option<mdviewer_core::ssh_url::SshUrl>,
+    bytes: Vec<u8>,
+) -> Result<(), String> {
+    if let Some(url) = sc_url {
+        ssh.ops
+            .save_sidecar(&url, &bytes)
+            .await
+            .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -457,10 +504,11 @@ async fn save_document(
     // (`src-tauri/tests/ipc_registration.rs::ssh_save_dispatch`) pin on.
     if let Some((url, last_sha)) = ssh_info {
         // Lock-free .await — the workspace lock was dropped above so the
-        // std::sync::MutexGuard doesn't cross the await point. Sidecar
-        // CRDT-merge push is deferred to a Phase-B follow-up; the body
-        // bytes are what the user wants persisted to the remote markdown
-        // file and that's the regression this fix targets.
+        // std::sync::MutexGuard doesn't cross the await point. This pushes the
+        // document BODY; the comment sidecar is pushed separately on every
+        // comment mutation (create/post/resolve/delete_thread →
+        // push_sidecar_remote → Operations::save_sidecar) and pulled on open
+        // (ssh_open_url → Operations::pull_sidecar).
         let outcome = ssh
             .ops
             .save_back(&url, body.as_bytes(), &last_sha)
@@ -1056,6 +1104,26 @@ async fn ssh_open_url(
         .open_url(&parsed)
         .await
         .map_err(|e| e.to_string())?;
+    // Pull the remote comment sidecar (if any) into the cache mirror so the
+    // opened tab shows comments saved next to the remote document — the
+    // counterpart to the CRDT-merge push on comment mutations. Best-effort:
+    // a sidecar fetch failure must not block opening the document itself
+    // (the body already fetched successfully above).
+    {
+        let pattern = state
+            .lock()
+            .map_err(|e| e.to_string())?
+            .settings_store()
+            .get()
+            .comments
+            .sidecar_pattern
+            .clone();
+        let sc_url = mdviewer_core::ssh_url::sidecar_url(&parsed, &pattern);
+        let cache_sc = mdviewer_lib::sidecar::sidecar_path(&outcome.cache_path, &pattern);
+        if let Err(e) = ssh.ops.pull_sidecar(&sc_url, &cache_sc).await {
+            tracing::warn!("remote sidecar pull failed for {sc_url}: {e}");
+        }
+    }
     // Sync registration: re-acquire the lock and stash the tab in the
     // calling window's scope.
     let summary = {
