@@ -372,11 +372,12 @@ function buildEditor(ipc: Ipc, settings: Settings): HTMLElement {
     void ipc.setSettings(settings);
   });
 
-  // Render single line breaks (soft break -> <br>) — note-style markdown. On
-  // by default; turning it off restores strict CommonMark (single newlines
-  // collapse to spaces, joining hard-wrapped prose into one paragraph).
+  // Keep label lines on their own line: a single newline becomes a <br> only
+  // when the next line starts with a bold label (e.g. **Date:**), so
+  // metadata blocks aren't collapsed; ordinary prose still reflows to the
+  // window. On by default; off = strict CommonMark (every soft break collapses).
   const breaks = labeledCheckbox(
-    'Render single line breaks',
+    'Keep line breaks before bold labels',
     settings.editor.render_line_breaks,
     { 'data-test': 'render-line-breaks' },
   );

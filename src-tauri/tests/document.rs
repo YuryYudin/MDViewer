@@ -153,8 +153,38 @@ fn render_line_breaks_off_keeps_strict_commonmark() {
 
 #[test]
 fn render_line_breaks_default_is_on() {
-    // The RenderOptions default opts into note-style line breaks.
+    // The RenderOptions default opts into the label-line-break heuristic.
     assert!(RenderOptions::default().render_line_breaks);
+}
+
+#[test]
+fn render_line_breaks_on_reflows_plain_prose() {
+    // A hard-wrapped prose paragraph whose continuation line does NOT start
+    // with a bold label must reflow (soft break -> space), NOT inherit the
+    // source's wrap as a <br/>. Regression guard: the prior behavior broke
+    // EVERY soft break, leaving prose ragged instead of filling the window.
+    let src = "The first wrapped line of prose\nand its continuation here.\n";
+    let opts = RenderOptions { render_line_breaks: true, ..RenderOptions::default() };
+    let html = render_markdown(src, &opts).html;
+    assert!(
+        !html.contains("<br/>"),
+        "plain prose must reflow (no <br/>) even with render_line_breaks on: {html}"
+    );
+}
+
+#[test]
+fn render_line_breaks_on_breaks_only_before_bold_label_lines() {
+    // Mixed block: two prose lines, then a bold-label line. Only the break
+    // immediately BEFORE the bold label becomes a <br/>; the prose-to-prose
+    // break collapses to a space.
+    let src = "intro prose line\nmore prose\n**Label:** value\n";
+    let opts = RenderOptions { render_line_breaks: true, ..RenderOptions::default() };
+    let html = render_markdown(src, &opts).html;
+    assert_eq!(
+        html.matches("<br/>").count(),
+        1,
+        "exactly one <br/> expected (only before the bold label): {html}"
+    );
 }
 
 #[test]
