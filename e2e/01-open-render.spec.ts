@@ -48,6 +48,42 @@ describe('Open a .md and view it rendered', () => {
     expect(tableWhiteSpace.header).toBe('nowrap');
     expect(tableWhiteSpace.firstCol).toBe('nowrap');
 
+    // Dark-mode code highlighting: syntect now emits class-based `syn-*` spans
+    // colored by document.css (light + body.theme-dark palettes), instead of
+    // inline light-theme colors that were near-black/unreadable on the dark
+    // code panel. Verify the theme-reactive CSS actually recolors a code token
+    // in the real WebView: a highlighted token's computed color must CHANGE
+    // when body.theme-dark is toggled (and the dark color must be light enough
+    // to read on the dark panel).
+    const codeToken = await browser.execute(() => {
+      // Target a token that carries a real syntax color (string / keyword) —
+      // not the wrapper span, which would merely inherit --text (that flips
+      // with the theme regardless of the syntax palette).
+      const span = document.querySelector(
+        '[data-region="render"] pre code.hl [class*="syn-string"],' +
+          '[data-region="render"] pre code.hl [class*="syn-keyword"]',
+      ) as HTMLElement | null;
+      if (!span) return null;
+      const read = () => getComputedStyle(span).color;
+      document.body.classList.remove('theme-dark');
+      const light = read();
+      document.body.classList.add('theme-dark');
+      const dark = read();
+      document.body.classList.remove('theme-dark');
+      // Parse "rgb(r, g, b)" → average channel (rough luminance proxy).
+      const lum = (c: string) => {
+        const m = c.match(/\d+/g);
+        return m ? (Number(m[0]) + Number(m[1]) + Number(m[2])) / 3 : -1;
+      };
+      return { light, dark, darkLum: lum(dark) };
+    });
+    // (WebdriverIO's expect takes no message arg, unlike vitest's.)
+    expect(codeToken).not.toBeNull();
+    // Theme-reactive: the palette flips with the body class (no re-render).
+    expect(codeToken!.dark).not.toBe(codeToken!.light);
+    // The dark-palette color is readable (light text) on the dark code panel.
+    expect(codeToken!.darkLum).toBeGreaterThan(110);
+
     expect(
       await browser.$('[data-view="sidebar-comments"] [data-empty="true"]').isExisting(),
     ).toBe(true);

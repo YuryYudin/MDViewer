@@ -106,9 +106,21 @@ fn syntax_highlighting_toggle_on_invokes_syntect() {
     let src = "```rust\nfn main() {}\n```\n";
     let opts = RenderOptions { syntax_highlighting: true, ..RenderOptions::default() };
     let html = render_markdown(src, &opts).html;
+    // Class-based output (theme-reactive): syntect emits `syn-*` scope classes,
+    // NOT inline `style="color:…"`. The colors live in document.css (light +
+    // body.theme-dark palettes) so dark mode is readable and a theme toggle
+    // needs no re-render.
     assert!(
-        html.contains("style=\"color:"),
-        "syntect output missing color spans: {html}"
+        html.contains("class=\"syn-") || html.contains(" syn-"),
+        "syntect class-based output missing syn-* classes: {html}"
+    );
+    assert!(
+        !html.contains("style=\"color:"),
+        "highlighting must be class-based, not inline colors: {html}"
+    );
+    assert!(
+        html.contains("<code class=\"language-rust hl\">"),
+        "expected the highlighted code wrapper: {html}"
     );
 }
 
