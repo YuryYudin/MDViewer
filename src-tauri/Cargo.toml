@@ -129,7 +129,7 @@ tauri-plugin-webdriver-automation = { version = "0.1", optional = true }
 # depends on the 0.45 shape. The final wiring (also covered by A9)
 # leaves these here under the cfg(windows) target stanza.
 [target.'cfg(windows)'.dependencies]
-russh = "0.45"
+russh = "0.61"
 russh-sftp = "2.0"
 russh-keys = "0.45"
 
