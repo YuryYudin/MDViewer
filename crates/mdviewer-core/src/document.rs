@@ -9,8 +9,10 @@
 //!
 //! Code blocks honour two settings:
 //! - `syntax_highlighting`: when true, fenced code blocks with a recognised
-//!   language tag are highlighted via `syntect` (HTML inline-style spans).
-//!   When false, raw `<pre><code class="language-...">` is emitted.
+//!   language tag are highlighted via `syntect` as CLASS-based `syn-*` spans
+//!   (theme colors live in document.css with light + `body.theme-dark`
+//!   palettes, so a theme toggle recolors code with no re-render). When false,
+//!   raw `<pre><code class="language-...">` is emitted.
 //! - `mermaid_enabled`: when true, ```` ```mermaid ```` fences pass through as
 //!   `<pre class="mermaid">...</pre>` for client-side rendering. When false
 //!   they fall back to a raw `<pre><code>` block.
@@ -28,9 +30,7 @@
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use std::fmt::Write as _;
 use std::sync::OnceLock;
-use syntect::easy::HighlightLines;
-use syntect::highlighting::{Theme, ThemeSet};
-use syntect::html::{styled_line_to_highlighted_html, IncludeBackground};
+use syntect::html::{ClassStyle, ClassedHTMLGenerator};
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
 
@@ -72,17 +72,6 @@ pub struct RenderResult {
 fn syntax_set() -> &'static SyntaxSet {
     static SS: OnceLock<SyntaxSet> = OnceLock::new();
     SS.get_or_init(SyntaxSet::load_defaults_newlines)
-}
-
-fn theme() -> &'static Theme {
-    static TS: OnceLock<ThemeSet> = OnceLock::new();
-    let set = TS.get_or_init(ThemeSet::load_defaults);
-    // syntect's defaults always ship "InspiredGitHub"; the fallback exists for
-    // belt-and-suspenders against future bundle changes.
-    set.themes
-        .get("InspiredGitHub")
-        .or_else(|| set.themes.values().next())
-        .expect("syntect default ThemeSet should contain at least one theme")
 }
 
 /// Renders `source` markdown into HTML annotated with `data-src-offset`
@@ -226,22 +215,26 @@ fn emit_code_block(out: &mut String, code: &str, lang: &str, opts: &RenderOption
             .find_syntax_by_token(lang)
             .or_else(|| ss.find_syntax_by_extension(lang))
         {
-            let mut h = HighlightLines::new(syntax, theme());
-            let _ = write!(
-                out,
-                "<pre><code class=\"language-{} hl\">",
-                escape_html(lang)
+            // Emit CLASS-based highlight markup (scope-derived `syn-*` classes),
+            // NOT inline `style="color:…"`. The colors live in document.css with
+            // separate light + `body.theme-dark` palettes, so highlighting is
+            // theme-reactive: a dark/light toggle just flips the body class — no
+            // re-render — and dark code blocks are readable (the old inline
+            // light-theme colors were near-black on the dark code panel).
+            let mut gen = ClassedHTMLGenerator::new_with_class_style(
+                syntax,
+                ss,
+                ClassStyle::SpacedPrefixed { prefix: "syn-" },
             );
             for line in LinesWithEndings::from(code) {
-                if let Ok(regions) = h.highlight_line(line, ss) {
-                    if let Ok(html_line) =
-                        styled_line_to_highlighted_html(&regions[..], IncludeBackground::No)
-                    {
-                        out.push_str(&html_line);
-                    }
-                }
+                let _ = gen.parse_html_for_line_which_includes_newline(line);
             }
-            out.push_str("</code></pre>");
+            let _ = write!(
+                out,
+                "<pre><code class=\"language-{} hl\">{}</code></pre>",
+                escape_html(lang),
+                gen.finalize()
+            );
             return;
         }
     }
