@@ -92,12 +92,12 @@ import type { ExternalChangeBehavior } from "./ExternalChangeBehavior";
 
 export type EditorSettings = { default_open_mode: string, auto_save: boolean, auto_save_debounce_ms: number, external_change_behavior: ExternalChangeBehavior, syntax_highlighting: boolean, mermaid_enabled: boolean, show_whitespace: boolean, word_wrap: boolean, 
 /**
- * When true, a single newline within a paragraph renders as a line break
- * (`<br>`) instead of collapsing to a space — the note-style markdown
- * behavior (Obsidian/Typora) most viewers expect. When false, strict
- * CommonMark paragraph-joining applies. `serde(default = ...)` keeps
- * legacy settings.toml files (written before this key existed) loading
- * cleanly; defaults to true.
+ * When true, a single newline is kept as a line break (`<br>`) ONLY when
+ * the next line begins with a bold label (e.g. `**Date:**`), so
+ * metadata/label blocks stay on their own lines; ordinary prose still
+ * collapses soft breaks and reflows to the window. When false, strict
+ * CommonMark applies (every soft break collapses). `serde(default = ...)`
+ * keeps legacy settings.toml files (no key) loading cleanly; defaults true.
  */
 render_line_breaks: boolean, 
 /**
@@ -155,10 +155,12 @@ export type Settings = { profile: ProfileSettings, appearance: AppearanceSetting
 
 export type RenderOptions = { syntax_highlighting: boolean, mermaid_enabled: boolean, 
 /**
- * When true, a single newline within a paragraph (a CommonMark *soft
- * break*) renders as a `<br/>` line break instead of collapsing to a
- * space. Matches note-style markdown viewers (Obsidian/Typora); when
- * false the strict-CommonMark behavior (soft break → space) is kept.
+ * When true, a single newline is kept as a `<br/>` line break ONLY when
+ * the next line begins with a highlight (a bold/`Strong` inline, e.g.
+ * `**Date:** …`) — so label/metadata blocks stay on their own lines while
+ * ordinary prose still collapses soft breaks to a space and reflows to the
+ * window width. When false, strict CommonMark applies (every soft break
+ * collapses). NOT a blanket "break every line" toggle.
  */
 render_line_breaks: boolean, };
 

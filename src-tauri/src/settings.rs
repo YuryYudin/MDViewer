@@ -160,12 +160,12 @@ pub struct EditorSettings {
     pub mermaid_enabled: bool,
     pub show_whitespace: bool,
     pub word_wrap: bool,
-    /// When true, a single newline within a paragraph renders as a line break
-    /// (`<br>`) instead of collapsing to a space — the note-style markdown
-    /// behavior (Obsidian/Typora) most viewers expect. When false, strict
-    /// CommonMark paragraph-joining applies. `serde(default = ...)` keeps
-    /// legacy settings.toml files (written before this key existed) loading
-    /// cleanly; defaults to true.
+    /// When true, a single newline is kept as a line break (`<br>`) ONLY when
+    /// the next line begins with a bold label (e.g. `**Date:**`), so
+    /// metadata/label blocks stay on their own lines; ordinary prose still
+    /// collapses soft breaks and reflows to the window. When false, strict
+    /// CommonMark applies (every soft break collapses). `serde(default = ...)`
+    /// keeps legacy settings.toml files (no key) loading cleanly; defaults true.
     #[serde(default = "default_render_line_breaks")]
     pub render_line_breaks: bool,
     /// SSH autosave knobs. Lives in its own sub-struct so users can disable

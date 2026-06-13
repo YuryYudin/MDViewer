@@ -39,10 +39,12 @@ use syntect::util::LinesWithEndings;
 pub struct RenderOptions {
     pub syntax_highlighting: bool,
     pub mermaid_enabled: bool,
-    /// When true, a single newline within a paragraph (a CommonMark *soft
-    /// break*) renders as a `<br/>` line break instead of collapsing to a
-    /// space. Matches note-style markdown viewers (Obsidian/Typora); when
-    /// false the strict-CommonMark behavior (soft break → space) is kept.
+    /// When true, a single newline is kept as a `<br/>` line break ONLY when
+    /// the next line begins with a highlight (a bold/`Strong` inline, e.g.
+    /// `**Date:** …`) — so label/metadata blocks stay on their own lines while
+    /// ordinary prose still collapses soft breaks to a space and reflows to the
+    /// window width. When false, strict CommonMark applies (every soft break
+    /// collapses). NOT a blanket "break every line" toggle.
     pub render_line_breaks: bool,
 }
 
@@ -83,7 +85,10 @@ pub fn render_markdown(source: &str, opts: &RenderOptions) -> RenderResult {
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_GFM);
 
-    let parser = Parser::new_ext(source, options).into_offset_iter();
+    // Peekable so the SoftBreak handler can look at the next inline event and
+    // tell whether the upcoming line begins with a highlight (bold), which is
+    // the only case we preserve as a hard `<br/>` (see the SoftBreak arm).
+    let mut parser = Parser::new_ext(source, options).into_offset_iter().peekable();
 
     let mut html = String::with_capacity(source.len() * 2);
     let mut text_spans = Vec::new();
@@ -100,7 +105,7 @@ pub fn render_markdown(source: &str, opts: &RenderOptions) -> RenderResult {
     // exactly one TableHead per table; subsequent rows are TableRow.
     let mut in_table_head = false;
 
-    for (event, range) in parser {
+    while let Some((event, range)) = parser.next() {
         match event {
             Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(lang))) => {
                 in_code = true;
@@ -165,9 +170,17 @@ pub fn render_markdown(source: &str, opts: &RenderOptions) -> RenderResult {
             Event::Start(tag) => emit_open(&mut html, &tag),
             Event::End(tag) => emit_close(&mut html, tag),
             Event::SoftBreak => {
-                // A single source newline: render as a real line break when the
-                // user opts in (note-style), else the CommonMark space-collapse.
-                if opts.render_line_breaks {
+                // A single source newline becomes a hard `<br/>` ONLY when the
+                // next line begins with a highlight (a bold/`Strong` inline,
+                // e.g. `**Date:** …`). That keeps label/metadata blocks on their
+                // own lines while ordinary prose — which the source may have
+                // hard-wrapped — collapses to a space and reflows to the window
+                // width (standard CommonMark), instead of inheriting the
+                // source's wrap points. Gated on `render_line_breaks`: off ⇒
+                // strict CommonMark (every soft break collapses).
+                let next_starts_with_highlight =
+                    matches!(parser.peek(), Some((Event::Start(Tag::Strong), _)));
+                if opts.render_line_breaks && next_starts_with_highlight {
                     html.push_str("<br/>");
                 } else {
                     html.push('\n');
