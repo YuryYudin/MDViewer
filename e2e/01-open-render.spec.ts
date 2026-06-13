@@ -77,7 +77,8 @@ describe('Open a .md and view it rendered', () => {
       };
       return { light, dark, darkLum: lum(dark) };
     });
-    expect(codeToken, 'expected a highlighted syn-* token in the code block').not.toBeNull();
+    // (WebdriverIO's expect takes no message arg, unlike vitest's.)
+    expect(codeToken).not.toBeNull();
     // Theme-reactive: the palette flips with the body class (no re-render).
     expect(codeToken!.dark).not.toBe(codeToken!.light);
     // The dark-palette color is readable (light text) on the dark code panel.
