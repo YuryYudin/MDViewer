@@ -12,7 +12,7 @@
 use super::transport::{DirEntry, SshStat, SshTransport, TransportError};
 use mdviewer_core::ssh_url::SshUrl;
 use russh::client::{self, Handle, Handler};
-use russh::keys::key::PublicKey;
+use russh::keys::PublicKey;
 use russh_sftp::client::SftpSession;
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,15 +30,17 @@ pub struct WindowsTransport {
 
 /// The Handler is constructed per-connect and carries the host+port it was
 /// built for so `check_server_key` can look up the right `known_hosts`
-/// entry. russh's `Handler::check_server_key` signature (russh 0.45) only
-/// hands us the presented `PublicKey`; host/port must come from `&self`
-/// state we populate before passing the handler to `client::connect`.
+/// entry. russh's `Handler::check_server_key` only hands us the presented
+/// `PublicKey`; host/port must come from `&self` state we populate before
+/// passing the handler to `client::connect`. russh 0.61's `Handler` is a
+/// native-async trait (no `#[async_trait]`), so the method below is a plain
+/// `async fn` whose returned future is `Send` (it never holds anything
+/// across an await — `check_known_hosts` is synchronous).
 struct ClientHandler {
     host: String,
     port: u16,
 }
 
-#[async_trait::async_trait]
 impl Handler for ClientHandler {
     type Error = russh::Error;
 
@@ -51,7 +53,8 @@ impl Handler for ClientHandler {
         // diagnostic. Unknown host fails with the no-in-app-TOFU message
         // per Decision: Host key verification.
         //
-        // russh-keys 0.45 maps the three outcomes onto `Result<bool, Error>`:
+        // russh::keys::check_known_hosts maps the three outcomes onto
+        // `Result<bool, Error>`:
         //   * `Ok(true)`                   — entry present and matches
         //   * `Ok(false)`                  — no host entry found (NotFound)
         //   * `Err(Error::KeyChanged{..})` — entry present but a different key
@@ -62,7 +65,7 @@ impl Handler for ClientHandler {
         //                                    surface as a NotFound-equivalent
         //                                    diagnostic so the user knows to
         //                                    populate the file.
-        match russh_keys::check_known_hosts(&self.host, self.port, server_public_key) {
+        match russh::keys::check_known_hosts(&self.host, self.port, server_public_key) {
             Ok(true) => Ok(true),
             Ok(false) => Err(russh::Error::IO(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
@@ -71,7 +74,7 @@ impl Handler for ClientHandler {
                     self.host, self.port
                 ),
             ))),
-            Err(russh_keys::Error::KeyChanged { line }) => {
+            Err(russh::keys::Error::KeyChanged { line }) => {
                 Err(russh::Error::IO(std::io::Error::new(
                     std::io::ErrorKind::PermissionDenied,
                     format!(

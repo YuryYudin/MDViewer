@@ -123,15 +123,14 @@ async-trait = "0.1"
 # The debug-build e2e workflow is `cargo build --features e2e`.
 tauri-plugin-webdriver-automation = { version = "0.1", optional = true }
 
-# A4: Windows russh transport. Pinned to russh 0.45 / russh-keys 0.45 /
-# russh-sftp 2.0 because newer russh majors (0.50+) churned the
-# `Handler` trait shape and the design's host-key verification flow
-# depends on the 0.45 shape. The final wiring (also covered by A9)
-# leaves these here under the cfg(windows) target stanza.
+# A4: Windows russh transport. russh 0.61 folds the former `russh-keys`
+# crate into `russh::keys`, so there is no separate russh-keys dependency
+# any more. Upgraded from 0.45 to clear the 2026-06 russh DoS advisory
+# cluster (RUSTSEC-2026-0154 et al., all fixed in 0.61.0); the host-key
+# verification + agent/password auth flow was ported to the 0.61 API.
 [target.'cfg(windows)'.dependencies]
-russh = "0.45"
-russh-sftp = "2.0"
-russh-keys = "0.45"
+russh = "0.61"
+russh-sftp = "2.1"
 
 [features]
 default = []
