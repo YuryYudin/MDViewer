@@ -141,7 +141,7 @@ e2e = ["dep:tauri-plugin-webdriver-automation"]
 # tempfile is a regular dep now (A6 needs it at runtime for the askpass
 # socket dir); listing it again here would be a duplicate.
 pretty_assertions = "1"
-criterion = "0.5"
+criterion = "0.8"
 # A3: ssh::transport trait test asserts the client-side sha256 hash hex.
 hex = "0.4"
 # Drive integration tests mutate the process-global `MDVIEWER_DRIVE_API_BASE`
