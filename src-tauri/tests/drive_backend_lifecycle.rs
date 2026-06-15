@@ -118,6 +118,7 @@ fn drive_disconnect_downgrades_drive_desktop_tab_to_local() {
     let tab_id = match outcome {
         OpenOutcome::Document(r) => r.tab_id,
         OpenOutcome::Conflict { .. } => panic!("expected Document on first open"),
+        OpenOutcome::ExternalReload { .. } => panic!("expected Document on first open"),
     };
     assert_eq!(
         ws.tab(&tab_id).unwrap().backend,

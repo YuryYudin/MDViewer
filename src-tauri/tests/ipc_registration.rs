@@ -792,7 +792,7 @@ mod window_scoping {
         let mut g = state.lock().unwrap();
         g.new_window("win-2".to_string());
         // Doc lives in main.
-        g.open_document_for(MAIN_LABEL, &doc, OpenOpts::default()).unwrap();
+        g.open_document_for(MAIN_LABEL, &doc, OpenOpts::default(), false).unwrap();
 
         // Dispatch is "focused = win-2"; canonicalize the path the way the
         // dispatch does before the owner lookup.
@@ -881,7 +881,7 @@ mod window_scoping {
 
         let mut g = state.lock().unwrap();
         // Doc starts open in main.
-        g.open_document_for(MAIN_LABEL, &doc, OpenOpts::default()).unwrap();
+        g.open_document_for(MAIN_LABEL, &doc, OpenOpts::default(), false).unwrap();
         assert_eq!(g.list_open_documents_for(MAIN_LABEL).len(), 1);
 
         // `mdviewer -w relocate.md` spawns a fresh window.
@@ -923,7 +923,7 @@ mod window_scoping {
         let resolution = g.open_in_new_window_resolve(&doc);
         match new_window_target_action(&resolution, &new_label) {
             NewWindowTargetAction::Open => {
-                g.open_document_for(&new_label, &doc, OpenOpts::default()).unwrap();
+                g.open_document_for(&new_label, &doc, OpenOpts::default(), false).unwrap();
             }
             NewWindowTargetAction::Relocate { .. } => panic!("doc was not open; expected Open"),
         }
@@ -1114,8 +1114,8 @@ mod window_scoping {
         let mut g = state.lock().unwrap();
         g.new_window("win-2".to_string());
 
-        g.open_document_for(MAIN_LABEL, &doc_a, OpenOpts::default()).unwrap();
-        g.open_document_for("win-2", &doc_b, OpenOpts::default()).unwrap();
+        g.open_document_for(MAIN_LABEL, &doc_a, OpenOpts::default(), false).unwrap();
+        g.open_document_for("win-2", &doc_b, OpenOpts::default(), false).unwrap();
 
         let main_tabs: Vec<_> = g
             .list_open_documents_for(MAIN_LABEL)
@@ -1150,8 +1150,8 @@ mod window_scoping {
 
         let mut g = state.lock().unwrap();
         g.new_window("win-2".to_string());
-        g.open_document_for(MAIN_LABEL, &doc_a, OpenOpts::default()).unwrap();
-        g.open_document_for("win-2", &doc_b, OpenOpts::default()).unwrap();
+        g.open_document_for(MAIN_LABEL, &doc_a, OpenOpts::default(), false).unwrap();
+        g.open_document_for("win-2", &doc_b, OpenOpts::default(), false).unwrap();
 
         // Canonical paths (open_document canonicalizes before storing).
         let canon_a = doc_a.canonicalize().unwrap();
@@ -1204,16 +1204,18 @@ mod window_scoping {
         let mut g = state.lock().unwrap();
         g.new_window("win-2".to_string());
         // First opened in win-2.
-        let first = g.open_document_for("win-2", &doc, OpenOpts::default()).unwrap();
+        let first = g.open_document_for("win-2", &doc, OpenOpts::default(), false).unwrap();
         let first_id = match first {
             OpenOutcome::Document(r) => r.tab_id,
             OpenOutcome::Conflict { .. } => panic!("unexpected conflict"),
+            OpenOutcome::ExternalReload { .. } => panic!("unexpected external reload"),
         };
         // main asks to open the same path; it stays owned by win-2.
-        let second = g.open_document_for(MAIN_LABEL, &doc, OpenOpts::default()).unwrap();
+        let second = g.open_document_for(MAIN_LABEL, &doc, OpenOpts::default(), false).unwrap();
         let second_id = match second {
             OpenOutcome::Document(r) => r.tab_id,
             OpenOutcome::Conflict { .. } => panic!("unexpected conflict"),
+            OpenOutcome::ExternalReload { .. } => panic!("unexpected external reload"),
         };
         assert_eq!(first_id, second_id, "same tab re-used, not duplicated");
         assert_eq!(g.list_open_documents_for("win-2").len(), 1);
@@ -1234,7 +1236,7 @@ mod window_scoping {
 
         let mut g = state.lock().unwrap();
         g.new_window("win-2".to_string());
-        g.open_document_for("win-2", &doc, OpenOpts::default()).unwrap();
+        g.open_document_for("win-2", &doc, OpenOpts::default(), false).unwrap();
 
         let canon = doc.canonicalize().unwrap();
         assert_eq!(g.owning_window_for_watched(&canon), Some("win-2"));
@@ -1917,11 +1919,14 @@ fn g1_detach_tab_workspace_relocates_into_new_window() {
 
     let mut g = state.lock().unwrap();
     // Two tabs in main (a two-tab strip, as the S10 gesture drags one off).
-    g.open_document_for(MAIN_LABEL, &doc_a, OpenOpts::default()).unwrap();
-    let outcome = g.open_document_for(MAIN_LABEL, &doc_b, OpenOpts::default()).unwrap();
+    g.open_document_for(MAIN_LABEL, &doc_a, OpenOpts::default(), false).unwrap();
+    let outcome = g.open_document_for(MAIN_LABEL, &doc_b, OpenOpts::default(), false).unwrap();
     let tab_b = match outcome {
         mdviewer_lib::workspace::OpenOutcome::Document(r) => r.tab_id,
         mdviewer_lib::workspace::OpenOutcome::Conflict { .. } => panic!("unexpected conflict"),
+        mdviewer_lib::workspace::OpenOutcome::ExternalReload { .. } => {
+            panic!("unexpected external reload")
+        }
     };
     assert_eq!(g.list_open_documents_for(MAIN_LABEL).len(), 2);
 

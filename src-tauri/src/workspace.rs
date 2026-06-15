@@ -314,6 +314,14 @@ pub enum OpenOutcome {
         local: String,    // last-saved bytes (the user's view of "mine")
         incoming: String, // what's on disk now
     },
+    /// The on-disk copy changed since open but the tab has **no unsaved
+    /// edits**, and `external_change_behavior` is `Ask`. There is nothing to
+    /// merge (the in-memory copy is identical to the last-saved bytes), so the
+    /// frontend should surface the lightweight "changed on disk — reload?"
+    /// banner rather than the 3-way merge. The IPC layer translates this into
+    /// an `external-change` (ask) event plus a `Document` carrying the current
+    /// content, so the view stays put until the user chooses to reload.
+    ExternalReload { tab_id: String, path: PathBuf },
 }
 
 /// C3: result of `export_document` — the destination folder plus the
@@ -1321,7 +1329,10 @@ impl Workspace {
     /// Kept so callers that don't carry a window label (tests, the CLI /
     /// session-restore boot path that targets `main`) keep working.
     pub fn open_document(&mut self, path: &Path, opts: OpenOpts) -> Result<OpenOutcome> {
-        self.open_document_for(MAIN_LABEL, path, opts)
+        // The label-free wrapper has no watcher to consult for the dirty bit;
+        // it's used by tests and the CLI/session-restore boot path, none of
+        // which carry unsaved editor state, so `dirty = false` (never merge).
+        self.open_document_for(MAIN_LABEL, path, opts, false)
     }
 
     /// B2: window-scoped open. Identical to the single-window `open_document`
@@ -1337,6 +1348,7 @@ impl Workspace {
         label: &str,
         path: &Path,
         _opts: OpenOpts,
+        dirty: bool,
     ) -> Result<OpenOutcome> {
         let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
 
@@ -1354,19 +1366,57 @@ impl Workspace {
                 tab.last_saved_snapshot.clone(),
             )
         });
-        if let Some((id, p, html, source, threads, snapshot)) = existing {
-            // C2: re-opening an already-open tab still has to surface
-            // divergence. If disk bytes differ from the in-memory snapshot,
-            // emit Conflict instead of silently activating the stale tab.
+        if let Some((id, p, mut html, mut source, mut threads, snapshot)) = existing {
+            // Re-opening an already-open tab whose on-disk copy changed since
+            // we loaded it. A 3-way merge is ONLY warranted when the user has
+            // unsaved local edits to protect (`dirty`) — otherwise the
+            // in-memory copy is identical to the last-saved bytes and there is
+            // nothing to merge. With no edits we defer to the user's
+            // `external_change_behavior`: silently reload, prompt (Ask), or
+            // keep the current view (Ignore). This is the fix for the
+            // "reload offered a bogus merge even though I changed nothing" bug.
             if let Some(snap) = snapshot {
                 if let Ok(disk) = std::fs::read_to_string(&canonical) {
                     if disk != snap {
-                        return Ok(OpenOutcome::Conflict {
-                            tab_id: id,
-                            path: canonical,
-                            local: snap,
-                            incoming: disk,
-                        });
+                        if dirty {
+                            return Ok(OpenOutcome::Conflict {
+                                tab_id: id,
+                                path: canonical,
+                                local: snap,
+                                incoming: disk,
+                            });
+                        }
+                        use crate::settings::ExternalChangeBehavior as B;
+                        match self.settings.get().editor.external_change_behavior {
+                            B::Reload => {
+                                // Pull the new bytes in and return them so the
+                                // reopen shows the current content.
+                                self.refresh_tab(&canonical)?;
+                                if let Some(t) = self.tabs.get(&id) {
+                                    html = t.render.html.clone();
+                                    source = t.source.clone();
+                                    threads = t.comments.list_threads().to_vec();
+                                }
+                            }
+                            B::Ask => {
+                                // Activate the tab (so it's current) and let the
+                                // IPC layer raise the reload banner.
+                                let win = self
+                                    .tabs
+                                    .get(&id)
+                                    .map(|t| t.window_label.clone())
+                                    .unwrap_or_else(|| MAIN_LABEL.to_string());
+                                self.active.insert(win, Some(id.clone()));
+                                self.persist_session();
+                                return Ok(OpenOutcome::ExternalReload {
+                                    tab_id: id,
+                                    path: canonical,
+                                });
+                            }
+                            // Ignore: fall through and re-activate the stale
+                            // cached content untouched.
+                            B::Ignore => {}
+                        }
                     }
                 }
             }
@@ -1393,29 +1443,12 @@ impl Workspace {
         let source = std::fs::read_to_string(&canonical)
             .with_context(|| format!("read {:?}", canonical))?;
 
-        // C2: a closed-and-reopened path with a divergent on-disk copy
-        // returns Conflict before the new tab is even constructed. The
-        // snapshot stays in `closed_snapshots` until the user resolves via
-        // the Conflict view; the resulting save_document call overwrites
-        // it via prime_saved_snapshot.
-        if let Some(prior) = self.closed_snapshots.get(&canonical).cloned() {
-            if prior != source {
-                let id = format!(
-                    "tab-{:x}",
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_nanos()
-                );
-                return Ok(OpenOutcome::Conflict {
-                    tab_id: id,
-                    path: canonical,
-                    local: prior,
-                    incoming: source,
-                });
-            }
-        }
-
+        // A closed tab has no live editor and therefore no unsaved edits to
+        // protect, so a closed-and-reopened path is always opened with the
+        // current on-disk content — never a merge. (Previously this returned
+        // Conflict whenever the disk copy differed from the bytes captured at
+        // close, which surfaced a bogus 3-way merge on a plain reopen of a
+        // file that had simply changed on disk meanwhile.)
         let s = self.settings.get();
         let opts = RenderOptions {
             syntax_highlighting: s.editor.syntax_highlighting,
@@ -2222,6 +2255,9 @@ impl Workspace {
             OpenOutcome::Conflict { .. } => {
                 panic!("test_open_drive_desktop_tab: expected Document, got Conflict")
             }
+            OpenOutcome::ExternalReload { .. } => {
+                panic!("test_open_drive_desktop_tab: expected Document, got ExternalReload")
+            }
         };
         // Force the backend to DriveDesktop regardless of detect path —
         // tests use arbitrary tempdirs that don't match Drive Desktop
@@ -2733,7 +2769,113 @@ mod tests {
         {
             super::OpenOutcome::Document(r) => r.tab_id,
             super::OpenOutcome::Conflict { .. } => panic!("unexpected conflict"),
+            super::OpenOutcome::ExternalReload { .. } => panic!("unexpected external reload"),
         }
+    }
+
+    /// Reopen-after-external-change behavior. The 3-way merge must only fire
+    /// when the tab has unsaved local edits (`dirty`); with no edits the open
+    /// path honors `external_change_behavior` instead of forcing a bogus merge.
+    #[test]
+    fn reopen_after_external_change_reloads_when_not_dirty() {
+        use super::OpenOutcome;
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::new_for_test(dir.path());
+        ws.settings_store()
+            .update(|s| {
+                s.editor.external_change_behavior =
+                    crate::settings::ExternalChangeBehavior::Reload
+            })
+            .unwrap();
+        let p = dir.path().join("doc.md");
+        std::fs::write(&p, "# original").unwrap();
+        open_md(&mut ws, dir.path(), "doc.md", "# original");
+
+        // A third party rewrites the file.
+        std::fs::write(&p, "# changed externally").unwrap();
+
+        // Reopen with no unsaved edits → fresh content, never a conflict.
+        let outcome = ws
+            .open_document_for(MAIN_LABEL, &p, super::OpenOpts::default(), false)
+            .expect("reopen ok");
+        match outcome {
+            OpenOutcome::Document(r) => {
+                assert!(
+                    r.source.contains("changed externally"),
+                    "expected reloaded content, got: {}",
+                    r.source
+                );
+            }
+            other => panic!("expected Document reload, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reopen_after_external_change_asks_when_not_dirty_and_behavior_ask() {
+        use super::OpenOutcome;
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::new_for_test(dir.path());
+        // Default behavior is Ask, but set it explicitly for clarity.
+        ws.settings_store()
+            .update(|s| {
+                s.editor.external_change_behavior =
+                    crate::settings::ExternalChangeBehavior::Ask
+            })
+            .unwrap();
+        let p = dir.path().join("doc.md");
+        std::fs::write(&p, "# original").unwrap();
+        open_md(&mut ws, dir.path(), "doc.md", "# original");
+        std::fs::write(&p, "# changed externally").unwrap();
+
+        let outcome = ws
+            .open_document_for(MAIN_LABEL, &p, super::OpenOpts::default(), false)
+            .expect("reopen ok");
+        assert!(
+            matches!(outcome, OpenOutcome::ExternalReload { .. }),
+            "Ask + no edits should prompt to reload, not merge; got {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn reopen_after_external_change_conflicts_only_when_dirty() {
+        use super::OpenOutcome;
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::new_for_test(dir.path());
+        let p = dir.path().join("doc.md");
+        std::fs::write(&p, "# original").unwrap();
+        open_md(&mut ws, dir.path(), "doc.md", "# original");
+        std::fs::write(&p, "# changed externally").unwrap();
+
+        // dirty = true → unsaved edits to protect → genuine merge.
+        let outcome = ws
+            .open_document_for(MAIN_LABEL, &p, super::OpenOpts::default(), true)
+            .expect("reopen ok");
+        match outcome {
+            OpenOutcome::Conflict { local, incoming, .. } => {
+                assert!(local.contains("original"));
+                assert!(incoming.contains("changed externally"));
+            }
+            other => panic!("expected Conflict when dirty, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reopen_with_no_disk_change_returns_document() {
+        use super::OpenOutcome;
+        let dir = tempfile::tempdir().unwrap();
+        let mut ws = Workspace::new_for_test(dir.path());
+        let p = dir.path().join("doc.md");
+        std::fs::write(&p, "# original").unwrap();
+        open_md(&mut ws, dir.path(), "doc.md", "# original");
+
+        // No external change: even dirty, reopening just activates the tab.
+        let outcome = ws
+            .open_document_for(MAIN_LABEL, &p, super::OpenOpts::default(), true)
+            .expect("reopen ok");
+        assert!(
+            matches!(outcome, OpenOutcome::Document(_)),
+            "no divergence should never conflict; got {outcome:?}"
+        );
     }
 
     /// Per-window `order`/`active` are isolated: a tab opened in `main` and a
@@ -3070,6 +3212,7 @@ mod tests {
         {
             super::OpenOutcome::Document(r) => r.tab_id,
             super::OpenOutcome::Conflict { .. } => panic!("unexpected conflict"),
+            super::OpenOutcome::ExternalReload { .. } => panic!("unexpected external reload"),
         };
 
         // Query via the SYMLINK form — canonicalizes to realdir/doc.md.

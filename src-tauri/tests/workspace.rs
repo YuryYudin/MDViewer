@@ -13,6 +13,7 @@ fn open_doc(ws: &mut Workspace, path: &std::path::Path) -> mdviewer_lib::workspa
     match ws.open_document(path, OpenOpts::default()).unwrap() {
         OpenOutcome::Document(r) => r,
         OpenOutcome::Conflict { .. } => panic!("expected document, got conflict"),
+        OpenOutcome::ExternalReload { .. } => panic!("expected document, got external reload"),
     }
 }
 
@@ -319,10 +320,10 @@ fn opening_md_with_existing_sidecar_loads_all_threads_anchored() {
 }
 
 #[test]
-fn reopen_after_external_rewrite_returns_conflict() {
-    // C2: open → close → external rewrite → reopen must surface
-    // OpenOutcome::Conflict so the IPC layer can route to Conflict.ts
-    // instead of silently mounting Document.ts on top of stale bytes.
+fn reopen_after_external_rewrite_loads_fresh_content() {
+    // A closed tab has no unsaved edits, so reopening a path that was
+    // rewritten by another tool meanwhile must just load the new content —
+    // NOT surface a 3-way merge (that was the "bogus merge on reload" bug).
     let (mut ws, tmp) = fresh();
     let md = tmp.path().join("doc.md");
     fs::write(&md, "original\n").unwrap();
@@ -334,20 +335,21 @@ fn reopen_after_external_rewrite_returns_conflict() {
 
     let outcome = ws.open_document(&md, OpenOpts::default()).unwrap();
     match outcome {
-        OpenOutcome::Conflict { local, incoming, .. } => {
-            assert_eq!(local, "original\n");
-            assert_eq!(incoming, "rewritten by another tool\n");
+        OpenOutcome::Document(r) => {
+            assert_eq!(r.source, "rewritten by another tool\n");
         }
-        OpenOutcome::Document(_) => panic!("expected Conflict, got Document"),
+        other => panic!("expected fresh Document, got {other:?}"),
     }
 }
 
 #[test]
-fn reopen_already_open_tab_with_diverged_disk_returns_conflict() {
-    // C2: even without a close in between, re-invoking open_document on a
-    // path whose disk bytes diverge from the in-memory snapshot must
-    // surface Conflict — otherwise the active-tab early-return masks
-    // external edits made while the tab was open but inactive.
+fn reopen_already_open_diverged_no_edits_asks_to_reload() {
+    // Re-invoking open_document on an already-open path whose disk bytes
+    // diverged, with NO unsaved edits (open_document → dirty=false) and the
+    // default Ask behavior, must surface ExternalReload (the lightweight
+    // reload prompt) rather than the 3-way merge. A real merge only happens
+    // when there are unsaved edits to protect (covered by the lib-level
+    // `reopen_after_external_change_conflicts_only_when_dirty`).
     let (mut ws, tmp) = fresh();
     let md = tmp.path().join("doc.md");
     fs::write(&md, "v1\n").unwrap();
@@ -356,11 +358,10 @@ fn reopen_already_open_tab_with_diverged_disk_returns_conflict() {
     fs::write(&md, "v2\n").unwrap();
 
     match ws.open_document(&md, OpenOpts::default()).unwrap() {
-        OpenOutcome::Conflict { local, incoming, .. } => {
-            assert_eq!(local, "v1\n");
-            assert_eq!(incoming, "v2\n");
+        OpenOutcome::ExternalReload { path, .. } => {
+            assert_eq!(path, md.canonicalize().unwrap());
         }
-        OpenOutcome::Document(_) => panic!("expected Conflict, got Document"),
+        other => panic!("expected ExternalReload, got {other:?}"),
     }
 }
 
@@ -428,5 +429,6 @@ fn prime_saved_snapshot_clears_divergence() {
     match ws.open_document(&md, OpenOpts::default()).unwrap() {
         OpenOutcome::Document(r) => assert_eq!(r.tab_id, id),
         OpenOutcome::Conflict { .. } => panic!("snapshot was primed to match disk"),
+        OpenOutcome::ExternalReload { .. } => panic!("snapshot was primed to match disk"),
     }
 }

@@ -383,13 +383,14 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
     await tauriEvent.listen<{ path: string; kind: string; action: string }>(
       'external-change',
       (ev) => {
-        const banner = body.querySelector<HTMLElement>('[data-view="external-change"]');
         const action = (ev.payload.action as 'reload' | 'ask' | 'ignore') ?? 'ask';
         if (action === 'ignore') return;
         externalListener?.(ev.payload.path, action);
         // Even if the active view doesn't claim the event, render a default
-        // banner with a Reload action so the user always has a path back.
-        if (!banner) {
+        // banner so the user always has a path back. Re-query AFTER the
+        // active listener runs — it may have just rendered its own actionable
+        // banner, in which case we must not stack a second one on top.
+        if (!body.querySelector<HTMLElement>('[data-view="external-change"]')) {
           const b = document.createElement('aside');
           b.setAttribute('data-view', 'external-change');
           b.className = `banner banner-${action}`;
@@ -917,21 +918,48 @@ export async function mountWorkspace(root: HTMLElement, ipc: Ipc): Promise<Works
     // cached HTML and the user would never see the new content.
     externalListener = (path, action) => {
       if (path !== tab.path) return;
+      const applyReload = async () => {
+        try {
+          const fresh = await ipc.reloadDocument(path);
+          activeTab.html = fresh.html;
+          activeTab.source = fresh.source;
+          activeTab.threads = fresh.threads;
+        } catch {
+          // The reload IPC can fail (file deleted, permissions changed);
+          // fall through to a refresh that will redraw whatever cache
+          // we still have so the user isn't left looking at a black
+          // screen.
+        }
+        void refresh();
+      };
       if (action === 'reload') {
-        void (async () => {
-          try {
-            const fresh = await ipc.reloadDocument(path);
-            activeTab.html = fresh.html;
-            activeTab.source = fresh.source;
-            activeTab.threads = fresh.threads;
-          } catch {
-            // The reload IPC can fail (file deleted, permissions changed);
-            // fall through to a refresh that will redraw whatever cache
-            // we still have so the user isn't left looking at a black
-            // screen.
-          }
-          void refresh();
-        })();
+        void applyReload();
+        return;
+      }
+      if (action === 'ask') {
+        // The file changed on disk and this tab has no unsaved edits (the
+        // backend only routes here in that case — a real edit conflict goes
+        // to the merge view instead). Offer a one-click reload or let the
+        // user keep the current view; never force a merge.
+        body.querySelector('[data-view="external-change"]')?.remove();
+        const b = document.createElement('aside');
+        b.setAttribute('data-view', 'external-change');
+        b.className = 'banner banner-ask';
+        const msg = document.createElement('span');
+        msg.textContent = `${path} changed on disk.`;
+        const reloadBtn = document.createElement('button');
+        reloadBtn.setAttribute('data-action', 'reload');
+        reloadBtn.textContent = 'Reload';
+        reloadBtn.addEventListener('click', () => {
+          b.remove();
+          void applyReload();
+        });
+        const keepBtn = document.createElement('button');
+        keepBtn.setAttribute('data-action', 'keep');
+        keepBtn.textContent = 'Keep current';
+        keepBtn.addEventListener('click', () => b.remove());
+        b.append(msg, reloadBtn, keepBtn);
+        body.prepend(b);
       }
     };
   }
