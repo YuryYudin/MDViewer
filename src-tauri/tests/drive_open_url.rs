@@ -173,6 +173,7 @@ fn drive_api_tab_path_does_not_collide_with_local_open_of_cache_file() {
     let local_tab_id = match local_outcome {
         OpenOutcome::Document(r) => r.tab_id,
         OpenOutcome::Conflict { .. } => panic!("expected Document, got Conflict"),
+        OpenOutcome::ExternalReload { .. } => panic!("expected Document, got ExternalReload"),
     };
     assert_ne!(
         drive_summary.id, local_tab_id,

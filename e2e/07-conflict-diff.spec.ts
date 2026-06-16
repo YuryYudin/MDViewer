@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { prepareFixture, openDocByE2eHook } from './helpers/app';
 
-describe('Three-way diff resolves a divergent .md', () => {
+describe('External change with no local edits does not force a merge', () => {
   let fixture: Awaited<ReturnType<typeof prepareFixture>>;
 
   before(async () => {
@@ -10,54 +10,42 @@ describe('Three-way diff resolves a divergent .md', () => {
   });
   after(async () => { await fixture.cleanup(); });
 
-  it('shows the conflict view, accepts a hunk, and writes the merged bytes', async () => {
-    // C2's auto-detect path: open a file → close it (so closed_snapshots
-    // tracks the saved copy) → external rewrite → reopen → Conflict.
-    // The spec used to assume an "incoming sibling" flow that the app
-    // doesn't actually implement.
+  it('reopening an externally-changed doc with no edits stays a document, never a merge', async () => {
+    // Regression guard for the "bogus merge on reload" bug: a document that
+    // changed on disk while open but with NO unsaved edits must NOT surface
+    // the 3-way merge on reopen. The merge UI for genuine unsaved-edit
+    // conflicts is covered by tests/views/Conflict.test.ts (accept-left/right
+    // + finish-merge) and e2e/24-ssh-conflict.spec.ts (save-conflict modal);
+    // the reload-prompt decision is covered by the workspace lib tests
+    // (reopen_after_external_change_* in src-tauri/src/workspace.rs).
     const target = path.join(fixture.tmpDir, 'sample.md');
     const local = await fs.readFile(target, 'utf8');
 
-    // First open establishes the tab + closed_snapshots entry.
+    // First open establishes the tab; the document view mounts.
     await openDocByE2eHook(target);
     await browser.waitUntil(
       async () => browser.$('[data-view="document"]').isExisting(),
       { timeout: 10_000, timeoutMsg: 'document view did not mount on first open' },
     );
 
-    // Close the tab via the "×" close button on its TabBar entry. The IPC
-    // closeTab call propagates the snapshot into closed_snapshots.
-    const closeBtn = browser.$('[data-region="tabbar"] [data-test="tab-close"]');
-    expect(await closeBtn.isExisting()).toBe(true);
-    await closeBtn.click();
-
-    // External rewrite: change one line of the file from outside the app.
+    // External rewrite of one line, from outside the app, with no edits made.
     const incoming = local.replace('Selectable phrase one', 'EXTERNALLY edited phrase one');
     await fs.writeFile(target, incoming, 'utf8');
 
-    // Reopen — Workspace.open_document compares closed_snapshots against
-    // disk and returns OpenOutcome::Conflict, which Workspace.ts routes
-    // to mountConflict.
+    // Reopen the same path. With no unsaved edits the backend must keep this a
+    // Document (and offer a reload) rather than mounting the merge view.
     await openDocByE2eHook(target);
     await browser.waitUntil(
-      async () => browser.$('[data-view="conflict"]').isExisting(),
-      { timeout: 10_000, timeoutMsg: 'conflict view did not appear' },
+      async () => browser.$('[data-view="document"]').isExisting(),
+      { timeout: 10_000, timeoutMsg: 'document view did not mount on reopen' },
     );
 
-    // Conflict.ts uses [data-hunk-index]; click Accept Right on the first
-    // hunk so the merged bytes carry the incoming change.
-    const firstHunk = browser.$('[data-view="conflict"] [data-hunk-index="0"]');
-    expect(await firstHunk.isExisting()).toBe(true);
-    await firstHunk.$('[data-action="accept-right"]').click();
-    await browser.$('[data-action="finish-merge"]').click();
+    // The 3-way merge view must NOT appear — that was the bug.
+    expect(await browser.$('[data-view="conflict"]').isExisting()).toBe(false);
 
-    // After the merge save, disk reflects the chosen incoming bytes.
-    await browser.waitUntil(
-      async () => {
-        const onDisk = await fs.readFile(target, 'utf8');
-        return onDisk.includes('EXTERNALLY edited phrase one');
-      },
-      { timeout: 5_000, timeoutMsg: 'merged bytes never landed on disk' },
-    );
+    // Reopen is non-destructive: the file on disk is untouched (no merge/save
+    // wrote anything), so the external content is preserved verbatim.
+    const onDisk = await fs.readFile(target, 'utf8');
+    expect(onDisk).toBe(incoming);
   });
 });

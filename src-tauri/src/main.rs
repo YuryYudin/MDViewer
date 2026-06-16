@@ -94,10 +94,19 @@ fn open_document(
         }
         _ => label.clone(),
     };
+    // Read the unsaved-edits bit BEFORE opening (the watcher clears it just
+    // below). A 3-way merge on reopen is only warranted when the tab has
+    // unsaved edits to protect; without it, an external change reloads/asks
+    // per the user's setting instead of forcing a bogus merge.
+    let dirty = watcher
+        .lock()
+        .map(|w| w.is_unsaved(&path))
+        .unwrap_or(false);
+
     let outcome = {
         let mut ws = state.lock().map_err(|e| e.to_string())?;
         let outcome = ws
-            .open_document_for(&open_label, &path, OpenOpts::default())
+            .open_document_for(&open_label, &path, OpenOpts::default(), dirty)
             .map_err(|e| e.to_string())?;
 
         // Register the .md and its sidecar with the watcher so external
@@ -111,6 +120,36 @@ fn open_document(
             w.mark_unsaved(&path, false);
         }
         outcome
+    };
+
+    // No unsaved edits + Ask behavior + an external change: surface the
+    // standard "changed on disk" banner (which carries a Reload action)
+    // instead of the 3-way merge, and hand back the current content so the
+    // view stays put until the user chooses to reload.
+    let outcome = match outcome {
+        OpenOutcome::ExternalReload { tab_id, path: reload_path } => {
+            let _ = app.emit_to(
+                open_label.as_str(),
+                "external-change",
+                serde_json::json!({
+                    "path": reload_path,
+                    "kind": "markdown",
+                    "action": "ask",
+                }),
+            );
+            let ws = state.lock().map_err(|e| e.to_string())?;
+            let tab = ws
+                .tab(&tab_id)
+                .ok_or_else(|| format!("tab not found after external reload: {tab_id}"))?;
+            OpenOutcome::Document(mdviewer_lib::workspace::OpenResult {
+                tab_id: tab.id.clone(),
+                path: tab.path.clone(),
+                html: tab.render.html.clone(),
+                source: tab.source.clone(),
+                threads: tab.comments.list_threads().to_vec(),
+            })
+        }
+        other => other,
     };
 
     if let OpenOutcome::Conflict {
@@ -1327,7 +1366,7 @@ fn dispatch_cli_targets_new_window(
                             }
                         }
                         NewWindowTargetAction::Open => {
-                            match ws.open_document_for(&new_label, &path, OpenOpts::default()) {
+                            match ws.open_document_for(&new_label, &path, OpenOpts::default(), false) {
                                 Ok(_) => tracing::info!(
                                     "{source_label} -w opened {} into {}",
                                     path.display(),
@@ -1504,7 +1543,7 @@ fn dispatch_cli_targets(
                         path.canonicalize().unwrap_or_else(|_| path.clone());
                     let owner = ws.owning_window_label(&canonical).map(|s| s.to_string());
                     let open_label = route_target_label(&focused_label, owner.as_deref());
-                    match ws.open_document_for(&open_label, &path, OpenOpts::default()) {
+                    match ws.open_document_for(&open_label, &path, OpenOpts::default(), false) {
                         Ok(_) => {
                             tracing::info!(
                                 "opened from {} into {}: {}",
@@ -2008,7 +2047,7 @@ fn open_in_new_window(
             {
                 let mut ws = state.lock().map_err(|e| e.to_string())?;
                 ws.new_window(label.clone());
-                ws.open_document_for(&label, &path, OpenOpts::default())
+                ws.open_document_for(&label, &path, OpenOpts::default(), false)
                     .map_err(|e| e.to_string())?;
                 // Register the .md + sidecar with the watcher, mirroring
                 // open_document so external changes surface for the new window.
@@ -2591,7 +2630,7 @@ fn main() {
                         if path.to_string_lossy().starts_with("drive-api://") {
                             continue;
                         }
-                        match ws.open_document_for(&target_label, path, OpenOpts::default()) {
+                        match ws.open_document_for(&target_label, path, OpenOpts::default(), false) {
                             Ok(_) => tracing::info!(
                                 "restored {} into {}",
                                 path.display(),

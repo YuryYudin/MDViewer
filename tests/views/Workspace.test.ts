@@ -565,6 +565,49 @@ describe('Workspace', () => {
     expect(ipc.reloadDocument).toHaveBeenCalledWith('/docs/x.md');
   });
 
+  it('external-change "ask" renders an actionable reload banner (no merge)', async () => {
+    // The no-unsaved-edits external-change path must offer a reload/keep
+    // banner — NOT the 3-way merge. Clicking Reload pulls fresh content.
+    const root = document.createElement('div');
+    const ids: string[] = ['t-1'];
+    const ipc = makeIpc();
+    (ipc.listOpenDocuments as any).mockImplementation(() =>
+      Promise.resolve(ids.map((id) => ({ id, path: `/docs/${id}.md` }))),
+    );
+    (ipc.reloadDocument as any) = vi.fn().mockResolvedValue({
+      tab_id: 't-1',
+      path: '/docs/x.md',
+      html: '<p>fresh</p>',
+      threads: [],
+    });
+    const handle = await mountWorkspace(root, ipc);
+    handle.setActive({
+      kind: 'document',
+      tab_id: 't-1',
+      path: '/docs/x.md',
+      html: '<p>stale</p>',
+      threads: [],
+    });
+    await handle.refresh();
+
+    tauriListeners['external-change']![0]!({
+      payload: { path: '/docs/x.md', kind: 'md', action: 'ask' },
+    });
+    await new Promise((r) => setTimeout(r, 5));
+
+    // An actionable banner appears; no merge/conflict view is mounted.
+    const banner = root.querySelector('[data-view="external-change"]');
+    expect(banner).toBeTruthy();
+    const reloadBtn = banner!.querySelector<HTMLButtonElement>('[data-action="reload"]');
+    expect(reloadBtn).toBeTruthy();
+    expect(root.querySelector('[data-view="conflict"]')).toBeNull();
+
+    // Clicking Reload pulls in fresh content via reloadDocument.
+    reloadBtn!.click();
+    await new Promise((r) => setTimeout(r, 5));
+    expect(ipc.reloadDocument).toHaveBeenCalledWith('/docs/x.md');
+  });
+
   it('reloadDocument failure still triggers a refresh so the user is not stranded', async () => {
     const root = document.createElement('div');
     let ids: string[] = ['t-1'];
