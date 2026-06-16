@@ -170,25 +170,44 @@ impl AuthStrategy {
     {
         match self {
             AuthStrategy::AgentOnly => {
-                // Try ssh-agent via russh-keys (named pipe on Win10+, Pageant
-                // fallback). russh 0.45 routes agent-held private keys through
-                // `authenticate_future(user, public_key, signer)`: the agent
-                // client itself implements `auth::Signer`, so russh calls back
-                // into the agent for each sign request rather than receiving
-                // the private key material. Each call moves the agent client
-                // (it's consumed and returned in the result tuple) so we
-                // thread it through the loop manually.
+                // Try ssh-agent via `russh::keys`. russh 0.61's `connect_env`
+                // is Unix-only (it dials a `SSH_AUTH_SOCK` Unix socket); on
+                // Windows the OpenSSH agent is a named pipe, so we dial that
+                // instead. `probe()` only picks `AgentOnly` when
+                // `SSH_AUTH_SOCK` is set, so prefer its value as the pipe path
+                // and fall back to the conventional OpenSSH pipe name.
+                //
+                // russh 0.61 also replaced the old `authenticate_future`
+                // move-dance with `authenticate_publickey_with(user,
+                // public_key, hash_alg, &mut signer)`: `AgentClient` implements
+                // `auth::Signer`, so russh calls back into the agent for each
+                // sign request rather than receiving private key material. The
+                // signer is borrowed (`&mut`) now, so it no longer has to be
+                // threaded through the loop by value.
+                let pipe_path = std::env::var_os("SSH_AUTH_SOCK")
+                    .unwrap_or_else(|| r"\\.\pipe\openssh-ssh-agent".into());
                 if let Ok(mut agent) =
-                    russh_keys::agent::client::AgentClient::connect_env().await
+                    russh::keys::agent::client::AgentClient::connect_named_pipe(&pipe_path).await
                 {
                     if let Ok(ids) = agent.request_identities().await {
-                        let mut signer = agent;
                         for id in ids {
-                            let (returned, result) =
-                                session.authenticate_future(user, id, signer).await;
-                            signer = returned;
-                            if let Ok(true) = result {
-                                return Ok(());
+                            // Only plain public-key identities are driven here;
+                            // certificates use a separate auth method we don't
+                            // offer.
+                            let key = match id {
+                                russh::keys::agent::AgentIdentity::PublicKey {
+                                    key,
+                                    ..
+                                } => key,
+                                _ => continue,
+                            };
+                            if let Ok(result) = session
+                                .authenticate_publickey_with(user, key, None, &mut agent)
+                                .await
+                            {
+                                if result.success() {
+                                    return Ok(());
+                                }
                             }
                         }
                     }
@@ -225,7 +244,7 @@ impl AuthStrategy {
                         ));
                     }
                 };
-                let ok = session
+                let result = session
                     .authenticate_password(user, &answer)
                     .await
                     .map_err(|e| {
@@ -234,7 +253,7 @@ impl AuthStrategy {
                             e.to_string(),
                         ))
                     })?;
-                if !ok {
+                if !result.success() {
                     return Err(super::transport::TransportError::Ssh {
                         code: None,
                         stderr: "password authentication failed".into(),
