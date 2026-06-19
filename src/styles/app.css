@@ -1640,3 +1640,21 @@ body {
 .toast-host .toast[data-level="error"] {
   border-color: var(--danger, #c53030);
 }
+
+/* Print / PDF-export rules (desktop-shell half) — chrome hiding + @page.
+ * Render-target print rules live in the canonical document.css; do not
+ * re-target [data-region='render'] here. Shared by the Print action
+ * (window.print()) and Export-to-PDF (the export_pdf command), which both
+ * render under print media. */
+@media print {
+  @page {
+    margin: 1.6cm;
+  }
+
+  .workspace > [data-region='tabbar'],
+  .workspace > [data-region='status'],
+  .workspace > [data-region='body'] [data-region='sidebar'],
+  [data-view='document'] [data-region='doc-toolbar'] {
+    display: none !important;
+  }
+}

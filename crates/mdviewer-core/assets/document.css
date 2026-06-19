@@ -724,3 +724,77 @@ body.theme-dark .syn-markup.syn-ignored.syn-git_gutter {
 body.theme-dark .syn-markup.syn-untracked.syn-git_gutter {
  color: #565656;
 }
+
+/* ---------------------------------------------------------------------------
+ * Print / PDF-export rules (render-target half).
+ *
+ * Governs both the Print action (window.print()) and Export-to-PDF
+ * (the export_pdf command), which both render under print media. Chrome
+ * hiding + @page margins live in the desktop shell's app.css; everything
+ * that targets the render container lives here so it stays canonical and
+ * a future Android print path inherits it. Inert on Android today.
+ * ------------------------------------------------------------------------- */
+@media print {
+  /* Full-bleed: let content flow across pages, drop screen padding. Force
+   * white/black regardless of the active theme so the dark theme's
+   * --surface (near-black) / --text (near-white) tokens cannot leak into
+   * printed output. */
+  [data-region='render'] {
+    overflow: visible !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    max-width: none !important;
+    background: #fff !important;
+    color: #000 !important;
+  }
+
+  /* Print-safe colors on ordinary text only. Scoped to text-bearing
+   * elements (NOT `[data-region='render'] *`) so syntax-highlight token
+   * spans (.syn-*) keep their own colors. */
+  [data-region='render'] p,
+  [data-region='render'] li,
+  [data-region='render'] h1,
+  [data-region='render'] h2,
+  [data-region='render'] h3,
+  [data-region='render'] h4,
+  [data-region='render'] h5,
+  [data-region='render'] h6,
+  [data-region='render'] blockquote,
+  [data-region='render'] td,
+  [data-region='render'] th {
+    background: transparent !important;
+    color: #000 !important;
+  }
+
+  /* Comments are excluded from printed output (clean document). Neutralize
+   * both the desktop `mark[data-anchor]` highlight and the Android
+   * `.anchored` wrapper so a shared print path stays clean. */
+  [data-region='render'] mark[data-anchor],
+  [data-region='render'] mark[data-anchor].active,
+  [data-region='render'] mark[data-anchor].resolved,
+  .anchored,
+  .anchored[data-resolved] {
+    background: none !important;
+    background-color: transparent !important;
+  }
+
+  /* Page-break hygiene: keep headings with following content; never split
+   * a code block, table, or image across a page boundary. */
+  [data-region='render'] h1,
+  [data-region='render'] h2,
+  [data-region='render'] h3,
+  [data-region='render'] h4,
+  [data-region='render'] h5,
+  [data-region='render'] h6 {
+    break-after: avoid;
+  }
+  [data-region='render'] pre,
+  [data-region='render'] table,
+  [data-region='render'] img {
+    break-inside: avoid;
+  }
+  [data-region='render'] p {
+    orphans: 3;
+    widows: 3;
+  }
+}
