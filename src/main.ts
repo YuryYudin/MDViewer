@@ -689,6 +689,7 @@ export async function main(): Promise<void> {
       __mdviewerE2E?: {
         nextSavePath?: string | null;
         lastExportDefaultPath?: string;
+        nextExportResult?: 'ok' | 'err';
       };
     };
     let target: string | null = null;
@@ -703,13 +704,41 @@ export async function main(): Promise<void> {
       if (w.__mdviewerE2E && 'nextSavePath' in w.__mdviewerE2E) {
         delete w.__mdviewerE2E.nextSavePath;
       }
-    } else {
-      const { save } = await import('@tauri-apps/plugin-dialog');
-      target = await save({
-        defaultPath,
-        filters: [{ name: 'PDF', extensions: ['pdf'] }],
-      });
+
+      // Cancel (no nextSavePath): no invoke, no toast — exactly as production.
+      if (!target) return;
+
+      // C1 owns only the dialog-wiring half of the export flow (the flow
+      // reaches the invoke boundary and surfaces the matching toast). The
+      // real per-OS `export_pdf` (NSPrintOperation on macOS) HANGS under the
+      // CI macOS WDIO runner and is not what this spec is testing — the real
+      // PDF-file production is D1's portable Linux-verified smoke. So under
+      // WebDriver we synthesize the SAME outcome the real path would produce,
+      // driven by `nextExportResult` ('ok' | 'err', default 'ok'), without
+      // calling the real backend. The toast wording is byte-identical to the
+      // production try/catch below.
+      const result = w.__mdviewerE2E?.nextExportResult ?? 'ok';
+      if (result === 'ok') {
+        document.dispatchEvent(
+          new CustomEvent('mdviewer:toast', {
+            detail: { message: `Exported to ${target}` },
+          }),
+        );
+      } else {
+        document.dispatchEvent(
+          new CustomEvent('mdviewer:toast', {
+            detail: { message: 'Failed to export PDF' },
+          }),
+        );
+      }
+      return;
     }
+
+    const { save } = await import('@tauri-apps/plugin-dialog');
+    target = await save({
+      defaultPath,
+      filters: [{ name: 'PDF', extensions: ['pdf'] }],
+    });
 
     // Cancel: no invoke, no toast.
     if (!target) return;

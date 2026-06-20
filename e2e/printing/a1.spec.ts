@@ -110,6 +110,52 @@ function printValue(
   return resolved;
 }
 
+/**
+ * Color-literal serialization differs across WebView engines: Linux
+ * WebKitGTK reports `#fff` / `#000` verbatim, but macOS WebKit (WKWebView)
+ * serializes the same authored hex through the CSSOM as `rgb(255, 255, 255)`
+ * / `rgb(0, 0, 0)` (and the `background` shorthand may re-expand). The
+ * authored CSS is identical (Linux postcss verified `#fff !important`); only
+ * the read-back representation varies. So for the color assertions we
+ * normalize the value to a canonical token and require the `!important` flag
+ * is still present — without loosening the non-color assertions (display,
+ * overflow, padding, break-*), which serialize identically on both engines.
+ */
+const WHITE = new Set(['#fff', '#ffffff', 'rgb(255,255,255)', 'rgb(255, 255, 255)']);
+const BLACK = new Set(['#000', '#000000', 'rgb(0,0,0)', 'rgb(0, 0, 0)']);
+
+/**
+ * Assert that the print-media value of `prop` for `selector` is the expected
+ * color (white or black, any serialization) AND carries `!important`. The
+ * `background` shorthand may serialize with extra longhand tokens around the
+ * color (e.g. `rgb(...) none repeat ...`) on some engines, so we test for the
+ * presence of an accepted color token rather than exact string equality.
+ */
+function expectPrintColor(
+  rules: PrintDecl[],
+  selector: string,
+  prop: string,
+  want: 'white' | 'black',
+): void {
+  const raw = printValue(rules, selector, prop);
+  expect(raw).toBeDefined();
+  const value = raw!;
+  expect(value).toContain('!important');
+  const accepted = want === 'white' ? WHITE : BLACK;
+  const normalized = value
+    .replace('!important', '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+  // The shorthand may carry extra tokens; accept if any accepted color token
+  // appears, also tolerating the rgb form with spaces collapsed.
+  const compact = normalized.replace(/\s+/g, '');
+  const hit =
+    [...accepted].some((c) => normalized.includes(c)) ||
+    [...accepted].some((c) => compact.includes(c.replace(/\s+/g, '')));
+  expect(hit).toBe(true);
+}
+
 describe('A1: print @media stylesheet', () => {
   let fixture: Awaited<ReturnType<typeof prepareFixture>>;
 
@@ -172,13 +218,11 @@ describe('A1: print @media stylesheet', () => {
 
     // Render region: white background / black text even with the dark theme
     // active. Assert the print rule forces these regardless of --surface /
-    // --text tokens (which are near-black in dark mode).
-    expect(printValue(rules, "[data-region='render']", 'background')).toBe(
-      '#fff !important',
-    );
-    expect(printValue(rules, "[data-region='render']", 'color')).toBe(
-      '#000 !important',
-    );
+    // --text tokens (which are near-black in dark mode). Color serialization
+    // is engine-dependent (hex on WebKitGTK, rgb on WKWebView) so we match
+    // either form while still requiring `!important`.
+    expectPrintColor(rules, "[data-region='render']", 'background', 'white');
+    expectPrintColor(rules, "[data-region='render']", 'color', 'black');
     // Full-bleed: screen padding neutralized, content overflows across pages.
     expect(printValue(rules, "[data-region='render']", 'overflow')).toBe(
       'visible !important',
@@ -189,9 +233,7 @@ describe('A1: print @media stylesheet', () => {
 
     // Body text elements forced to black so the dark theme can't render
     // light-on-white prose; verify a representative one.
-    expect(printValue(rules, "[data-region='render'] p", 'color')).toBe(
-      '#000 !important',
-    );
+    expectPrintColor(rules, "[data-region='render'] p", 'color', 'black');
   });
 
   it('S3: page-break hygiene keeps headings and atomic blocks intact', async () => {
