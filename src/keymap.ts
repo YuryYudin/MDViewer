@@ -13,7 +13,8 @@ export type Action =
   | 'open_settings'
   | 'font_increase'
   | 'font_decrease'
-  | 'font_reset';
+  | 'font_reset'
+  | 'print';
 
 export type ActionHandler = (a: Action) => void;
 

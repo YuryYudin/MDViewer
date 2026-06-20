@@ -424,6 +424,11 @@ fn default_shortcuts() -> BTreeMap<String, String> {
     m.insert("resolve_thread".into(), "Mod+Shift+R".into());
     m.insert("toggle_dark".into(), "Mod+Shift+D".into());
     m.insert("open_settings".into(), "Mod+,".into());
+    // B1 (printing): Cmd/Ctrl+P opens the OS print dialog via window.print().
+    // Canonical "Mod" token here; the menu.rs accelerator is "CmdOrCtrl+P" —
+    // both fold to the same canonical form in the TS keymap, so menu + keymap
+    // converge on the single `mdviewer:print` event (no double-fire).
+    m.insert("print".into(), "Mod+P".into());
     // Font-zoom defaults — universal browser-zoom accelerators. The TS
     // keymap folds shifted-symbol keys back to their unshifted form so
     // `Cmd+Shift+=` (the natural physical press for `+`) also matches `Mod+=`.
@@ -625,6 +630,18 @@ mod tests {
             shortcuts.get("font_reset").map(String::as_str),
             Some("Mod+0"),
         );
+    }
+
+    /// B1 (printing): the `print` keymap action ships with the canonical
+    /// `Mod+P` default. The action key MUST match the `Action` union member
+    /// `print` in src/keymap.ts; the menu.rs accelerator stays `CmdOrCtrl+P`
+    /// (the keymap's canonical() folds both `Mod` and `CmdOrCtrl` to the same
+    /// token, so the two layers converge on one `mdviewer:print` event). If
+    /// this binding goes missing the Cmd/Ctrl+P shortcut becomes a no-op.
+    #[test]
+    fn default_shortcuts_includes_print_binding() {
+        let shortcuts = default_shortcuts();
+        assert_eq!(shortcuts.get("print").map(String::as_str), Some("Mod+P"));
     }
 
     /// Pins the load-time merge of `default_shortcuts()` into the loaded

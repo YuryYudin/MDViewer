@@ -202,6 +202,29 @@ describe('installKeymap font-zoom shortcuts', () => {
   });
 });
 
+describe('installKeymap print shortcut', () => {
+  // B1: `print` is a keymap Action with a `Mod+P` default. Pressing
+  // Cmd/Ctrl+P must dispatch the `print` action so main.ts's dispatchAction
+  // can fan it out to the `mdviewer:print` listener.
+  it('Cmd+P dispatches the print action (Mod+P default)', () => {
+    const handler = vi.fn();
+    const uninstall = installKeymap(settingsWith({ print: 'Mod+P' }), handler);
+    const ev = new KeyboardEvent('keydown', { key: 'p', metaKey: true });
+    window.dispatchEvent(ev);
+    expect(handler).toHaveBeenCalledWith('print');
+    uninstall();
+  });
+
+  it('Ctrl+P also dispatches print (canonicalizes to mod)', () => {
+    const handler = vi.fn();
+    const uninstall = installKeymap(settingsWith({ print: 'Mod+P' }), handler);
+    const ev = new KeyboardEvent('keydown', { key: 'p', ctrlKey: true });
+    window.dispatchEvent(ev);
+    expect(handler).toHaveBeenCalledWith('print');
+    uninstall();
+  });
+});
+
 describe('installKeymap', () => {
   it('dispatches an action when its bound combo is pressed', () => {
     const handler = vi.fn();

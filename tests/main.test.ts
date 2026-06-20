@@ -398,6 +398,60 @@ describe('main()', () => {
     expect(handler).toHaveBeenCalled();
   });
 
+  it('mdviewer:print calls window.print() when a document is open', async () => {
+    // B1 (printing): with a document mounted (the body region carries the
+    // `with-document` class the Workspace sets on a real Document mount),
+    // the print handler calls window.print() so the OS print dialog opens.
+    // NB: main() registers its `mdviewer:print` listener on the shared
+    // `document`, so across this file's many main() boots several copies of
+    // the listener accumulate. They are all functionally identical, so we
+    // assert window.print() was reached (>=1) and that NO toast fired —
+    // the doc-open branch, not the no-doc branch.
+    fakeIpc.getSettings.mockResolvedValueOnce(settingsWith());
+    const { main } = await import('../src/main');
+    await main();
+    // Mark every body region doc-open so any accumulated listener takes the
+    // print branch deterministically regardless of which one querySelector
+    // resolves.
+    const bodies = document.querySelectorAll('[data-region="body"]');
+    expect(bodies.length).toBeGreaterThan(0);
+    bodies.forEach((b) => b.classList.add('with-document'));
+    const printSpy = vi.spyOn(window, 'print').mockImplementation(() => {});
+    const toast = vi.fn();
+    document.addEventListener('mdviewer:toast', toast);
+    document.dispatchEvent(new CustomEvent('mdviewer:print'));
+    expect(printSpy).toHaveBeenCalled();
+    expect(toast).not.toHaveBeenCalled();
+    document.removeEventListener('mdviewer:toast', toast);
+    printSpy.mockRestore();
+  });
+
+  it('mdviewer:print no-ops with a "No document to print" toast when no doc is open', async () => {
+    // B1: triggered via shortcut with no document active, the Print handler
+    // must NOT call window.print(); it surfaces a `No document to print`
+    // toast instead. After main() with listOpenDocuments=[] the body region
+    // shows the StartPage (no `with-document` class). Strip the class from
+    // every body region so no accumulated listener (see the doc-open test)
+    // takes the print branch off a stale node.
+    fakeIpc.getSettings.mockResolvedValueOnce(settingsWith());
+    const { main } = await import('../src/main');
+    await main();
+    const bodies = document.querySelectorAll('[data-region="body"]');
+    expect(bodies.length).toBeGreaterThan(0);
+    bodies.forEach((b) => b.classList.remove('with-document'));
+    const printSpy = vi.spyOn(window, 'print').mockImplementation(() => {});
+    let toastMessage: string | undefined;
+    const onToast = (ev: Event) => {
+      toastMessage = (ev as CustomEvent<{ message: string }>).detail?.message;
+    };
+    document.addEventListener('mdviewer:toast', onToast);
+    document.dispatchEvent(new CustomEvent('mdviewer:print'));
+    expect(printSpy).not.toHaveBeenCalled();
+    expect(toastMessage).toBe('No document to print');
+    document.removeEventListener('mdviewer:toast', onToast);
+    printSpy.mockRestore();
+  });
+
   it('throws if the #app element is missing', async () => {
     resetDom(false);
     fakeIpc.getSettings.mockResolvedValueOnce(settingsWith());

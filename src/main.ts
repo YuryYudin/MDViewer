@@ -574,9 +574,36 @@ export async function main(): Promise<void> {
       case 'font_reset':
         document.dispatchEvent(new CustomEvent('mdviewer:font-reset'));
         break;
+      case 'print':
+        // B1 (printing): the menu bridge fans the `menu-print` click out as
+        // `mdviewer:print` too; the keymap path converges on the same event
+        // so the listener below is the single place window.print() is called.
+        document.dispatchEvent(new CustomEvent('mdviewer:print'));
+        break;
     }
   };
   installKeymap(settings, dispatchAction);
+
+  // B1 (printing): File → Print… / Cmd-Ctrl+P. Both the native menu bridge
+  // and the keymap converge on `mdviewer:print`. Guard on whether a document
+  // is actually mounted — the Workspace flips `with-document` on the body
+  // region only when a real Document view is shown (not the StartPage). With
+  // no document open we no-op and surface a toast rather than printing a
+  // blank StartPage. The @media print CSS (Phase A) restricts the printout to
+  // the active document content.
+  document.addEventListener('mdviewer:print', () => {
+    const body = document.querySelector('[data-region="body"]');
+    const hasDocument = body?.classList.contains('with-document') ?? false;
+    if (hasDocument) {
+      window.print();
+    } else {
+      document.dispatchEvent(
+        new CustomEvent('mdviewer:toast', {
+          detail: { message: 'No document to print' },
+        }),
+      );
+    }
+  });
 
   // Native menu bridge — fires the same mdviewer:* CustomEvents the keymap
   // does, so File → Open / Settings… reach the existing handlers without

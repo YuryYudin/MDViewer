@@ -110,6 +110,11 @@ pub fn menu_id_to_action(id: &str) -> Option<&'static str> {
         "menu-close-tab" => Some("close-tab"),
         "menu-open-settings" => Some("open-settings"),
         "menu-save-file" => Some("save-file"),
+        // B1 (printing): File → "Print…" (CmdOrCtrl+P). Maps to the `print`
+        // action string, which `menuBridge.ts` forwards as the
+        // `mdviewer:print` CustomEvent; main.ts turns that into
+        // `window.print()` (or a no-doc toast).
+        "menu-print" => Some("print"),
         "menu-toggle-edit" => Some("toggle-edit"),
         "menu-toggle-sidebar" => Some("toggle-sidebar"),
         "menu-zoom-in" => Some("zoom-in"),
@@ -237,6 +242,18 @@ pub fn build<R: Runtime>(
             Some("CmdOrCtrl+S"),
         )?)
         .separator()
+        // B1 (printing): File → "Print…" (CmdOrCtrl+P). The id `menu-print`
+        // maps to the `print` action; the frontend listener calls
+        // `window.print()` so the OS print dialog opens (the @media print CSS
+        // restricts output to the active document). Export to PDF lands in C1.
+        .item(&MenuItem::with_id(
+            app,
+            "menu-print",
+            "Print…",
+            true,
+            Some("CmdOrCtrl+P"),
+        )?)
+        .separator()
         .item(&MenuItem::with_id(
             app,
             "menu-close-tab",
@@ -359,6 +376,16 @@ mod tests {
     #[test]
     fn menu_id_action_mapping_includes_open_remote() {
         assert_eq!(menu_id_to_action("menu-open-remote"), Some("open-remote"));
+    }
+
+    /// B1 (printing): File → "Print…" (CmdOrCtrl+P, id `menu-print`) bridges
+    /// to the frontend's `mdviewer:print` CustomEvent via the `print` action
+    /// string. Pinning the id↔action mapping here means a future rename of
+    /// the menu id breaks this test rather than silently producing a dead
+    /// Print menu item.
+    #[test]
+    fn menu_id_action_mapping_includes_print() {
+        assert_eq!(menu_id_to_action("menu-print"), Some("print"));
     }
 
     /// B3: File → "New Window" (CmdOrCtrl+Shift+N, id `menu-new-window`)

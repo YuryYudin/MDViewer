@@ -51,6 +51,10 @@ export const MENU_ACTION_TO_EVENT: Readonly<Record<string, string>> = Object.fre
   'zoom-in': 'mdviewer:font-increase',
   'zoom-out': 'mdviewer:font-decrease',
   'zoom-reset': 'mdviewer:font-reset',
+  // B1: File → Print… (CmdOrCtrl+P). The Rust side maps menu id `menu-print`
+  // to the action string `print`; we fan it out as `mdviewer:print`, which
+  // main.ts turns into window.print() (guarded with a no-doc toast).
+  'print': 'mdviewer:print',
 });
 
 /**

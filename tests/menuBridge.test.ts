@@ -54,6 +54,14 @@ describe('menuBridge', () => {
     expect(MENU_ACTION_TO_EVENT['new-window']).toBe('mdviewer:new-window');
   });
 
+  it('File → Print maps to mdviewer:print (B1)', () => {
+    // B1: the Rust menu builds a `Print…` item (id `menu-print`,
+    // CmdOrCtrl+P). `menu_id_to_action` translates that to the action
+    // string `print`, which lands here and must surface as the
+    // `mdviewer:print` CustomEvent main.ts turns into window.print().
+    expect(MENU_ACTION_TO_EVENT['print']).toBe('mdviewer:print');
+  });
+
   it('View → Zoom items map to the three font-zoom CustomEvents', () => {
     // The native View menu uses kebab-case action ids (`zoom-in`, `zoom-out`,
     // `zoom-reset`) per `menu_id_to_action`. The bridge translates them to
