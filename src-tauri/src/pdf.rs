@@ -343,7 +343,9 @@ async fn export_pdf_windows(window: tauri::WebviewWindow, path: String) -> Resul
                 let core7: ICoreWebView2_7 = core.cast().map_err(|e| e.to_string())?;
                 let target = HSTRING::from(path.as_str());
                 let handler = PrintToPdfCompletedHandler::create(Box::new(move |hr, success| {
-                    let outcome = if hr.is_ok() && success.as_bool() {
+                    // webview2-com 0.38 passes the completion flag as a Rust `bool`
+                    // (already converted from the native BOOL), so use it directly.
+                    let outcome = if hr.is_ok() && success {
                         Ok(())
                     } else {
                         Err(format!(
