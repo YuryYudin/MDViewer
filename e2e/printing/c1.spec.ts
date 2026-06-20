@@ -186,12 +186,22 @@ describe('C1: Export to PDF → save dialog flow', () => {
     // Cancel: leave nextSavePath unset so the listener treats it as null.
     await setNextSavePath(null);
 
+    // Prior tests' success toasts may still be on screen (they auto-dismiss
+    // later), and the toast region concatenates whatever is currently shown —
+    // so an absolute "toast is empty" check is order-dependent. Capture the
+    // current toast text immediately before the cancel and assert the cancel
+    // adds NOTHING new (the dialog-cancel path emits no toast at all).
+    const before = await toastText();
+
     await emitMenuAction('export-pdf');
 
     // Give the (cancelled) flow time to settle, then assert nothing happened:
-    // no toast surfaced and no PDF file was written (export_pdf was not called).
+    // no NEW toast surfaced and no PDF file was written (export_pdf not called).
+    // Lingering prior toasts may auto-dismiss during the pause, so the cancel
+    // can only SHRINK the toast text (subset of `before`), never add to it — a
+    // new toast would introduce text not present in `before`.
     await browser.pause(1_500);
-    expect(await toastText()).toBe('');
+    expect(before).toContain(await toastText());
     await expect(fs.access(wouldBe)).rejects.toThrow();
   });
 

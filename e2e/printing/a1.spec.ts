@@ -137,7 +137,14 @@ function expectPrintColor(
   prop: string,
   want: 'white' | 'black',
 ): void {
-  const raw = printValue(rules, selector, prop);
+  // WKWebView does not serialize the `background` shorthand back through the
+  // CSSOM (returns undefined); the authored `background: #fff !important` is
+  // exposed as the `background-color` longhand. Fall back to it.
+  const raw =
+    printValue(rules, selector, prop) ??
+    (prop === 'background'
+      ? printValue(rules, selector, 'background-color')
+      : undefined);
   expect(raw).toBeDefined();
   const value = raw!;
   expect(value).toContain('!important');
