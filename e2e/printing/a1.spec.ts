@@ -231,12 +231,26 @@ describe('A1: print @media stylesheet', () => {
     expectPrintColor(rules, "[data-region='render']", 'background', 'white');
     expectPrintColor(rules, "[data-region='render']", 'color', 'black');
     // Full-bleed: screen padding neutralized, content overflows across pages.
-    expect(printValue(rules, "[data-region='render']", 'overflow')).toBe(
-      'visible !important',
+    // `overflow` and `padding` are CSS shorthands; WKWebView exposes only their
+    // longhands via the CSSOM (returns undefined for the shorthand) and
+    // serializes `0` as `0px`. Read the longhand fallback and match tolerantly
+    // while still requiring `!important`.
+    const overflowVal =
+      printValue(rules, "[data-region='render']", 'overflow') ??
+      printValue(rules, "[data-region='render']", 'overflow-x');
+    expect(overflowVal).toBeDefined();
+    expect(overflowVal!).toContain('!important');
+    expect(overflowVal!.replace('!important', '').trim().toLowerCase()).toBe(
+      'visible',
     );
-    expect(printValue(rules, "[data-region='render']", 'padding')).toBe(
-      '0 !important',
-    );
+    const paddingVal =
+      printValue(rules, "[data-region='render']", 'padding') ??
+      printValue(rules, "[data-region='render']", 'padding-top');
+    expect(paddingVal).toBeDefined();
+    expect(paddingVal!).toContain('!important');
+    expect(
+      paddingVal!.replace('!important', '').trim().toLowerCase(),
+    ).toMatch(/^0(px)?$/);
 
     // Body text elements forced to black so the dark theme can't render
     // light-on-white prose; verify a representative one.
