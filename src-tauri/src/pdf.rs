@@ -286,11 +286,16 @@ async fn export_pdf_macos(window: tauri::WebviewWindow, path: String) -> Result<
     use objc2::msg_send;
     use objc2::rc::Retained;
     use objc2::runtime::{AnyObject, NSObject};
-    use objc2_app_kit::{NSPrintInfo, NSPrintOperation};
-    use objc2_foundation::{ns_string, NSMutableDictionary, NSURL};
+    use objc2_app_kit::{
+        NSPrintInfo, NSPrintJobDisposition, NSPrintJobSavingURL, NSPrintOperation, NSPrintSaveJob,
+    };
+    use objc2_foundation::{NSString, NSURL};
     use tokio::sync::oneshot;
 
     let (tx, rx) = oneshot::channel::<Result<(), String>>();
+    // Clone for the closure so the outer `path` survives to be returned in the
+    // success arm (the closure moves its capture).
+    let target_path = path.clone();
 
     window
         .with_webview(move |wv| {
@@ -306,13 +311,38 @@ async fn export_pdf_macos(window: tauri::WebviewWindow, path: String) -> Result<
                     // print operation renders the document under PRINT media —
                     // honoring @media print — unlike `createPDF`, which would
                     // snapshot screen media and defeat the print stylesheet.
-                    let url = NSURL::fileURLWithPath(ns_string!(&path));
-                    let info_dict = NSMutableDictionary::<NSObject, AnyObject>::new();
-                    let _: () = msg_send![&info_dict, setObject: &*url, forKey: ns_string!("NSPrintJobDisposition")];
-                    // NSPrintSaveJob is the "save to file" disposition; pair it
-                    // with the destination URL key so AppKit writes the PDF.
-                    let print_info: Retained<NSPrintInfo> =
-                        NSPrintInfo::initWithDictionary(NSPrintInfo::alloc(), &info_dict);
+                    let url = NSURL::fileURLWithPath(&NSString::from_str(&target_path));
+
+                    // Start from the shared/default print info and mutate its
+                    // attribute dictionary in place. `dictionary()` returns the
+                    // live `NSMutableDictionary<NSPrintInfoAttributeKey, AnyObject>`
+                    // backing the print info, so writes through it are reflected
+                    // in the operation. We avoid `initWithDictionary:` (whose
+                    // signature wants an `&NSDictionary<NSPrintInfoAttributeKey,
+                    // AnyObject>`) and instead set the two keys we need: the
+                    // "save to file" disposition and the destination URL.
+                    let print_info: Retained<NSPrintInfo> = NSPrintInfo::new();
+                    let attrs = print_info.dictionary();
+                    // NSPrintJobDisposition = NSPrintSaveJob (write to a file).
+                    // The generated statics have place-type `&'static NSString`,
+                    // so `&*X` is the `&NSString` we message with.
+                    let save_job: &NSString = &*NSPrintSaveJob;
+                    let disposition_key: &NSString = &*NSPrintJobDisposition;
+                    let saving_url_key: &NSString = &*NSPrintJobSavingURL;
+                    let _: () = msg_send![
+                        &*attrs,
+                        setObject: save_job as &AnyObject,
+                        forKey: disposition_key as &NSObject,
+                    ];
+                    // NSPrintJobSavingURL = file://<path> destination.
+                    let _: () = msg_send![
+                        &*attrs,
+                        setObject: &*url as &AnyObject,
+                        forKey: saving_url_key as &NSObject,
+                    ];
+                    // Mirror the disposition through the typed setter so the
+                    // print info is internally consistent.
+                    print_info.setJobDisposition(save_job);
 
                     let op: Option<Retained<NSPrintOperation>> = msg_send![
                         webview as *mut NSObject,
