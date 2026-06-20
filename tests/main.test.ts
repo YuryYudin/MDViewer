@@ -548,7 +548,7 @@ describe('main()', () => {
       toastMessage = (ev as CustomEvent<{ message: string }>).detail?.message;
     });
     document.dispatchEvent(new CustomEvent('mdviewer:export-pdf'));
-    await vi.waitFor(() => expect(toastMessage).toBe('No document to print'));
+    await vi.waitFor(() => expect(toastMessage).toBe('No document to export'));
     expect(saveDialog).not.toHaveBeenCalled();
     expect(fakeIpc.exportPdf).not.toHaveBeenCalled();
   });
@@ -558,6 +558,54 @@ describe('main()', () => {
     fakeIpc.getSettings.mockResolvedValueOnce(settingsWith());
     const { main } = await import('../src/main');
     await expect(main()).rejects.toThrow(/#app element missing/);
+  });
+});
+
+describe('defaultPdfPath', () => {
+  it('keeps the local parent directory and swaps the extension to .pdf', async () => {
+    const { defaultPdfPath } = await import('../src/main');
+    expect(defaultPdfPath('/docs/notes.md')).toBe('/docs/notes.pdf');
+  });
+
+  it('drops the directory for a remote (scheme://) path, keeping just <stem>.pdf', async () => {
+    const { defaultPdfPath } = await import('../src/main');
+    // ssh:// — remote: no usable local parent, so only the filename survives.
+    expect(defaultPdfPath('ssh://host/home/user/spec.md')).toBe('spec.pdf');
+    // Other scheme-style prefixes take the same branch.
+    expect(defaultPdfPath('drive://team/Q3/report.markdown')).toBe('report.pdf');
+    expect(defaultPdfPath('https://example.com/page.md')).toBe('page.pdf');
+  });
+
+  it('splits on a Windows backslash path and keeps the local parent', async () => {
+    const { defaultPdfPath } = await import('../src/main');
+    expect(defaultPdfPath('C:\\Users\\me\\Documents\\notes.md')).toBe(
+      'C:\\Users\\me\\Documents/notes.pdf',
+    );
+  });
+
+  it('falls back to the platform default dir for a bare filename (no parent)', async () => {
+    const { defaultPdfPath } = await import('../src/main');
+    // No separator at all → dir is empty → just the filename.
+    expect(defaultPdfPath('notes.md')).toBe('notes.pdf');
+  });
+
+  it('keeps an extensionless name as the stem', async () => {
+    const { defaultPdfPath } = await import('../src/main');
+    expect(defaultPdfPath('/docs/README')).toBe('/docs/README.pdf');
+    // Extensionless bare name (no parent) too.
+    expect(defaultPdfPath('README')).toBe('README.pdf');
+  });
+
+  it('falls back to document.pdf when there is no usable name', async () => {
+    const { defaultPdfPath } = await import('../src/main');
+    // Entirely empty input → no separator, empty dir, empty stem → bare
+    // `document.pdf` (the platform default-dir fallback name).
+    expect(defaultPdfPath('')).toBe('document.pdf');
+    // A trailing separator yields an empty name → `document` stem fallback,
+    // while the parent directory is still kept (it is non-empty).
+    expect(defaultPdfPath('/docs/')).toBe('/docs/document.pdf');
+    // Remote path ending in a separator → empty stem → bare `document.pdf`.
+    expect(defaultPdfPath('ssh://host/dir/')).toBe('document.pdf');
   });
 });
 

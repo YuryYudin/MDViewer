@@ -667,10 +667,12 @@ export async function main(): Promise<void> {
     const docs = await tauriIpc.listOpenDocuments();
     const active = activeId ? docs.find((d) => d.id === activeId) : undefined;
     if (!active) {
-      // No document to export — surface the same no-doc message Print uses.
+      // No document to export — export-specific wording (the Print path uses
+      // its own "No document to print" message; the Rust command-side guard
+      // uses "No document is open" — three layers, consistent in intent).
       document.dispatchEvent(
         new CustomEvent('mdviewer:toast', {
-          detail: { message: 'No document to print' },
+          detail: { message: 'No document to export' },
         }),
       );
       return;

@@ -46,6 +46,13 @@ pub const NO_DOCUMENT_ERR: &str = "No document is open";
 /// The dialog default is computed frontend-side (`main.ts` builds the
 /// `defaultPath`), so this Rust mirror is not called by the command today; it
 /// pins the derivation rule as the unit-testable contract.
+///
+/// **Contract mirror (intentionally unused).** This is a tested mirror of the
+/// canonical TS `defaultPdfPath` stem derivation in `src/main.ts`. It is kept
+/// — with its unit tests — against the day the default-filename derivation
+/// moves into Rust (so the command can pre-fill the dialog itself rather than
+/// the frontend). Until then it is `#[allow(dead_code)]` on purpose: do NOT
+/// delete it, and keep it in lockstep with the TS rule.
 #[allow(dead_code)]
 pub fn default_pdf_filename(source_path: &str) -> String {
     let stem = Path::new(source_path)
@@ -116,6 +123,102 @@ pub(crate) async fn export_pdf_inner(
     }
 }
 
+/// Default name of the GTK file print backend's virtual printer, used as the
+/// **fallback** when runtime enumeration ([`find_file_backend_printer_name`])
+/// turns up nothing. On an English locale the file backend registers its
+/// printer under exactly this name; on other locales the displayed name is
+/// translated, which is why we prefer enumeration-by-backend-identity and only
+/// fall back to this literal.
+#[cfg(target_os = "linux")]
+const FILE_PRINTER_FALLBACK: &str = "Print to File";
+
+/// Locate the GTK *file* print backend's virtual printer by **backend
+/// identity** rather than by its (localized) display name, returning its name
+/// for the `printer` print-setting.
+///
+/// The display name of the file backend's printer is translated per locale
+/// ("Print to File" in English, "Datei drucken", "Imprimer dans un fichier",
+/// …), so selecting it by the hardcoded English string fails everywhere else.
+/// Instead we enumerate every printer (`gtk_enumerate_printers`, run
+/// synchronously with `wait = TRUE`) and match on the GType name of each
+/// printer's backend — the file backend is `GtkPrintBackendFile` regardless of
+/// locale. We return that printer's own (possibly-localized) name, which is the
+/// value GTK then matches when resolving the `printer` setting.
+///
+/// Returns `None` if enumeration finds no file-backend printer (the caller then
+/// falls back to [`FILE_PRINTER_FALLBACK`]). MUST be called on the GTK main
+/// thread — it is, from inside `with_webview`'s closure.
+#[cfg(target_os = "linux")]
+fn find_file_backend_printer_name() -> Option<String> {
+    use std::ffi::CStr;
+    use std::os::raw::{c_char, c_int, c_void};
+
+    // Minimal FFI into the already-linked libgtk-3 / libgobject-2.0. The Rust
+    // `gtk` 0.18 crate does not bind `GtkPrinter` / `gtk_enumerate_printers`,
+    // so we declare just the four C symbols we need. All are stable public GTK
+    // API; the shared libs are guaranteed present (WebKitGTK pulls them in).
+    extern "C" {
+        // gboolean (*GtkPrinterFunc)(GtkPrinter *printer, gpointer data);
+        // wait = TRUE makes enumeration synchronous (blocks until done).
+        fn gtk_enumerate_printers(
+            func: extern "C" fn(*mut c_void, *mut c_void) -> c_int,
+            data: *mut c_void,
+            destroy: *mut c_void,
+            wait: c_int,
+        );
+        fn gtk_printer_get_name(printer: *mut c_void) -> *const c_char;
+        fn gtk_printer_get_backend(printer: *mut c_void) -> *mut c_void;
+        // From <glib-object.h>: the GType name of a GObject instance. The file
+        // backend instance's type name is "GtkPrintBackendFile".
+        fn g_type_name_from_instance(instance: *mut c_void) -> *const c_char;
+    }
+
+    // Accumulator the C callback writes the matched printer name into.
+    let mut found: Option<String> = None;
+
+    // Per-printer callback. Returns gboolean: TRUE stops enumeration early. We
+    // stop as soon as we match the file backend. `data` is a `*mut Option<String>`.
+    extern "C" fn on_printer(printer: *mut c_void, data: *mut c_void) -> c_int {
+        // SAFETY: `data` is the `&mut Option<String>` we handed to
+        // `gtk_enumerate_printers`; `printer`/its backend are live GtkPrinter /
+        // GtkPrintBackend pointers owned by GTK for the duration of this call.
+        unsafe {
+            let backend = gtk_printer_get_backend(printer);
+            if backend.is_null() {
+                return 0; // keep going
+            }
+            let type_name_ptr = g_type_name_from_instance(backend);
+            if type_name_ptr.is_null() {
+                return 0;
+            }
+            let type_name = CStr::from_ptr(type_name_ptr).to_string_lossy();
+            if type_name == "GtkPrintBackendFile" {
+                let name_ptr = gtk_printer_get_name(printer);
+                if !name_ptr.is_null() {
+                    let name = CStr::from_ptr(name_ptr).to_string_lossy().into_owned();
+                    let out = &mut *(data as *mut Option<String>);
+                    *out = Some(name);
+                    return 1; // matched — stop enumeration
+                }
+            }
+        }
+        0 // not the file backend — continue
+    }
+
+    // SAFETY: synchronous enumeration on the GTK main thread; `&mut found`
+    // outlives the call (it returns before this fn does, thanks to wait = TRUE).
+    unsafe {
+        gtk_enumerate_printers(
+            on_printer,
+            &mut found as *mut Option<String> as *mut c_void,
+            std::ptr::null_mut(),
+            1, // wait = TRUE
+        );
+    }
+
+    found
+}
+
 /// Linux backend: WebKitGTK `WebKitPrintOperation` with a print-to-file
 /// `PrintSettings` (output URI `file://<path>`, format `pdf`), run via
 /// `print()` so **no** GTK dialog is shown. The `@media print` stylesheet
@@ -135,22 +238,15 @@ async fn export_pdf_linux(window: tauri::WebviewWindow, path: String) -> Result<
     // `output-uri` is the destination, `output-file-format` selects the
     // backend ("pdf"). WebKitGTK's print operation honors both when `print()`
     // is invoked without a dialog. `printer` names the backend's virtual
-    // printer — we set it to the GTK *file* backend's "Print to File" printer
-    // so `print()` writes straight to `output-uri` WITHOUT needing a CUPS
-    // daemon (which may be absent, e.g. on CI / this host). Without a named
-    // printer, WebKitGTK looks for a default/CUPS printer and fails with
-    // "Printer not found".
+    // printer — we set it to the GTK *file* backend's printer so `print()`
+    // writes straight to `output-uri` WITHOUT needing a CUPS daemon (which may
+    // be absent, e.g. on CI / this host). Without a named printer, WebKitGTK
+    // looks for a default/CUPS printer and fails with "Printer not found".
     const OUTPUT_URI: &str = "output-uri";
     const OUTPUT_FORMAT: &str = "output-file-format";
     const PRINTER: &str = "printer";
 
     let output_uri = file_uri_for(&path);
-    // The GTK file backend (libprintbackend-file) registers a virtual
-    // "Print to File" printer that writes straight to `output-uri` and needs
-    // no CUPS daemon. Naming it explicitly in the `printer` setting is what
-    // lets `print()` succeed on a host with no real/default printer (CI, this
-    // box); without it WebKitGTK errors with "Printer not found".
-    let printer_name = "Print to File";
     let (tx, rx) = oneshot::channel::<Result<(), String>>();
 
     // `with_webview` hands us the raw `webkit2gtk::WebView` on the GTK thread.
@@ -161,7 +257,13 @@ async fn export_pdf_linux(window: tauri::WebviewWindow, path: String) -> Result<
             let settings = gtk::PrintSettings::new();
             settings.set(OUTPUT_URI, Some(output_uri.as_str()));
             settings.set(OUTPUT_FORMAT, Some("pdf"));
-            settings.set(PRINTER, Some(printer_name));
+            // Resolve the GTK file backend's printer by BACKEND IDENTITY (not
+            // its localized display name) so this works on any locale; fall
+            // back to the English "Print to File" literal if enumeration finds
+            // nothing. Done here because enumeration must run on the GTK thread.
+            let printer_name = find_file_backend_printer_name()
+                .unwrap_or_else(|| FILE_PRINTER_FALLBACK.to_string());
+            settings.set(PRINTER, Some(printer_name.as_str()));
 
             let print_op = PrintOperation::new(&webview);
             print_op.set_print_settings(&settings);

@@ -2907,16 +2907,17 @@ fn main() {
             }
 
             // D1 (printing): wire the headless `--export-pdf` handshake. The
-            // input document was opened into `main` above; we now (1) hide the
-            // window so the one-shot runtime never flashes a visible window,
-            // (2) arm a watchdog that exits non-zero if the render never
-            // settles, and (3) listen for the frontend's
-            // `mdviewer:render-complete` signal. On the FIRST such signal we
-            // run the SAME `pdf::export_pdf_inner` backend the IPC command
-            // uses, targeting the requested output path, then exit 0 (or
-            // non-zero on failure). Listening (rather than exporting eagerly)
-            // guarantees we snapshot a fully-painted DOM under print media, not
-            // a blank page.
+            // input document was opened into `main` above; we now (1) show +
+            // focus the window so WebKitGTK keeps it mapped and actually
+            // renders (it suspends rendering/JS for an unmapped window — see
+            // the NOTE below for why we deliberately do NOT hide it), (2) arm
+            // a watchdog that exits non-zero if the render never settles, and
+            // (3) listen for the frontend's `mdviewer:render-complete` signal.
+            // On the FIRST such signal we run the SAME `pdf::export_pdf_inner`
+            // backend the IPC command uses, targeting the requested output
+            // path, then exit 0 (or non-zero on failure). Listening (rather
+            // than exporting eagerly) guarantees we snapshot a fully-painted
+            // DOM under print media, not a blank page.
             if let Some(req) = headless_export() {
                 use tauri::Listener;
                 let app_handle = app.handle().clone();
@@ -2933,12 +2934,11 @@ fn main() {
                 // WebKitGTK suspends rendering/JS for an unmapped window, so a
                 // window hidden before first paint would never emit
                 // `mdviewer:render-complete` and the export would hang. The
-                // window must stay mapped until the document has painted. We
-                // keep it minimized + offscreen-ish via the smaller no-op below
-                // and rely on the process exiting immediately after export, so
-                // any flash is momentary. (On headless CI this runs under
-                // xvfb; on a real desktop the one-shot export window blinks and
-                // is gone before it matters.)
+                // window must stay mapped (shown + focused above) until the
+                // document has painted. We rely on the process exiting
+                // immediately after export, so any flash is momentary. (On
+                // headless CI this runs under xvfb; on a real desktop the
+                // one-shot export window blinks and is gone before it matters.)
 
                 // Watchdog: if `mdviewer:render-complete` never fires (e.g. the
                 // doc failed to render), don't hang the smoke forever — fail
