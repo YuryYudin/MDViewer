@@ -334,7 +334,20 @@ export async function main(): Promise<void> {
       (err) => console.warn('drive-detect toast gate failed:', err),
     );
   }
-  if (!settings.profile.display_name) {
+  // D1 (printing): when launched as the headless `mdviewer --export-pdf`
+  // one-shot runtime, ALWAYS mount the Workspace (which renders the opened
+  // export-input document) — never the profile-setup gate. A headless export
+  // has no interactive user to fill the profile form, and the gate would
+  // otherwise leave the DOM blank so `mdviewer:render-complete` never fires and
+  // the export hangs. Guarded so a missing `headless_export_active` command (or
+  // no Tauri runtime in tests) defaults to the normal interactive path.
+  let headlessExport = false;
+  try {
+    headlessExport = await invoke<boolean>('headless_export_active');
+  } catch {
+    headlessExport = false;
+  }
+  if (!headlessExport && !settings.profile.display_name) {
     await mountProfileSetup(root, tauriIpc);
     // ProfileSetup fires `mdviewer:profile-saved` on success but doesn't
     // own routing — wire the transition to Workspace here so the user

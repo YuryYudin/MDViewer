@@ -2,6 +2,27 @@ import type { Ipc, Settings, Thread } from '../ipc';
 import { mountEdit, type EditView } from './Edit';
 import { attachSelectionPopover } from './SelectionPopover';
 
+/**
+ * D1: emit the `mdviewer:render-complete` Tauri event after a paint settles.
+ *
+ * The headless `mdviewer --export-pdf <in> <out>` runtime (main.rs
+ * `run_headless_export`) listens for this signal and only then drives the PDF
+ * export — so it snapshots a fully-painted document under print media, never a
+ * blank/partial DOM. The event module is imported lazily and the whole call is
+ * wrapped so jsdom unit tests (no `__TAURI_INTERNALS__`) silently skip it; the
+ * interactive desktop app emits it too, where it is simply unobserved.
+ */
+function emitRenderComplete(): void {
+  void (async () => {
+    try {
+      const { emit } = await import('@tauri-apps/api/event');
+      await emit('mdviewer:render-complete');
+    } catch {
+      // No Tauri runtime (unit tests / SSR) — nothing to signal.
+    }
+  })();
+}
+
 export interface DocumentMountArgs {
   tabId: string;
   html: string;
@@ -186,6 +207,13 @@ export async function mountDocument(
     for (const node of Array.from(parsed.body.childNodes)) {
       render.appendChild(node);
     }
+    // D1: signal the headless `--export-pdf` runtime that the document DOM is
+    // painted and the `@media print` styles can apply, so it only snapshots a
+    // fully-rendered page (never a blank/partial DOM). Fired on EVERY paint
+    // settle — initial mount and the View/Edit re-render both flow through
+    // here. Lazy + guarded (`@tauri-apps/api/event`) so jsdom unit tests with
+    // no Tauri runtime skip it; production headless export consumes it.
+    emitRenderComplete();
   }
   paintRenderFromHtml(args.html);
   view.appendChild(render);

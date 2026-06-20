@@ -83,6 +83,20 @@ pub fn file_uri_for(path: &str) -> String {
 /// returns after the file is on disk (or the print failed).
 #[tauri::command]
 pub async fn export_pdf(window: tauri::WebviewWindow, path: String) -> Result<String, String> {
+    export_pdf_inner(window, path).await
+}
+
+/// Shared per-OS PDF backend, factored out of the [`export_pdf`] command so
+/// BOTH the IPC command and D1's headless `--export-pdf` CLI arm
+/// (`run_headless_export` in `main.rs`) drive the *same* backend — the
+/// per-OS print path is implemented exactly once.
+///
+/// Returns `Ok(path)` (the path written) on success or `Err(message)` on
+/// failure. Never panics.
+pub(crate) async fn export_pdf_inner(
+    window: tauri::WebviewWindow,
+    path: String,
+) -> Result<String, String> {
     #[cfg(target_os = "linux")]
     {
         export_pdf_linux(window, path).await
@@ -120,11 +134,23 @@ async fn export_pdf_linux(window: tauri::WebviewWindow, path: String) -> Result<
     // GTK print-settings keys (see gtk_print_settings_* / the GTK print API):
     // `output-uri` is the destination, `output-file-format` selects the
     // backend ("pdf"). WebKitGTK's print operation honors both when `print()`
-    // is invoked without a dialog.
+    // is invoked without a dialog. `printer` names the backend's virtual
+    // printer — we set it to the GTK *file* backend's "Print to File" printer
+    // so `print()` writes straight to `output-uri` WITHOUT needing a CUPS
+    // daemon (which may be absent, e.g. on CI / this host). Without a named
+    // printer, WebKitGTK looks for a default/CUPS printer and fails with
+    // "Printer not found".
     const OUTPUT_URI: &str = "output-uri";
     const OUTPUT_FORMAT: &str = "output-file-format";
+    const PRINTER: &str = "printer";
 
     let output_uri = file_uri_for(&path);
+    // The GTK file backend (libprintbackend-file) registers a virtual
+    // "Print to File" printer that writes straight to `output-uri` and needs
+    // no CUPS daemon. Naming it explicitly in the `printer` setting is what
+    // lets `print()` succeed on a host with no real/default printer (CI, this
+    // box); without it WebKitGTK errors with "Printer not found".
+    let printer_name = "Print to File";
     let (tx, rx) = oneshot::channel::<Result<(), String>>();
 
     // `with_webview` hands us the raw `webkit2gtk::WebView` on the GTK thread.
@@ -135,6 +161,7 @@ async fn export_pdf_linux(window: tauri::WebviewWindow, path: String) -> Result<
             let settings = gtk::PrintSettings::new();
             settings.set(OUTPUT_URI, Some(output_uri.as_str()));
             settings.set(OUTPUT_FORMAT, Some("pdf"));
+            settings.set(PRINTER, Some(printer_name));
 
             let print_op = PrintOperation::new(&webview);
             print_op.set_print_settings(&settings);
@@ -157,8 +184,15 @@ async fn export_pdf_linux(window: tauri::WebviewWindow, path: String) -> Result<
             });
 
             // `print()` runs the operation without showing the GTK dialog,
-            // writing straight to the configured output URI.
+            // writing straight to the configured output URI. The operation
+            // completes ASYNCHRONOUSLY (it returns immediately and emits
+            // `finished`/`failed` later on the GTK main loop), so the
+            // `PrintOperation` must outlive this closure or the signal never
+            // fires. We `forget` it: the GObject stays alive for the duration
+            // of the single-shot export process, guaranteeing the terminal
+            // signal lands and `tx` is sent before the runtime tears down.
             print_op.print();
+            std::mem::forget(print_op);
         })
         .map_err(|e| format!("Failed to write PDF: {e}"))?;
 

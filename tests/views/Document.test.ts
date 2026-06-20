@@ -840,3 +840,26 @@ describe('Document', () => {
     expect(offsets).toEqual({ start: 0, end: 5, exact: 'Hello' });
   });
 });
+
+describe('Document render-complete handshake (D1)', () => {
+  afterEach(() => {
+    vi.resetModules();
+    vi.doUnmock('@tauri-apps/api/event');
+  });
+
+  it("emits 'mdviewer:render-complete' after the initial paint settles", async () => {
+    const emit = vi.fn().mockResolvedValue(undefined);
+    vi.resetModules();
+    vi.doMock('@tauri-apps/api/event', () => ({ emit, listen: vi.fn() }));
+
+    const { mountDocument: mount } = await import('../../src/views/Document');
+    const root = makeRoot();
+    await mount(root, ipc(), { tabId: 't', html, threads: [] });
+
+    // The emit is fired from a guarded lazy `import(...)`; flush the macrotask
+    // queue so the dynamic import + await chain resolves.
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(emit).toHaveBeenCalledWith('mdviewer:render-complete');
+  });
+});

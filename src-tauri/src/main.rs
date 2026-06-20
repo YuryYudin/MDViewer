@@ -61,6 +61,27 @@ use std::path::Path;
 // `lib.rs`.
 mod pdf;
 
+// D1 (printing): the headless `mdviewer --export-pdf <in> <out>` config, set in
+// the early CLI arm and read by the (otherwise shared) Tauri builder/setup so
+// the one-shot runtime renders + exports + exits without single-instance
+// forwarding. `OnceLock` because it's written exactly once before the runtime
+// starts and read-only thereafter.
+use std::sync::OnceLock;
+
+/// Parsed `--export-pdf <in> <out>` request driving the headless export path.
+#[derive(Clone)]
+struct HeadlessExport {
+    input: PathBuf,
+    output: PathBuf,
+}
+
+static HEADLESS_EXPORT: OnceLock<HeadlessExport> = OnceLock::new();
+
+/// `Some(..)` only when this process was launched as `mdviewer --export-pdf`.
+fn headless_export() -> Option<&'static HeadlessExport> {
+    HEADLESS_EXPORT.get()
+}
+
 // macOS-only: the CLI symlink installer is a no-op on other platforms
 // (deb/rpm/msi handle it via the package manager) so the import is gated.
 #[cfg(target_os = "macos")]
@@ -71,6 +92,20 @@ type Ws = Mutex<Workspace>;
 #[tauri::command]
 fn app_info() -> BuildInfo {
     build_info()
+}
+
+/// D1 (printing): true when this process is the one-shot
+/// `mdviewer --export-pdf <in> <out>` runtime. The frontend queries this at
+/// boot and, when true, bypasses the profile-setup gate so the export input
+/// document renders straight into the webview (an unconfigured profile must
+/// not block a headless export — there is no user to fill the form). The
+/// resulting `paintRenderFromHtml` settle fires `mdviewer:render-complete`,
+/// which the backend's headless listener turns into the actual export.
+#[tauri::command]
+fn headless_export_active() -> bool {
+    let active = headless_export().is_some();
+    tracing::info!("headless_export_active queried by frontend -> {active}");
+    active
 }
 
 #[tauri::command]
@@ -2348,25 +2383,55 @@ fn main() {
         }
     }
 
+    // D1 (printing): the headless `mdviewer --export-pdf <in> <out>` mode.
+    // Dispatched HERE — in the early CLI arm, mirroring `migrate-sidecars` and
+    // BEFORE `tauri_plugin_single_instance::init` is registered below — so a
+    // second invocation while the GUI app is running starts its OWN one-shot
+    // runtime instead of being forwarded to the running instance (which would
+    // export nothing). We stash the request in `HEADLESS_EXPORT` and fall
+    // through to the shared `tauri::Builder`; the builder skips single-instance
+    // and the `setup` closure renders the doc in a hidden window, waits for the
+    // frontend's `mdviewer:render-complete` handshake, exports via the SAME
+    // `pdf::export_pdf_inner` backend the IPC command uses, then exits.
+    if args.len() >= 4 && args[1] == "--export-pdf" {
+        let _ = HEADLESS_EXPORT.set(HeadlessExport {
+            input: PathBuf::from(&args[2]),
+            output: PathBuf::from(&args[3]),
+        });
+    }
+
     // After the migrate-sidecars CLI subcommand — that path is meant to
     // run synchronously to completion and shouldn't background itself.
-    detach_from_terminal_if_needed();
+    // Headless export likewise runs to completion in the foreground (it must
+    // report a real exit code to the smoke), so skip detachment for it.
+    if headless_export().is_none() {
+        detach_from_terminal_if_needed();
+    }
 
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    let builder = tauri::Builder::default()
-        // Single-instance plugin must be registered FIRST so its second-
-        // invocation handler runs before the rest of the app initializes.
-        // The callback receives `(app, argv, _cwd)` from the second
-        // invocation, parses the argv via `cli::parse_positional_args`
-        // (the same code path Phase 1 uses at boot), opens each path on
-        // the running Workspace, and re-focuses the main window.
-        // Without this, `mdviewer foo.md` while the app is already
-        // running spawns a duplicate window on Win/Linux and bounces
-        // the Dock icon on macOS without doing anything useful.
-        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+    let mut builder = tauri::Builder::default();
+
+    // Single-instance plugin must be registered FIRST so its second-
+    // invocation handler runs before the rest of the app initializes.
+    // The callback receives `(app, argv, _cwd)` from the second
+    // invocation, parses the argv via `cli::parse_positional_args`
+    // (the same code path Phase 1 uses at boot), opens each path on
+    // the running Workspace, and re-focuses the main window.
+    // Without this, `mdviewer foo.md` while the app is already
+    // running spawns a duplicate window on Win/Linux and bounces
+    // the Dock icon on macOS without doing anything useful.
+    //
+    // D1: SKIP single-instance entirely in headless `--export-pdf` mode. The
+    // smoke runs `mdviewer --export-pdf ...` which may execute while a GUI app
+    // is open; with single-instance registered the second invocation would be
+    // forwarded to the running instance and exit having exported nothing. The
+    // headless path must own a fresh one-shot runtime, so we don't register the
+    // plugin at all when `HEADLESS_EXPORT` is set.
+    if headless_export().is_none() {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             // E2: route the second-instance targets into the MOST-RECENTLY-
             // FOCUSED window (resolved inside `dispatch_cli_targets`), raise
             // that window, and honor one-owner — instead of always landing in
@@ -2375,7 +2440,10 @@ fn main() {
             // hard-codes `main`.
             let parsed = cli::parse_positional_args(&argv);
             dispatch_parsed_cli(app.clone(), parsed, "second invocation");
-        }))
+        }));
+    }
+
+    let builder = builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         // D1: register the Stronghold plugin so future IPC handlers can
@@ -2515,8 +2583,29 @@ fn main() {
             // `new_window` hint is only consumed by the running-app dispatch
             // (F1 wires the flag). Bind `.targets` so the existing loop is
             // a one-field change.
-            let cli_targets =
-                cli::parse_positional_args(&std::env::args().collect::<Vec<_>>()).targets;
+            // D1: in headless `--export-pdf` mode argv is `["mdviewer",
+            // "--export-pdf", <in>, <out>]`, which `parse_positional_args`
+            // would mis-read (it would open BOTH <in> and <out> as documents).
+            // So we bypass the argv/session selection entirely and open ONLY
+            // the export input file into `main`. The render-complete listener
+            // registered later drives the export off this single document.
+            let cli_targets = if let Some(req) = headless_export() {
+                match ws.open_document(&req.input, OpenOpts::default()) {
+                    Ok(_) => tracing::info!(
+                        "headless export: opened {}",
+                        req.input.display()
+                    ),
+                    Err(e) => tracing::warn!(
+                        "headless export: open failed for {}: {e:?}",
+                        req.input.display()
+                    ),
+                }
+                // Non-empty sentinel so the session-restore `else if` below is
+                // skipped — we never want restored tabs in a headless export.
+                vec![cli::OpenTarget::Local(req.input.clone())]
+            } else {
+                cli::parse_positional_args(&std::env::args().collect::<Vec<_>>()).targets
+            };
             // A9: argv now contains a mix of `OpenTarget::Local(path)` and
             // `OpenTarget::Ssh(url)`. Local opens go through `open_document`
             // synchronously; SSH opens drive `open_ssh_url(url, &ops)` via
@@ -2524,7 +2613,13 @@ fn main() {
             // managed-state hand-off via `app.manage(...)` lives further
             // down). Each target's failure is logged and the rest still
             // load — same UX as the prior single-variant loop.
-            if !cli_targets.is_empty() {
+            //
+            // D1: in headless mode we already opened the input above; the
+            // sentinel target keeps the `else if` restore branch from firing,
+            // but we must NOT re-open it here, so short-circuit the loop.
+            if headless_export().is_some() {
+                // Input already opened above; nothing more to load.
+            } else if !cli_targets.is_empty() {
                 for target in cli_targets {
                     match target {
                         cli::OpenTarget::Local(path) => {
@@ -2810,10 +2905,107 @@ fn main() {
                     dispatch_parsed_cli(dispatch_app.clone(), parsed, "e2e dispatch");
                 });
             }
+
+            // D1 (printing): wire the headless `--export-pdf` handshake. The
+            // input document was opened into `main` above; we now (1) hide the
+            // window so the one-shot runtime never flashes a visible window,
+            // (2) arm a watchdog that exits non-zero if the render never
+            // settles, and (3) listen for the frontend's
+            // `mdviewer:render-complete` signal. On the FIRST such signal we
+            // run the SAME `pdf::export_pdf_inner` backend the IPC command
+            // uses, targeting the requested output path, then exit 0 (or
+            // non-zero on failure). Listening (rather than exporting eagerly)
+            // guarantees we snapshot a fully-painted DOM under print media, not
+            // a blank page.
+            if let Some(req) = headless_export() {
+                use tauri::Listener;
+                let app_handle = app.handle().clone();
+                let out_path = req.output.clone();
+
+                if let Some(w) =
+                    app.get_webview_window(mdviewer_lib::workspace::MAIN_LABEL)
+                {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+
+                // NOTE: we deliberately do NOT `hide()` the window here.
+                // WebKitGTK suspends rendering/JS for an unmapped window, so a
+                // window hidden before first paint would never emit
+                // `mdviewer:render-complete` and the export would hang. The
+                // window must stay mapped until the document has painted. We
+                // keep it minimized + offscreen-ish via the smaller no-op below
+                // and rely on the process exiting immediately after export, so
+                // any flash is momentary. (On headless CI this runs under
+                // xvfb; on a real desktop the one-shot export window blinks and
+                // is gone before it matters.)
+
+                // Watchdog: if `mdviewer:render-complete` never fires (e.g. the
+                // doc failed to render), don't hang the smoke forever — fail
+                // out after a generous budget.
+                {
+                    let watchdog = app_handle.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_secs(30));
+                        eprintln!(
+                            "--export-pdf failed: timed out waiting for \
+                             mdviewer:render-complete (render did not settle)"
+                        );
+                        // Best-effort clean shutdown is moot here — exit hard so
+                        // the smoke sees a non-zero code rather than a hang.
+                        let _ = &watchdog;
+                        std::process::exit(1);
+                    });
+                }
+
+                // One-shot: a document re-render could emit a second
+                // render-complete; guard so we only export once.
+                let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let listen_app = app_handle.clone();
+                app_handle.listen("mdviewer:render-complete", move |_event| {
+                    if fired.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                        return;
+                    }
+                    let export_app = listen_app.clone();
+                    let out = out_path.clone();
+                    // Run the async export on Tauri's runtime, then exit with
+                    // the matching code. We resolve the SAME webview the doc was
+                    // rendered into (`main`) and reuse `pdf::export_pdf_inner`.
+                    tauri::async_runtime::spawn(async move {
+                        let window = export_app.get_webview_window(
+                            mdviewer_lib::workspace::MAIN_LABEL,
+                        );
+                        let result = match window {
+                            Some(w) => {
+                                pdf::export_pdf_inner(
+                                    w,
+                                    out.to_string_lossy().to_string(),
+                                )
+                                .await
+                            }
+                            None => Err("headless export: no main window".into()),
+                        };
+                        match result {
+                            Ok(path) => {
+                                tracing::info!("headless export wrote {path}");
+                                std::process::exit(0);
+                            }
+                            Err(e) => {
+                                eprintln!("--export-pdf failed: {e}");
+                                std::process::exit(1);
+                            }
+                        }
+                    });
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             app_info,
+            // D1: lets the frontend detect the headless `--export-pdf` runtime
+            // so it bypasses the profile gate and renders the doc directly.
+            headless_export_active,
             // C1: spawn a fresh StartPage window. Self-contained (spawn_window
             // B2 + Workspace::new_window A1 + rebuild_menu C1). D1 adds the
             // OTHER window commands and must NOT re-register new_window.
