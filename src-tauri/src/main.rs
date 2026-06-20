@@ -55,6 +55,12 @@ use mdviewer_lib::{
 };
 use std::path::Path;
 
+// C1 (printing): the Export-to-PDF command + its pure helpers live in
+// `pdf.rs`. It is a binary-only module (the `export_pdf` `#[tauri::command]`
+// is never consumed by the library), so it is declared here rather than in
+// `lib.rs`.
+mod pdf;
+
 // macOS-only: the CLI symlink installer is a no-op on other platforms
 // (deb/rpm/msi handle it via the package manager) so the import is gated.
 #[cfg(target_os = "macos")]
@@ -2844,6 +2850,9 @@ fn main() {
             set_dirty,
             diff_md,
             export_document,
+            // C1 (printing): render the focused webview's document to a PDF at
+            // a user-chosen path (per-OS webview backend, under print media).
+            pdf::export_pdf,
             reload_document,
             import_comments,
             get_doc_pref,

@@ -55,6 +55,11 @@ export const MENU_ACTION_TO_EVENT: Readonly<Record<string, string>> = Object.fre
   // to the action string `print`; we fan it out as `mdviewer:print`, which
   // main.ts turns into window.print() (guarded with a no-doc toast).
   'print': 'mdviewer:print',
+  // C1: File → Export to PDF… (no accelerator). The Rust side maps menu id
+  // `menu-export-pdf` to the action string `export-pdf`; we fan it out as
+  // `mdviewer:export-pdf`, which main.ts turns into the native save dialog →
+  // `export_pdf` invoke flow (defaulting to <stem>.pdf, cancel = no-op).
+  'export-pdf': 'mdviewer:export-pdf',
 });
 
 /**

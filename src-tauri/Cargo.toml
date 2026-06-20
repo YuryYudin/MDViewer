@@ -131,6 +131,32 @@ tauri-plugin-webdriver-automation = { version = "0.1", optional = true }
 [target.'cfg(windows)'.dependencies]
 russh = "0.61"
 russh-sftp = "2.1"
+# C1 (printing): WebView2 PrintToPdf backend for `export_pdf`. Pinned to the
+# versions Tauri 2.11's `wry` 0.55 resolves in Cargo.lock so the raw
+# `ICoreWebView2Controller` handle from `with_webview` casts cleanly — a
+# mismatched webview2-com/windows pair is the classic raw-handle failure.
+# (Linux build ignores this block; validated on the Windows agent by D1.)
+webview2-com = "0.38"
+windows = { version = "0.61", features = ["Win32_Foundation"] }
+windows-core = "0.61"
+
+# C1 (printing): Linux WebKitGTK PrintOperation backend for `export_pdf`.
+# `with_webview` hands back a `webkit2gtk::WebView`; we drive a print-to-file
+# `PrintOperation` (output-uri = file://<path>, format = pdf) without showing
+# the GTK dialog. Pinned to the versions wry 0.55 resolves so the WebView /
+# PrintSettings types match the handle wry hands us.
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = "=2.0.2"
+gtk = "0.18"
+
+# C1 (printing): macOS WKWebView NSPrintOperation backend for `export_pdf`.
+# We use printOperation(with:) (NOT createPDF, which captures screen media)
+# so the @media print stylesheet applies. Pinned to the objc2 family wry 0.55
+# pulls. (Linux build ignores this block; validated on the macOS agent by D1.)
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = "0.3"
+objc2-foundation = "0.3"
 
 [features]
 default = []

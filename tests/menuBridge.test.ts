@@ -62,6 +62,15 @@ describe('menuBridge', () => {
     expect(MENU_ACTION_TO_EVENT['print']).toBe('mdviewer:print');
   });
 
+  it('File → Export to PDF maps to mdviewer:export-pdf (C1)', () => {
+    // C1: the Rust menu builds an `Export to PDF…` item (id
+    // `menu-export-pdf`, no accelerator). `menu_id_to_action` translates
+    // that to the action string `export-pdf`, which lands here and must
+    // surface as the `mdviewer:export-pdf` CustomEvent main.ts turns into
+    // the save-dialog → `export_pdf` invoke flow.
+    expect(MENU_ACTION_TO_EVENT['export-pdf']).toBe('mdviewer:export-pdf');
+  });
+
   it('View → Zoom items map to the three font-zoom CustomEvents', () => {
     // The native View menu uses kebab-case action ids (`zoom-in`, `zoom-out`,
     // `zoom-reset`) per `menu_id_to_action`. The bridge translates them to

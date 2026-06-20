@@ -40,6 +40,32 @@ export function defaultDocPref(): DocPref {
 }
 
 /**
+ * C1 (printing): derive the Export-to-PDF save dialog's `defaultPath` from the
+ * active document's source path. When the path has a local parent directory we
+ * default to `<dir>/<stem>.pdf` (the document's own folder); for an untitled or
+ * remote document (no local parent — an `ssh://`/`drive://`-style URL, or a
+ * bare name), we fall back to just `<stem>.pdf` so the dialog opens in the
+ * platform default save directory with a sensible name.
+ *
+ * Splits on both `/` and `\` so a Windows path round-trips. `stem` strips a
+ * single trailing extension (`notes.md` → `notes`); a name with no extension
+ * keeps as-is (`README` → `README`).
+ */
+export function defaultPdfPath(sourcePath: string): string {
+  // A remote/untitled doc has no usable local parent — detect a scheme-style
+  // prefix (e.g. `ssh://`, `drive://`, `https://`) and drop the directory.
+  const isRemote = /^[a-z][a-z0-9+.-]*:\/\//i.test(sourcePath);
+  const sep = Math.max(sourcePath.lastIndexOf('/'), sourcePath.lastIndexOf('\\'));
+  const dir = sep >= 0 ? sourcePath.slice(0, sep) : '';
+  const name = sep >= 0 ? sourcePath.slice(sep + 1) : sourcePath;
+  const dot = name.lastIndexOf('.');
+  const stem = dot > 0 ? name.slice(0, dot) : name;
+  const fileName = `${stem || 'document'}.pdf`;
+  if (isRemote || dir === '') return fileName;
+  return `${dir}/${fileName}`;
+}
+
+/**
  * Decide whether to mount the Drive-detect toast for the just-opened
  * `filePath` and, if so, mount it under `host`. Predicate (all four must
  * hold):
@@ -604,6 +630,89 @@ export async function main(): Promise<void> {
       );
     }
   });
+
+  // C1 (printing): File → Export to PDF… → `mdviewer:export-pdf`. Resolve the
+  // active document, open the native save dialog defaulting to `<stem>.pdf`
+  // (in the document's folder when local; platform default dir otherwise),
+  // then invoke `export_pdf` and report the outcome via the toast surface.
+  // The whole flow is wrapped so a dialog/IPC failure never escalates into an
+  // unhandled rejection (the WebView console / unit-test runner would surface
+  // it). Cancel (save returns null) returns early with NO invoke and NO toast.
+  document.addEventListener('mdviewer:export-pdf', () => {
+    runExportPdfFlow().catch((err) => {
+      // Defence-in-depth: runExportPdfFlow already maps every expected failure
+      // into a toast; this catch guards against an unexpected throw outside the
+      // inner try/catch (e.g. the dialog import rejecting).
+      console.warn('export-pdf flow failed:', err);
+    });
+  });
+
+  async function runExportPdfFlow(): Promise<void> {
+    // Resolve the active document the same way the rest of main.ts does:
+    // the active tab id + the open-document list, matched on id.
+    const activeId = await tauriIpc.getActiveTabId();
+    const docs = await tauriIpc.listOpenDocuments();
+    const active = activeId ? docs.find((d) => d.id === activeId) : undefined;
+    if (!active) {
+      // No document to export — surface the same no-doc message Print uses.
+      document.dispatchEvent(
+        new CustomEvent('mdviewer:toast', {
+          detail: { message: 'No document to print' },
+        }),
+      );
+      return;
+    }
+
+    const defaultPath = defaultPdfPath(active.path);
+
+    // Resolve the target path. Under WebDriver the native save dialog can't be
+    // driven, so specs set `window.__mdviewerE2E.nextSavePath` (or null to
+    // simulate cancel) before emitting; we consume it once. Production opens
+    // the real `@tauri-apps/plugin-dialog` save() dialog.
+    const w = window as unknown as {
+      __WEBDRIVER__?: unknown;
+      __mdviewerE2E?: {
+        nextSavePath?: string | null;
+        lastExportDefaultPath?: string;
+      };
+    };
+    let target: string | null = null;
+    if (w.__WEBDRIVER__) {
+      // Record the computed default for the spec to assert S6 (the dialog
+      // would default to `<stem>.pdf`). The native save dialog itself can't be
+      // driven by tauri-webdriver-automation, so this side-channel exposes the
+      // exact `defaultPath` the production `save()` call below would receive.
+      if (w.__mdviewerE2E) w.__mdviewerE2E.lastExportDefaultPath = defaultPath;
+      const next = w.__mdviewerE2E?.nextSavePath;
+      target = typeof next === 'string' ? next : null;
+      if (w.__mdviewerE2E && 'nextSavePath' in w.__mdviewerE2E) {
+        delete w.__mdviewerE2E.nextSavePath;
+      }
+    } else {
+      const { save } = await import('@tauri-apps/plugin-dialog');
+      target = await save({
+        defaultPath,
+        filters: [{ name: 'PDF', extensions: ['pdf'] }],
+      });
+    }
+
+    // Cancel: no invoke, no toast.
+    if (!target) return;
+
+    try {
+      const written = await tauriIpc.exportPdf(target);
+      document.dispatchEvent(
+        new CustomEvent('mdviewer:toast', {
+          detail: { message: `Exported to ${written}` },
+        }),
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      document.dispatchEvent(
+        new CustomEvent('mdviewer:toast', { detail: { message } }),
+      );
+    }
+  }
 
   // Native menu bridge — fires the same mdviewer:* CustomEvents the keymap
   // does, so File → Open / Settings… reach the existing handlers without

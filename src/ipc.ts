@@ -145,6 +145,16 @@ export interface Ipc {
    */
   exportDocument(args: { tabId: string; folder: string }): Promise<ExportResult>;
   /**
+   * C1 (printing): render the focused webview's current document to a PDF at
+   * `path` (an absolute path the user already chose through the native save
+   * dialog). The Rust command runs a per-OS webview PDF backend under print
+   * media so the `@media print` stylesheet applies. Resolves to the written
+   * path on success; rejects with a user-facing message on failure (surfaced
+   * as an error toast). Dialog cancellation never reaches this call — the
+   * frontend aborts before invoking.
+   */
+  exportPdf(path: string): Promise<string>;
+  /**
    * C2 follow-up: re-read `path` from disk, refresh the open tab's cached
    * source/render, and return the freshened OpenResult so the frontend
    * can swap its activeTab cache. Called from the external-change reload
@@ -341,6 +351,7 @@ export const tauriIpc: Ipc = {
   diffMd: (local, incoming) => invoke<Hunk[]>('diff_md', { local, incoming }),
   exportDocument: (args) =>
     invoke<ExportResult>('export_document', { tabId: args.tabId, folder: args.folder }),
+  exportPdf: (path) => invoke<string>('export_pdf', { path }),
   reloadDocument: (path) => invoke<OpenResult>('reload_document', { path }),
   importComments: (args) =>
     invoke<void>('import_comments', { tabId: args.tabId, incomingPath: args.incomingPath }),

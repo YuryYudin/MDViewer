@@ -36,6 +36,7 @@ const fakeIpc = {
   closeTab: vi.fn().mockResolvedValue(undefined),
   activateTab: vi.fn().mockResolvedValue(undefined),
   listOpenDocuments: vi.fn().mockResolvedValue([]),
+  getActiveTabId: vi.fn().mockResolvedValue(null),
   listRecents: vi.fn().mockResolvedValue([]),
   // `getSettings` is called both by main() and by mountStartPage now;
   // give it a default resolved value so a single mockResolvedValueOnce
@@ -52,6 +53,10 @@ const fakeIpc = {
   resolveThread: vi.fn(),
   renderMarkdown: vi.fn(),
   resolveAnchor: vi.fn(),
+  // C1 (printing): the Export-to-PDF flow invokes `export_pdf` with the
+  // dialog-chosen path. Default to echoing the path back (the command resolves
+  // to the written path on success).
+  exportPdf: vi.fn((path: string) => Promise.resolve(path)),
 };
 
 vi.mock('../src/ipc', async () => {
@@ -81,6 +86,15 @@ vi.mock('@tauri-apps/api/window', () => ({
 const rawInvoke = vi.fn().mockResolvedValue(undefined);
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: (...args: unknown[]) => rawInvoke(...args),
+}));
+
+// C1 (printing): the Export-to-PDF listener dynamically imports
+// `@tauri-apps/plugin-dialog` and calls `save()` to pick the PDF path.
+// Mock it so unit tests can drive confirm (return a path) / cancel (null)
+// and assert the `defaultPath` the listener computed.
+const saveDialog = vi.fn();
+vi.mock('@tauri-apps/plugin-dialog', () => ({
+  save: (...args: unknown[]) => saveDialog(...args),
 }));
 
 // Stub the CSS imports so the bootstrap can be exercised in jsdom.
@@ -131,10 +145,13 @@ describe('main()', () => {
     localStorage.removeItem('mdviewer.theme');
     Object.values(fakeIpc).forEach((m) => (m as any).mockClear?.());
     fakeIpc.listOpenDocuments.mockResolvedValue([]);
+    fakeIpc.getActiveTabId.mockResolvedValue(null);
+    fakeIpc.exportPdf.mockImplementation((path: string) => Promise.resolve(path));
     fakeIpc.listRecents.mockResolvedValue([]);
     currentWindow.label = 'main';
     currentWindow.listeners = {};
     currentWindow.listen.mockClear();
+    saveDialog.mockReset();
     rawInvoke.mockClear();
   });
 
@@ -450,6 +467,90 @@ describe('main()', () => {
     expect(toastMessage).toBe('No document to print');
     document.removeEventListener('mdviewer:toast', onToast);
     printSpy.mockRestore();
+  });
+
+  // === C1 (printing): Export-to-PDF save flow (S5 frontend half / S6 / S7 / S8) ===
+
+  /**
+   * Resolve the export listener once main() has booted with one active doc.
+   * Seeds the active-tab IPCs so the listener can derive `<dir>/<stem>.pdf`,
+   * boots main(), then returns helpers to fire the event + read any toast.
+   */
+  async function bootWithActiveDoc(docPath: string): Promise<{
+    fireExport: () => void;
+    lastToast: () => string | undefined;
+  }> {
+    fakeIpc.getSettings.mockResolvedValueOnce(settingsWith());
+    fakeIpc.getActiveTabId.mockResolvedValue('tab-1');
+    fakeIpc.listOpenDocuments.mockResolvedValue([{ id: 'tab-1', path: docPath }]);
+    const { main } = await import('../src/main');
+    await main();
+    let toastMessage: string | undefined;
+    document.addEventListener('mdviewer:toast', (ev: Event) => {
+      toastMessage = (ev as CustomEvent<{ message: string }>).detail?.message;
+    });
+    return {
+      fireExport: () => document.dispatchEvent(new CustomEvent('mdviewer:export-pdf')),
+      lastToast: () => toastMessage,
+    };
+  }
+
+  it('S6: export-pdf opens the save dialog defaulting to <stem>.pdf in the doc folder', async () => {
+    saveDialog.mockResolvedValue('/docs/notes.pdf');
+    const { fireExport } = await bootWithActiveDoc('/docs/notes.md');
+    fireExport();
+    // Let the async listener (getActiveTabId → listOpenDocuments → save) settle.
+    await vi.waitFor(() => expect(saveDialog).toHaveBeenCalled());
+    const opts = saveDialog.mock.calls[0][0] as { defaultPath?: string };
+    expect(opts.defaultPath).toMatch(/notes\.pdf$/);
+    // The default lands in the document's own folder.
+    expect(opts.defaultPath).toBe('/docs/notes.pdf');
+  });
+
+  it('S5: a confirmed path invokes export_pdf and shows an "Exported to" toast', async () => {
+    saveDialog.mockResolvedValue('/docs/notes.pdf');
+    const { fireExport, lastToast } = await bootWithActiveDoc('/docs/notes.md');
+    fireExport();
+    await vi.waitFor(() => expect(fakeIpc.exportPdf).toHaveBeenCalledWith('/docs/notes.pdf'));
+    await vi.waitFor(() => expect(lastToast()).toMatch(/Exported to .*notes\.pdf/));
+  });
+
+  it('S7: cancelling the save dialog does not invoke export_pdf and shows no toast', async () => {
+    saveDialog.mockResolvedValue(null); // user cancelled
+    const { fireExport, lastToast } = await bootWithActiveDoc('/docs/notes.md');
+    fireExport();
+    await vi.waitFor(() => expect(saveDialog).toHaveBeenCalled());
+    // Give any (incorrect) downstream invoke/toast a tick to fire.
+    await new Promise((r) => setTimeout(r, 10));
+    expect(fakeIpc.exportPdf).not.toHaveBeenCalled();
+    expect(lastToast()).toBeUndefined();
+  });
+
+  it('S8: an export_pdf rejection surfaces an error toast without throwing', async () => {
+    saveDialog.mockResolvedValue('/docs/notes.pdf');
+    fakeIpc.exportPdf.mockRejectedValueOnce('Failed to write PDF: permission denied');
+    const { fireExport, lastToast } = await bootWithActiveDoc('/docs/notes.md');
+    // Must not escalate into an unhandled rejection.
+    fireExport();
+    await vi.waitFor(() =>
+      expect(lastToast()).toMatch(/Failed to write PDF: permission denied/),
+    );
+  });
+
+  it('export-pdf with no active document shows a no-doc toast and never opens the dialog', async () => {
+    fakeIpc.getSettings.mockResolvedValueOnce(settingsWith());
+    fakeIpc.getActiveTabId.mockResolvedValue(null);
+    fakeIpc.listOpenDocuments.mockResolvedValue([]);
+    const { main } = await import('../src/main');
+    await main();
+    let toastMessage: string | undefined;
+    document.addEventListener('mdviewer:toast', (ev: Event) => {
+      toastMessage = (ev as CustomEvent<{ message: string }>).detail?.message;
+    });
+    document.dispatchEvent(new CustomEvent('mdviewer:export-pdf'));
+    await vi.waitFor(() => expect(toastMessage).toBe('No document to print'));
+    expect(saveDialog).not.toHaveBeenCalled();
+    expect(fakeIpc.exportPdf).not.toHaveBeenCalled();
   });
 
   it('throws if the #app element is missing', async () => {

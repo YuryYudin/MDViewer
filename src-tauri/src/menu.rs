@@ -115,6 +115,11 @@ pub fn menu_id_to_action(id: &str) -> Option<&'static str> {
         // `mdviewer:print` CustomEvent; main.ts turns that into
         // `window.print()` (or a no-doc toast).
         "menu-print" => Some("print"),
+        // C1 (printing): File → "Export to PDF…" (no accelerator). Maps to the
+        // `export-pdf` action string, which `menuBridge.ts` forwards as the
+        // `mdviewer:export-pdf` CustomEvent; main.ts opens the native save
+        // dialog and invokes the `export_pdf` command.
+        "menu-export-pdf" => Some("export-pdf"),
         "menu-toggle-edit" => Some("toggle-edit"),
         "menu-toggle-sidebar" => Some("toggle-sidebar"),
         "menu-zoom-in" => Some("zoom-in"),
@@ -253,6 +258,19 @@ pub fn build<R: Runtime>(
             true,
             Some("CmdOrCtrl+P"),
         )?)
+        // C1 (printing): File → "Export to PDF…" sits next to "Print…". No
+        // accelerator (Export has no shortcut per the contract). The id
+        // `menu-export-pdf` maps to the `export-pdf` action; the frontend
+        // listener opens the native save dialog defaulting to <stem>.pdf and
+        // invokes the `export_pdf` command (the @media print CSS restricts the
+        // PDF to the active document content).
+        .item(&MenuItem::with_id(
+            app,
+            "menu-export-pdf",
+            "Export to PDF…",
+            true,
+            None::<&str>,
+        )?)
         .separator()
         .item(&MenuItem::with_id(
             app,
@@ -386,6 +404,16 @@ mod tests {
     #[test]
     fn menu_id_action_mapping_includes_print() {
         assert_eq!(menu_id_to_action("menu-print"), Some("print"));
+    }
+
+    /// C1 (printing): File → "Export to PDF…" (id `menu-export-pdf`, no
+    /// accelerator) bridges to the frontend's `mdviewer:export-pdf` CustomEvent
+    /// via the `export-pdf` action string. Pinning the id↔action mapping here
+    /// means a rename of the menu id breaks this test rather than silently
+    /// producing a dead Export menu item.
+    #[test]
+    fn menu_id_action_mapping_includes_export_pdf() {
+        assert_eq!(menu_id_to_action("menu-export-pdf"), Some("export-pdf"));
     }
 
     /// B3: File → "New Window" (CmdOrCtrl+Shift+N, id `menu-new-window`)
