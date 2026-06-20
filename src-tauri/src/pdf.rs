@@ -324,6 +324,9 @@ async fn export_pdf_windows(window: tauri::WebviewWindow, path: String) -> Resul
     use windows::core::HSTRING;
 
     let (tx, rx) = oneshot::channel::<Result<(), String>>();
+    // Clone for the `move` closure so the outer `path` survives to be returned
+    // in the Ok arm below (mirrors the Linux/macOS backends).
+    let target_path = path.clone();
 
     window
         .with_webview(move |wv| {
@@ -341,7 +344,7 @@ async fn export_pdf_windows(window: tauri::WebviewWindow, path: String) -> Resul
                 let controller = wv.controller();
                 let core = unsafe { controller.CoreWebView2() }.map_err(|e| e.to_string())?;
                 let core7: ICoreWebView2_7 = core.cast().map_err(|e| e.to_string())?;
-                let target = HSTRING::from(path.as_str());
+                let target = HSTRING::from(target_path.as_str());
                 let handler = PrintToPdfCompletedHandler::create(Box::new(move |hr, success| {
                     // webview2-com 0.38 passes the completion flag as a Rust `bool`
                     // (already converted from the native BOOL), so use it directly.
