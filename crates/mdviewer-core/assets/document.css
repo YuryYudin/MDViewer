@@ -726,6 +726,60 @@ body.theme-dark .syn-markup.syn-untracked.syn-git_gutter {
 }
 
 /* ---------------------------------------------------------------------------
+ * Dark-mode syntax contrast fix (MANUAL — not part of the generated palette
+ * above; safe across regenerations of that block).
+ *
+ * The light (GitHub) palette above is emitted UNSCOPED and includes deeply
+ * nested, language-specific selectors — e.g. JSON string/value scopes like
+ * `.syn-meta … .syn-json .syn-string.syn-quoted.syn-double.syn-json` (8+
+ * classes). Their CSS specificity exceeds the `body.theme-dark .syn-*`
+ * overrides (2-4 classes), so in dark mode they LEAK their light-theme colors
+ * (#323232 grey, #183691 navy) onto the dark code panel — grey-on-dark-grey,
+ * barely legible (most visible on JSON blocks). `!important` wins over
+ * specificity regardless of selector depth, so we re-assert the base16-ocean
+ * dark token colors here. Per-token colors are preserved (no flattening).
+ *
+ * Proper fix (when the toolchain is available): scope the generated light
+ * palette under `body:not(.theme-dark)` in the document.rs syntax-CSS
+ * generator and regenerate, then this block can be removed. Keep the colors
+ * below in sync with the base16-ocean.dark palette above until then.
+ * ------------------------------------------------------------------------- */
+body.theme-dark .syn-string,
+body.theme-dark .syn-constant.syn-other.syn-symbol,
+body.theme-dark .syn-entity.syn-other.syn-inherited-class {
+  color: #a3be8c !important;
+}
+body.theme-dark .syn-keyword,
+body.theme-dark .syn-storage {
+  color: #b48ead !important;
+}
+body.theme-dark .syn-constant,
+body.theme-dark .syn-constant.syn-numeric {
+  color: #d08770 !important;
+}
+body.theme-dark .syn-entity.syn-name.syn-function,
+body.theme-dark .syn-variable.syn-function,
+body.theme-dark .syn-support.syn-function {
+  color: #8fa1b3 !important;
+}
+body.theme-dark .syn-entity.syn-name.syn-class,
+body.theme-dark .syn-entity.syn-name.syn-type.syn-class,
+body.theme-dark .syn-support.syn-class {
+  color: #ebcb8b !important;
+}
+body.theme-dark .syn-variable,
+body.theme-dark .syn-entity.syn-name.syn-tag {
+  color: #bf616a !important;
+}
+/* Comments: lift base16's #65737e to a higher-contrast grey on the dark panel
+ * (the verbatim base16 value is intentionally dim but reads as near-invisible
+ * here). */
+body.theme-dark .syn-comment,
+body.theme-dark .syn-punctuation.syn-definition.syn-comment {
+  color: #8b97a6 !important;
+}
+
+/* ---------------------------------------------------------------------------
  * Print / PDF-export rules (render-target half).
  *
  * Governs both the Print action (window.print()) and Export-to-PDF
