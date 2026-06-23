@@ -109,7 +109,7 @@ keyring = { version = "3", default-features = false, features = ["apple-native",
 # `sha2` + `getrandom` back the vault-key derivation in `drive::keyring`:
 # a per-machine random salt (getrandom) is hashed (sha2) to produce the
 # 32-byte key Stronghold uses to encrypt the OAuth refresh token at rest.
-sha2 = "0.10"
+sha2 = "0.11"
 getrandom = "0.2"
 
 # A3: SshTransport trait is async (fetch/push/list/stat are I/O-bound), so the
