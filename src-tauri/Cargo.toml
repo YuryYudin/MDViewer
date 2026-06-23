@@ -110,7 +110,7 @@ keyring = { version = "3", default-features = false, features = ["apple-native",
 # a per-machine random salt (getrandom) is hashed (sha2) to produce the
 # 32-byte key Stronghold uses to encrypt the OAuth refresh token at rest.
 sha2 = "0.10"
-getrandom = "0.2"
+getrandom = "0.4"
 
 # A3: SshTransport trait is async (fetch/push/list/stat are I/O-bound), so the
 # trait uses `async-trait` to allow dispatching through `dyn SshTransport`.
