@@ -118,7 +118,7 @@ jobs:
       # work, but trigger Gatekeeper / SmartScreen warnings on first
       # launch). Add APPLE_CERTIFICATE / APPLE_ID + signing flags here
       # when notarization is in scope.
-      - uses: tauri-apps/tauri-action@v0
+      - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
