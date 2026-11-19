@@ -27,7 +27,7 @@ jobs:
         include:
           # Apple Silicon only (Intel macs deferred per the design discussion;
           # revisit if user reports indicate Intel is a meaningful share).
-          - os: macos-14
+          - os: macos-15
             target: aarch64-apple-darwin
             bundles: dmg
             label: macOS (Apple Silicon)
