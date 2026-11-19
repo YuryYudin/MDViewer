@@ -228,6 +228,71 @@ fn is_scp_like(arg: &str) -> bool {
     !host.is_empty()
 }
 
+/// Buffer for document opens that macOS delivers BEFORE the app has finished
+/// launching.
+///
+/// On a cold launch via Finder "Open With", a double-click, or a drop on the
+/// Dock icon, Launch Services does NOT put the paths in argv. It sends an
+/// `odoc` Apple Event, which AppKit dispatches to
+/// `application:openURLs:` *before* `applicationDidFinishLaunching`. Tauri
+/// surfaces that as `RunEvent::Opened` — but Tauri's `setup` closure (where
+/// the `Workspace` is constructed and `manage()`d) only runs on
+/// did-finish-launching. Touching managed state from that early event
+/// panics with "state() called before manage()", and because the panic
+/// happens inside an `extern "C"` Objective-C callback it cannot unwind,
+/// so the process aborts (the v0.8.0 "unexpectedly quit while reopening
+/// windows" crash).
+///
+/// The run-event handler therefore offers each batch of targets to this
+/// buffer first. While the buffer is open (before `setup`), targets are
+/// held; `setup` drains them with [`ColdStartOpens::drain_and_close`] and
+/// opens them like CLI positional args. Once closed, [`ColdStartOpens::offer`]
+/// hands the targets straight back so the caller dispatches them live into
+/// the running workspace.
+#[derive(Debug)]
+pub struct ColdStartOpens {
+    /// `Some(buffer)` while still collecting; `None` once `setup` drained it.
+    pending: std::sync::Mutex<Option<Vec<OpenTarget>>>,
+}
+
+impl ColdStartOpens {
+    /// A fresh, open (collecting) buffer. `const` so it can back a `static`.
+    pub const fn new() -> Self {
+        Self {
+            pending: std::sync::Mutex::new(Some(Vec::new())),
+        }
+    }
+
+    /// Offer `targets` from an Opened event. Returns `None` when the targets
+    /// were buffered for `setup` to pick up, or `Some(targets)` (unchanged)
+    /// when the buffer is already closed and the caller should dispatch them
+    /// into the live workspace itself.
+    pub fn offer(&self, targets: Vec<OpenTarget>) -> Option<Vec<OpenTarget>> {
+        let mut guard = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        match guard.as_mut() {
+            Some(buf) => {
+                buf.extend(targets);
+                None
+            }
+            None => Some(targets),
+        }
+    }
+
+    /// Take everything buffered so far and close the buffer, so every later
+    /// [`offer`](Self::offer) returns its targets for live dispatch. A second
+    /// call returns an empty Vec.
+    pub fn drain_and_close(&self) -> Vec<OpenTarget> {
+        let mut guard = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        guard.take().unwrap_or_default()
+    }
+}
+
+impl Default for ColdStartOpens {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -600,5 +665,27 @@ mod tests {
     fn as_local_path_returns_path_for_local_variant() {
         let target = OpenTarget::Local(PathBuf::from("/tmp/a.md"));
         assert_eq!(target.as_local_path(), Some(Path::new("/tmp/a.md")));
+    }
+
+    #[test]
+    fn cold_start_opens_buffers_until_drained() {
+        let buf = ColdStartOpens::new();
+        let a = OpenTarget::Local(PathBuf::from("/tmp/a.md"));
+        let b = OpenTarget::Local(PathBuf::from("/tmp/b.md"));
+        // Before setup: every offer is held, in arrival order.
+        assert_eq!(buf.offer(vec![a.clone()]), None);
+        assert_eq!(buf.offer(vec![b.clone()]), None);
+        assert_eq!(buf.drain_and_close(), vec![a.clone(), b]);
+    }
+
+    #[test]
+    fn cold_start_opens_hands_back_targets_after_close() {
+        let buf = ColdStartOpens::new();
+        assert!(buf.drain_and_close().is_empty());
+        let a = OpenTarget::Local(PathBuf::from("/tmp/a.md"));
+        // After setup: targets come straight back for live dispatch and are
+        // never re-buffered.
+        assert_eq!(buf.offer(vec![a.clone()]), Some(vec![a]));
+        assert!(buf.drain_and_close().is_empty());
     }
 }

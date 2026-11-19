@@ -82,6 +82,12 @@ fn headless_export() -> Option<&'static HeadlessExport> {
     HEADLESS_EXPORT.get()
 }
 
+/// macOS cold-start opens (Finder "Open With", double-click, Dock drop) that
+/// arrive via `RunEvent::Opened` BEFORE `setup` has managed the `Workspace`.
+/// The run-event handler parks them here; `setup` drains them and opens them
+/// like CLI positional args. See `cli::ColdStartOpens` for the full story.
+static COLD_START_OPENS: cli::ColdStartOpens = cli::ColdStartOpens::new();
+
 // macOS-only: the CLI symlink installer is a no-op on other platforms
 // (deb/rpm/msi handle it via the package manager) so the import is gated.
 #[cfg(target_os = "macos")]
@@ -1571,7 +1577,19 @@ fn dispatch_cli_targets(
     // dropping the lock.
     let mut deferred_ssh: Vec<mdviewer_core::ssh_url::SshUrl> = Vec::new();
     let mut raise_labels: Vec<String> = Vec::new();
-    let ws_state = app.state::<Mutex<Workspace>>();
+    // `try_state`, never `state`: this runs from the macOS `RunEvent::Opened`
+    // hook, i.e. inside an Objective-C callback that cannot unwind — a panic
+    // here aborts the whole process. Cold-start opens are buffered by the
+    // caller until `setup` manages the workspace, so a miss here is a bug we
+    // log rather than crash on.
+    let Some(ws_state) = app.try_state::<Mutex<Workspace>>() else {
+        tracing::warn!(
+            "{} dropped {} target(s): workspace not managed yet",
+            source_label,
+            targets.len()
+        );
+        return;
+    };
     if let Ok(mut ws) = ws_state.lock() {
         for target in targets {
             match target {
@@ -1628,7 +1646,14 @@ fn dispatch_cli_targets(
         // `ssh://[user@]host[:port]/path` form — same shape A2 pinned.
         let url_label = url.to_string();
         tauri::async_runtime::spawn(async move {
-            let ssh_state = app_handle.state::<SshAppState>();
+            let Some(ssh_state) = app_handle.try_state::<SshAppState>() else {
+                tracing::warn!(
+                    "{} SSH open skipped for {}: SSH state not managed yet",
+                    source_label,
+                    url_label
+                );
+                return;
+            };
             let outcome = match ssh_state.ops.open_url(&url).await {
                 Ok(o) => o,
                 Err(e) => {
@@ -1640,7 +1665,9 @@ fn dispatch_cli_targets(
                     return;
                 }
             };
-            let ws_state = app_handle.state::<Mutex<Workspace>>();
+            let Some(ws_state) = app_handle.try_state::<Mutex<Workspace>>() else {
+                return;
+            };
             if let Ok(mut ws) = ws_state.lock() {
                 // E2: register the SSH tab into the focused window (matching
                 // the Local-target routing) instead of always `main`.
@@ -2589,6 +2616,11 @@ fn main() {
             // So we bypass the argv/session selection entirely and open ONLY
             // the export input file into `main`. The render-complete listener
             // registered later drives the export off this single document.
+            // macOS: close the cold-start buffer NOW so every later
+            // `RunEvent::Opened` dispatches live into the managed workspace.
+            // In headless export mode the buffered targets are irrelevant and
+            // dropped.
+            let cold_start_targets = COLD_START_OPENS.drain_and_close();
             let cli_targets = if let Some(req) = headless_export() {
                 match ws.open_document(&req.input, OpenOpts::default()) {
                     Ok(_) => tracing::info!(
@@ -2604,7 +2636,15 @@ fn main() {
                 // skipped — we never want restored tabs in a headless export.
                 vec![cli::OpenTarget::Local(req.input.clone())]
             } else {
-                cli::parse_positional_args(&std::env::args().collect::<Vec<_>>()).targets
+                // Finder "Open With" / double-click / Dock-drop cold launches
+                // deliver their paths through `RunEvent::Opened` (buffered in
+                // `COLD_START_OPENS`), not argv — append them so they open into
+                // `main` and take precedence over session restore exactly like
+                // CLI positional args do.
+                let mut targets =
+                    cli::parse_positional_args(&std::env::args().collect::<Vec<_>>()).targets;
+                targets.extend(cold_start_targets);
+                targets
             };
             // A9: argv now contains a mix of `OpenTarget::Local(path)` and
             // `OpenTarget::Ssh(url)`. Local opens go through `open_document`
@@ -3074,20 +3114,38 @@ fn main() {
             // (c) picks "Open With → MDViewer" from a Finder context menu.
             // Without this hook the URLs would fall on the floor.
             //
-            // Cold-start file-association launches still go through the
-            // CLI argv path (Phase 1) — Launch Services puts the paths
-            // there for the first invocation.
+            // Cold-start caveat: when the app is NOT yet running, Launch
+            // Services does NOT put the paths in argv. AppKit delivers the
+            // `odoc` Apple Event before `applicationDidFinishLaunching`, so
+            // this event fires BEFORE `setup` has managed the `Workspace`.
+            // Those targets are parked in `COLD_START_OPENS` and opened by
+            // `setup`; only post-setup events dispatch live here.
+            //
+            // This closure runs inside tao's `application:openURLs:`
+            // Objective-C callback, which cannot unwind: any panic aborts the
+            // process. `catch_unwind` is the last line of defence so a bug in
+            // the dispatch path degrades to a logged error instead of a crash.
             #[cfg(any(target_os = "macos", target_os = "ios"))]
             if let tauri::RunEvent::Opened { urls } = event {
-                let targets = cli::urls_to_paths(&urls);
-                if targets.is_empty() {
-                    return;
+                let app = app.clone();
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                    let targets = cli::urls_to_paths(&urls);
+                    if targets.is_empty() {
+                        return;
+                    }
+                    let Some(targets) = COLD_START_OPENS.offer(targets) else {
+                        tracing::info!("buffered cold-start open until setup completes");
+                        return;
+                    };
+                    // E2: `dispatch_cli_targets` routes into the focused
+                    // window (one-owner honored), raises it, and emits the
+                    // `workspace-changed` repaint to that window.
+                    dispatch_cli_targets(app, targets, "RunEvent::Opened");
+                }));
+                if result.is_err() {
+                    tracing::error!("RunEvent::Opened handler panicked; open request dropped");
                 }
-                // E2: `dispatch_cli_targets` now routes into the focused
-                // window (one-owner honored), raises it, and emits the
-                // `workspace-changed` repaint to that window — so we no
-                // longer hard-code a `main`-addressed emit here.
-                dispatch_cli_targets(app.clone(), targets, "RunEvent::Opened");
+                return;
             }
             // Suppress the "unused" warnings on non-macOS platforms.
             #[cfg(not(any(target_os = "macos", target_os = "ios")))]
