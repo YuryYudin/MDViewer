@@ -1,0 +1,174 @@
+// macOS release: build MDViewer for Apple Silicon, sign it with the Developer ID
+// identity, notarize + staple the .dmg, and archive it.
+//
+// Why Jenkins and not GitHub Actions: the Developer ID certificate and the App
+// Store Connect API key live in this controller's credential store (shared with
+// the other macOS apps), not in GitHub secrets. `release.yml` still builds an
+// ad-hoc-signed .dmg on tag push; replace that release asset with the archived
+// one from this job (`gh release upload <tag> <dmg> --clobber`).
+//
+// Signing recipe (mirrors WhisperIt's proven mbook pipeline):
+//   * A throwaway keychain holds the identity plus Apple's Developer ID G2
+//     intermediate. macOS ships the root but not the intermediate, so a keychain
+//     with only the leaf fails with "unable to build chain to self-signed root".
+//   * `set-key-partition-list` lets codesign use the key headlessly (otherwise
+//     errSecInternalComponent; the jenkins user has no GUI session to click
+//     "Allow").
+//   * Signing happens INSIDE `tauri build` (APPLE_SIGNING_IDENTITY overrides the
+//     ad-hoc "-" in tauri.conf.json), so the .app embedded in the .dmg is signed.
+//     Re-signing afterwards would leave the dmg's copy stale ("damaged" on open).
+//   * Notarization is a separate `notarytool` step and is FATAL here: an
+//     un-notarized release dmg is exactly what this job exists to prevent.
+pipeline {
+    agent { label 'macos' }
+    parameters {
+        string(name: 'TAG', defaultValue: '', description: 'Release tag to build, e.g. v0.8.1')
+    }
+    options {
+        skipDefaultCheckout(true)
+        disableConcurrentBuilds()
+        timeout(time: 90, unit: 'MINUTES')
+        timestamps()
+    }
+    environment {
+        PATH = "/Users/jenkins/.cargo/bin:/Users/jenkins/.nvm/versions/node/v24.14.1/bin:/Users/jenkins/.nvm/versions/node/v24.14.0/bin:/opt/homebrew/bin:/usr/local/bin:${env.PATH}"
+        TARGET = 'aarch64-apple-darwin'
+    }
+    stages {
+        stage('Checkout tag') {
+            steps {
+                script {
+                    if (!(params.TAG ==~ /^v\d+\.\d+\.\d+([-.][0-9A-Za-z.]+)?$/)) {
+                        error "TAG must look like v1.2.3 (got '${params.TAG}')"
+                    }
+                    currentBuild.displayName = "#${env.BUILD_NUMBER} ${params.TAG}"
+                }
+                checkout([$class: 'GitSCM',
+                          branches: [[name: "refs/tags/${params.TAG}"]],
+                          userRemoteConfigs: [[url: 'https://github.com/YuryYudin/MDViewer.git',
+                                               refspec: "+refs/tags/${params.TAG}:refs/tags/${params.TAG}"]],
+                          extensions: [[$class: 'CleanBeforeCheckout']]])
+                sh '''
+                    set -eu
+                    echo "Building $(git describe --tags) at $(git rev-parse --short HEAD)"
+                    rustc --version && cargo --version && node --version && npm --version
+                    rustup target add "$TARGET" >/dev/null 2>&1 || true
+                '''
+            }
+        }
+        stage('Install + askpass helper') {
+            steps {
+                sh '''
+                    set -eu
+                    npm ci
+                    ( cd src-tauri && cargo build --release --bin mdviewer-askpass --locked --target "$TARGET" )
+                    mkdir -p src-tauri/binaries
+                    cp "target/$TARGET/release/mdviewer-askpass" "src-tauri/binaries/mdviewer-askpass-$TARGET"
+                '''
+            }
+        }
+        stage('Build + sign') {
+            steps {
+                withCredentials([
+                    string(credentialsId: 'apple-certificate', variable: 'APPLE_CERTIFICATE'),
+                    string(credentialsId: 'apple-certificate-password', variable: 'APPLE_CERTIFICATE_PASSWORD'),
+                    string(credentialsId: 'apple-signing-identity', variable: 'APPLE_SIGNING_IDENTITY'),
+                ]) {
+                    sh '''
+                        set -eu
+                        KEYCHAIN="$HOME/mdviewer-signing.keychain-db"
+                        KC_PASS=$(openssl rand -base64 24)
+                        P12=$(mktemp -t mdviewer-devid)
+                        CA=$(mktemp -t devid-g2)
+                        ORIG_KEYCHAINS=$(security list-keychains -d user | sed 's/[" ]//g')
+
+                        cleanup() {
+                            security list-keychains -d user -s $ORIG_KEYCHAINS 2>/dev/null || true
+                            security delete-keychain "$KEYCHAIN" 2>/dev/null || true
+                            rm -f "$P12" "$CA"
+                        }
+                        trap cleanup EXIT
+
+                        echo "=== Preparing signing keychain ==="
+                        security delete-keychain "$KEYCHAIN" 2>/dev/null || true
+                        security create-keychain -p "$KC_PASS" "$KEYCHAIN"
+                        security set-keychain-settings -lut 21600 "$KEYCHAIN"
+                        security unlock-keychain -p "$KC_PASS" "$KEYCHAIN"
+                        security list-keychains -d user -s "$KEYCHAIN" $ORIG_KEYCHAINS
+
+                        curl -sSf -o "$CA" https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer
+                        security import "$CA" -k "$KEYCHAIN" -T /usr/bin/codesign
+
+                        printf '%s' "$APPLE_CERTIFICATE" | openssl base64 -d -A > "$P12"
+                        security import "$P12" -k "$KEYCHAIN" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+                        rm -f "$P12"
+                        security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KC_PASS" "$KEYCHAIN" >/dev/null
+                        security find-identity -v -p codesigning "$KEYCHAIN"
+
+                        # Use the identity installed above; keep Tauri from importing
+                        # the cert into its own (intermediate-less) keychain, and from
+                        # notarizing (done explicitly in the next stage).
+                        unset APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD
+                        unset APPLE_API_ISSUER APPLE_API_KEY APPLE_API_KEY_PATH
+
+                        echo "=== Building signed bundle ==="
+                        npm run tauri build -- --target "$TARGET" --bundles dmg
+                    '''
+                }
+            }
+        }
+        stage('Notarize + staple') {
+            steps {
+                withCredentials([
+                    string(credentialsId: 'apple-api-issuer', variable: 'APPLE_API_ISSUER'),
+                    string(credentialsId: 'apple-api-key-id', variable: 'APPLE_API_KEY'),
+                    file(credentialsId: 'apple-api-key-p8', variable: 'APPLE_API_KEY_PATH'),
+                ]) {
+                    sh '''
+                        set -eu
+                        DMG=$(ls target/$TARGET/release/bundle/dmg/*.dmg | head -1)
+                        echo "=== Notarizing $DMG ==="
+                        xcrun notarytool submit "$DMG" \
+                            --key-id "$APPLE_API_KEY" --key "$APPLE_API_KEY_PATH" --issuer "$APPLE_API_ISSUER" \
+                            --wait --timeout 45m --output-format json | tee notarization.json
+                        grep -q '"status" *: *"Accepted"' notarization.json || {
+                            ID=$(sed -n 's/.*"id" *: *"\\([^"]*\\)".*/\\1/p' notarization.json | head -1)
+                            [ -n "$ID" ] && xcrun notarytool log "$ID" \
+                                --key-id "$APPLE_API_KEY" --key "$APPLE_API_KEY_PATH" --issuer "$APPLE_API_ISSUER" || true
+                            echo "Notarization was not accepted." >&2
+                            exit 1
+                        }
+                        xcrun stapler staple "$DMG"
+                        xcrun stapler validate "$DMG"
+                    '''
+                }
+            }
+        }
+        stage('Verify') {
+            steps {
+                sh '''
+                    set -eu
+                    DMG=$(ls target/$TARGET/release/bundle/dmg/*.dmg | head -1)
+                    MNT=$(mktemp -d)
+                    hdiutil attach "$DMG" -mountpoint "$MNT" -nobrowse -readonly -quiet
+                    trap 'hdiutil detach "$MNT" -quiet || true' EXIT
+                    APP=$(find "$MNT" -maxdepth 1 -name "*.app" -type d | head -1)
+                    codesign --verify --deep --strict --verbose=2 "$APP"
+                    codesign -dvv "$APP" 2>&1 | grep -E "Authority|TeamIdentifier|flags"
+                    if codesign -dvv "$APP" 2>&1 | grep -q "TeamIdentifier=not set"; then
+                        echo "ERROR: app inside the dmg is ad-hoc signed" >&2
+                        exit 1
+                    fi
+                    spctl --assess --type execute -vv "$APP"
+                    spctl --assess --type open --context context:primary-signature -vv "$DMG"
+                    shasum -a 256 "$DMG"
+                '''
+            }
+        }
+    }
+    post {
+        success {
+            archiveArtifacts artifacts: 'target/*/release/bundle/dmg/*.dmg', fingerprint: true
+        }
+    }
+}
