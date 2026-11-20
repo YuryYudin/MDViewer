@@ -114,10 +114,13 @@ jobs:
       # tauri-action runs `tauri build`, picks up bundle.targets from
       # tauri.conf.json (overridden via --bundles), and uploads each
       # produced artifact to a draft GitHub Release named after the tag.
-      # Code-signing secrets intentionally NOT wired (unsigned bundles
+      # Code-signing secrets intentionally NOT wired here (unsigned bundles
       # work, but trigger Gatekeeper / SmartScreen warnings on first
-      # launch). Add APPLE_CERTIFICATE / APPLE_ID + signing flags here
-      # when notarization is in scope.
+      # launch). The macOS dmg built here is ad-hoc signed and Gatekeeper
+      # REJECTS it: the Developer ID cert + notarization API key live in
+      # Jenkins, so run the `MDViewer-macos-release` Jenkins job
+      # (Jenkinsfile.macos-release, TAG=<tag>) and replace the asset with
+      # `gh release upload <tag> MDViewer_<ver>_aarch64.dmg --clobber`.
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

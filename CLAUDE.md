@@ -169,6 +169,7 @@ The 10 instrumented spec files in `android/app/src/androidTest/kotlin/dev/mdview
 - **How does the WebView talk to Compose?** `SelectionBridge.kt` + `selection-bridge.js`. D2's completion notes for the JS-bridge crash-on-throw rule.
 - **How does highlight injection survive recreate?** `HighlightInjector.kt` + `highlight-injector.js` + D8's `resolve_anchor` UDL surface. D8's completion notes for the orphan-flag flow.
 - **How is the release built?** `.github/workflows/release.yml` + `android/app/build.gradle.kts` (release signingConfigs + R8). E4's completion notes for the keystore env-var contract.
+- **How is the macOS dmg signed?** Not on GitHub — `release.yml` produces an ad-hoc dmg that Gatekeeper rejects. Run the Jenkins job `MDViewer-macos-release` (`Jenkinsfile.macos-release`, param `TAG`) on the `mbook` agent: it Developer-ID-signs, notarizes and staples, then archive → `gh release upload <tag> <dmg> --clobber`.
 
 ## When in doubt
 
